@@ -1,6 +1,6 @@
 # courtlistener-mcp-server - Directory Structure
 
-Generated on: 2026-05-26 00:19:16
+Generated on: 2026-05-26 03:15:35
 
 ```text
 courtlistener-mcp-server/
@@ -104,26 +104,48 @@ courtlistener-mcp-server/
 │   └── tool-defs-analysis/
 │       └── SKILL.md
 ├── src/
+│   ├── config/
+│   │   └── server-config.ts
 │   ├── mcp-server/
 │   │   ├── prompts/
 │   │   │   └── definitions/
-│   │   │       └── echo.prompt.ts
+│   │   │       └── legal-research.prompt.ts
 │   │   ├── resources/
 │   │   │   └── definitions/
-│   │   │       ├── echo-app-ui.app-resource.ts
-│   │   │       └── echo.resource.ts
+│   │   │       └── courts-reference.resource.ts
 │   │   └── tools/
 │   │       └── definitions/
-│   │           ├── echo-app.app-tool.ts
-│   │           └── echo.tool.ts
+│   │           ├── get-citations.tool.ts
+│   │           ├── get-docket.tool.ts
+│   │           ├── get-judge.tool.ts
+│   │           ├── get-opinion.tool.ts
+│   │           ├── lookup-citation.tool.ts
+│   │           ├── lookup-courts.tool.ts
+│   │           ├── search-dockets.tool.ts
+│   │           ├── search-judges.tool.ts
+│   │           ├── search-opinions.tool.ts
+│   │           └── search-oral-arguments.tool.ts
+│   ├── services/
+│   │   └── courtlistener/
+│   │       ├── courtlistener-service.ts
+│   │       └── types.ts
 │   └── index.ts
 ├── tests/
 │   ├── prompts/
-│   │   └── echo.prompt.test.ts
+│   │   └── legal-research.prompt.test.ts
 │   ├── resources/
-│   │   └── echo.resource.test.ts
+│   │   └── courts-reference.resource.test.ts
 │   └── tools/
-│       └── echo.tool.test.ts
+│       ├── get-citations.tool.test.ts
+│       ├── get-docket.tool.test.ts
+│       ├── get-judge.tool.test.ts
+│       ├── get-opinion.tool.test.ts
+│       ├── lookup-citation.tool.test.ts
+│       ├── lookup-courts.tool.test.ts
+│       ├── search-dockets.tool.test.ts
+│       ├── search-judges.tool.test.ts
+│       ├── search-opinions.tool.test.ts
+│       └── search-oral-arguments.tool.test.ts
 ├── .dockerignore
 ├── .env.example
 ├── .gitignore
