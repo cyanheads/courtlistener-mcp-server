@@ -5,17 +5,52 @@
  */
 
 import { createApp } from '@cyanheads/mcp-ts-core';
-import { echoPrompt } from './mcp-server/prompts/definitions/echo.prompt.js';
-import { echoResource } from './mcp-server/resources/definitions/echo.resource.js';
-import { echoAppUiResource } from './mcp-server/resources/definitions/echo-app-ui.app-resource.js';
-import { echoTool } from './mcp-server/tools/definitions/echo.tool.js';
-import { echoAppTool } from './mcp-server/tools/definitions/echo-app.app-tool.js';
+import { getServerConfig } from './config/server-config.js';
+// Prompt definitions
+import { legalResearchPrompt } from './mcp-server/prompts/definitions/legal-research.prompt.js';
+// Resource definitions
+import { courtsReferenceResource } from './mcp-server/resources/definitions/courts-reference.resource.js';
+import { getCitationsTool } from './mcp-server/tools/definitions/get-citations.tool.js';
+import { getDocketTool } from './mcp-server/tools/definitions/get-docket.tool.js';
+import { getJudgeTool } from './mcp-server/tools/definitions/get-judge.tool.js';
+import { getOpinionTool } from './mcp-server/tools/definitions/get-opinion.tool.js';
+import { lookupCitationTool } from './mcp-server/tools/definitions/lookup-citation.tool.js';
+import { lookupCourtsTool } from './mcp-server/tools/definitions/lookup-courts.tool.js';
+import { searchDocketsTool } from './mcp-server/tools/definitions/search-dockets.tool.js';
+import { searchJudgesTool } from './mcp-server/tools/definitions/search-judges.tool.js';
+// Tool definitions
+import { searchOpinionsTool } from './mcp-server/tools/definitions/search-opinions.tool.js';
+import { searchOralArgumentsTool } from './mcp-server/tools/definitions/search-oral-arguments.tool.js';
+import { initCourtListenerService } from './services/courtlistener/courtlistener-service.js';
 
 await createApp({
-  tools: [echoTool, echoAppTool],
-  resources: [echoResource, echoAppUiResource],
-  prompts: [echoPrompt],
-  // instructions: 'Server-level orientation forwarded to the model on every initialize.\n' +
-  //   '- Use shortcut `X` for the most common case\n' +
-  //   '- Tools require auth via the `inventory:read` scope',
+  tools: [
+    searchOpinionsTool,
+    getOpinionTool,
+    getCitationsTool,
+    lookupCitationTool,
+    searchDocketsTool,
+    getDocketTool,
+    searchJudgesTool,
+    getJudgeTool,
+    lookupCourtsTool,
+    searchOralArgumentsTool,
+  ],
+  resources: [courtsReferenceResource],
+  prompts: [legalResearchPrompt],
+  instructions:
+    'CourtListener MCP server — access 9M+ US court opinions, RECAP federal dockets, judge records, citation networks, and oral arguments.\n' +
+    '- Start with courtlistener_lookup_courts to discover court IDs before filtering searches\n' +
+    '- Free tier rate limit: 5 req/min, 50/hr, 125/day — keep page_size low and avoid multi-hop workflows that exceed 3–4 calls\n' +
+    '- courtlistener_lookup_citation resolves citation strings (e.g., "410 U.S. 113") to cluster IDs\n' +
+    '- courtlistener_get_citations traces precedent networks (direction="cited_by" for downstream influence)',
+  setup(core) {
+    const serverConfig = getServerConfig();
+    // Pass server config fields through AppConfig by augmenting it
+    const augmentedConfig = Object.assign(Object.create(core.config), {
+      apiToken: serverConfig.apiToken,
+      baseUrl: serverConfig.baseUrl,
+    });
+    initCourtListenerService(augmentedConfig, core.storage);
+  },
 });

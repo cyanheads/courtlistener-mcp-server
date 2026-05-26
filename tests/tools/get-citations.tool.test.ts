@@ -1,0 +1,145 @@
+/**
+ * @fileoverview Tests for the get-citations tool.
+ * @module tests/tools/get-citations.tool.test
+ */
+
+import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { getCitationsTool } from '@/mcp-server/tools/definitions/get-citations.tool.js';
+import type { CourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
+import * as svcModule from '@/services/courtlistener/courtlistener-service.js';
+
+const mockSvc = {
+  getCitedBy: vi.fn(),
+  getCiting: vi.fn(),
+} as unknown as CourtListenerService;
+
+beforeEach(() => {
+  vi.spyOn(svcModule, 'getCourtListenerService').mockReturnValue(mockSvc);
+  vi.clearAllMocks();
+});
+
+const mockCitingResult = {
+  total: 2,
+  results: [
+    {
+      id: 200,
+      caseName: 'Related Case One',
+      caseNameFull: '',
+      court: 'Ninth Circuit',
+      court_id: 'ca9',
+      dateFiled: '2000-06-01',
+      citation: ['100 F.3d 200'],
+      citeCount: 50,
+      snippet: 'relevant excerpt',
+    },
+    {
+      id: 201,
+      caseName: 'Related Case Two',
+      caseNameFull: '',
+      court: 'Ninth Circuit',
+      court_id: 'ca9',
+      dateFiled: '2005-03-15',
+      citation: ['200 F.3d 300'],
+      citeCount: 30,
+      snippet: '',
+    },
+  ],
+  nextCursor: null,
+};
+
+describe('getCitationsTool', () => {
+  it('fetches cited_by citations by default', async () => {
+    mockSvc.getCitedBy = vi.fn().mockResolvedValue(mockCitingResult);
+    const ctx = createMockContext();
+    const input = getCitationsTool.input.parse({ cluster_id: 100 });
+    const result = await getCitationsTool.handler(input, ctx);
+
+    expect(result.source_cluster_id).toBe(100);
+    expect(result.direction).toBe('cited_by');
+    expect(result.total_count).toBe(2);
+    expect(result.results).toHaveLength(2);
+    expect(result.results[0].cluster_id).toBe(200);
+    expect(result.results[0].case_name).toBe('Related Case One');
+  });
+
+  it('fetches citing direction when specified', async () => {
+    mockSvc.getCiting = vi
+      .fn()
+      .mockResolvedValue({ total: 1, results: [mockCitingResult.results[0]], nextCursor: null });
+    const ctx = createMockContext();
+    const input = getCitationsTool.input.parse({ cluster_id: 100, direction: 'citing' });
+    const result = await getCitationsTool.handler(input, ctx);
+
+    expect(result.direction).toBe('citing');
+    expect(mockSvc.getCiting).toHaveBeenCalledWith(
+      expect.objectContaining({ clusterId: 100 }),
+      ctx,
+    );
+    expect(mockSvc.getCitedBy).not.toHaveBeenCalled();
+  });
+
+  it('passes court and filed_after filters', async () => {
+    mockSvc.getCitedBy = vi.fn().mockResolvedValue({ total: 0, results: [], nextCursor: null });
+    const ctx = createMockContext();
+    const input = getCitationsTool.input.parse({
+      cluster_id: 100,
+      court: 'scotus',
+      filed_after: '2010-01-01',
+    });
+    await getCitationsTool.handler(input, ctx);
+    expect(mockSvc.getCitedBy).toHaveBeenCalledWith(
+      expect.objectContaining({ court: 'scotus', filed_after: '2010-01-01' }),
+      ctx,
+    );
+  });
+
+  it('throws when service throws', async () => {
+    mockSvc.getCitedBy = vi.fn().mockRejectedValue(new Error('API error'));
+    const ctx = createMockContext();
+    const input = getCitationsTool.input.parse({ cluster_id: 100 });
+    await expect(getCitationsTool.handler(input, ctx)).rejects.toThrow();
+  });
+
+  it('formats output with source and result details', () => {
+    const output = getCitationsTool.output.parse({
+      source_cluster_id: 100,
+      source_case_name: 'Landmark Case',
+      direction: 'cited_by',
+      total_count: 1,
+      results: [
+        {
+          cluster_id: 200,
+          case_name: 'Related Case',
+          court: 'Ninth Circuit',
+          court_id: 'ca9',
+          date_filed: '2000-01-01',
+          citations: ['100 F.3d 200'],
+          cite_count: 50,
+          snippet: 'excerpt text',
+        },
+      ],
+      next_cursor: null,
+    });
+    const blocks = getCitationsTool.format!(output);
+    const text = (blocks[0] as { text: string }).text;
+    expect(text).toContain('100');
+    expect(text).toContain('Related Case');
+    expect(text).toContain('ca9');
+    expect(text).toContain('Cited By');
+  });
+
+  it('format handles empty results', () => {
+    const output = getCitationsTool.output.parse({
+      source_cluster_id: 100,
+      source_case_name: 'Test',
+      direction: 'citing',
+      total_count: 0,
+      results: [],
+      next_cursor: null,
+    });
+    const blocks = getCitationsTool.format!(output);
+    const text = (blocks[0] as { text: string }).text;
+    expect(text).toContain('No citations');
+  });
+});

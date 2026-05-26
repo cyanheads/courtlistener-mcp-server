@@ -1,0 +1,145 @@
+/**
+ * @fileoverview List CourtListener courts filtered by jurisdiction type and scraper status.
+ * @module mcp-server/tools/definitions/lookup-courts.tool
+ */
+
+import { tool, z } from '@cyanheads/mcp-ts-core';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { getCourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
+
+export const lookupCourtsTool = tool('courtlistener_lookup_courts', {
+  title: 'Lookup Courts',
+  description:
+    'List courts with optional filtering by jurisdiction type and scraper status. Primarily used to discover court IDs for use in search and filter parameters across all other courtlistener tools. Returns court IDs, full names, citation strings, and scraper status.',
+  annotations: { readOnlyHint: true, openWorldHint: true, idempotentHint: false },
+
+  input: z.object({
+    jurisdiction: z
+      .enum([
+        'F',
+        'FD',
+        'FB',
+        'FBP',
+        'FS',
+        'C',
+        'I',
+        'T',
+        'ST',
+        'SS',
+        'SAG',
+        'SAL',
+        'SA',
+        'S',
+        'TT',
+      ])
+      .optional()
+      .describe(
+        'Jurisdiction type. F=Federal Appellate (circuit courts, SCOTUS), FD=Federal District, FB=Federal Bankruptcy, FBP=Federal Bankruptcy Panel, FS=Federal Special (USITC, FISC, etc.), C=Circuit (historical), I=International, T=Territory, ST=State Trial, SS=State Supreme, SAG=State Attorney General, SAL=State Legislature, SA=State Appellate, S=State (other), TT=Tribal/Territory. Omit to list all.',
+      ),
+    in_use: z
+      .boolean()
+      .optional()
+      .default(true)
+      .describe(
+        'When true (default), only return courts currently scraped by CourtListener. Set to false to include historical or inactive courts.',
+      ),
+    has_opinion_scraper: z
+      .boolean()
+      .optional()
+      .describe(
+        'Filter to courts with active opinion scraping. Useful when planning search queries — courts without scrapers have sparse coverage.',
+      ),
+  }),
+
+  output: z.object({
+    total_count: z.number().describe('Total courts returned.'),
+    courts: z
+      .array(
+        z
+          .object({
+            id: z.string().describe('Court identifier for use in search filter parameters.'),
+            full_name: z.string().describe('Full court name.'),
+            short_name: z.string().describe('Abbreviated court name.'),
+            citation_string: z
+              .string()
+              .describe('Citation abbreviation (e.g., "9th Cir.", "SCOTUS").'),
+            jurisdiction: z.string().describe('Jurisdiction type code.'),
+            has_opinion_scraper: z
+              .boolean()
+              .describe('True if CourtListener actively scrapes opinions from this court.'),
+            has_oral_argument_scraper: z
+              .boolean()
+              .describe('True if CourtListener actively scrapes oral arguments from this court.'),
+          })
+          .describe('Court record.'),
+      )
+      .describe('Matching courts.'),
+  }),
+
+  errors: [
+    {
+      reason: 'rate_limited',
+      code: JsonRpcErrorCode.RateLimited,
+      when: '429 response from CourtListener.',
+      retryable: true,
+      recovery: 'Wait for the Retry-After period. Free tier: 5 req/min, 50/hr, 125/day.',
+    },
+  ],
+
+  async handler(input, ctx) {
+    ctx.log.info('courtlistener_lookup_courts', {
+      jurisdiction: input.jurisdiction,
+      in_use: input.in_use,
+    });
+    const svc = getCourtListenerService();
+
+    const data = await svc.listCourts(
+      {
+        jurisdiction: input.jurisdiction,
+        in_use: input.in_use,
+        has_opinion_scraper: input.has_opinion_scraper,
+      },
+      ctx,
+    );
+
+    const courts = data.courts.map((c) => ({
+      id: c.id,
+      full_name: c.full_name ?? '',
+      short_name: c.short_name ?? '',
+      citation_string: c.citation_string ?? '',
+      jurisdiction: c.jurisdiction ?? '',
+      has_opinion_scraper: c.has_opinion_scraper ?? false,
+      has_oral_argument_scraper: c.has_oral_argument_scraper ?? false,
+    }));
+
+    ctx.log.info('courtlistener_lookup_courts complete', { count: courts.length });
+
+    return {
+      total_count: courts.length,
+      courts,
+    };
+  },
+
+  format: (result) => {
+    const lines: string[] = [`## CourtListener Courts`, `**Total:** ${result.total_count}`];
+
+    if (result.courts.length === 0) {
+      lines.push('\n> No courts matched the filters.');
+      return [{ type: 'text', text: lines.join('\n') }];
+    }
+
+    lines.push(
+      '\n| ID | Full Name | Short Name | Citation | Jurisdiction | Opinion Scraper | OA Scraper |',
+    );
+    lines.push(
+      '|:---|:---------|:----------|:---------|:-------------|:---------------|:----------|',
+    );
+    for (const c of result.courts) {
+      lines.push(
+        `| \`${c.id}\` | ${c.full_name} | ${c.short_name} | ${c.citation_string} | ${c.jurisdiction} | ${c.has_opinion_scraper ? 'Yes' : 'No'} | ${c.has_oral_argument_scraper ? 'Yes' : 'No'} |`,
+      );
+    }
+
+    return [{ type: 'text', text: lines.join('\n') }];
+  },
+});
