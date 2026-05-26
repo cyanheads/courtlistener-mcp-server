@@ -17,12 +17,12 @@ export interface OpinionSearchResult {
   caseNameFull: string;
   citation: string[];
   citeCount: number;
+  cluster_id: number;
   court: string;
   court_id: string;
   dateFiled: string;
   docket_id: number;
   docketNumber: string;
-  id: number; // cluster_id
   judge: string;
   snippet: string;
   status: string;
@@ -35,8 +35,8 @@ export interface Opinion {
   html: string;
   html_with_citations?: string;
   id: number;
-  // IDs of opinions this opinion cites — provided inline in cluster detail
-  opinions_cited?: Array<{ id: number; resource_uri: string }>;
+  /** URI strings pointing to cited opinions (e.g., ".../opinions/12345/"). */
+  opinions_cited?: string[];
   per_curiam: boolean;
   plain_text: string;
   type: string;
@@ -143,6 +143,7 @@ export interface PersonSearchResult {
 
 /** Full person/judge record from /people/{id}/. */
 export interface Person {
+  /** Inline objects with rating codes (e.g., "q", "wq"). */
   aba_ratings: Array<{ rating: string; year_rated: number | null }>;
   date_dob: string | null;
   date_dod: string | null;
@@ -153,27 +154,38 @@ export interface Person {
     degree_level: string | null;
     graduation_year: number | null;
   }>;
-  fjc_id: string | null;
+  /** Integer ID for FJC cross-referencing; null if not available. */
+  fjc_id: number | null;
   gender: string;
   id: number;
-  name_full: string;
+  name_first: string | null;
+  /** name_full is null on the /people/ endpoint — build from name_first/name_last. */
+  name_full: string | null;
+  name_last: string | null;
+  /** Inline objects with party codes (e.g., "r", "d"). */
   political_affiliations: Array<{
     political_party: string;
     date_start: string | null;
     date_end: string | null;
   }>;
-  positions: Array<{
-    court: string;
-    court_id?: string;
-    position_type: string;
-    appointer: string | null;
-    how_selected: string | null;
-    date_nominated: string | null;
-    date_confirmation: string | null;
-    date_start: string | null;
-    date_termination: string | null;
-    termination_reason: string | null;
-  }>;
+  /** Populated by a separate /positions/?person={id} call — URI strings on /people/{id}/. */
+  positions: PersonPosition[];
+}
+
+/** Position record from /positions/?person={id}. */
+export interface PersonPosition {
+  /** URI string for the appointing position; null if not applicable. */
+  appointer: string | null;
+  /** Nested court object with id, full_name, short_name; null if not a judicial position. */
+  court: { id: string; full_name: string; short_name: string } | null;
+  date_confirmation: string | null;
+  date_nominated: string | null;
+  date_start: string | null;
+  date_termination: string | null;
+  how_selected: string | null;
+  nomination_process: string | null;
+  position_type: string | null;
+  termination_reason: string | null;
 }
 
 /** Court record from /courts/. */

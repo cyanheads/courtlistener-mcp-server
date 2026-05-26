@@ -121,7 +121,7 @@ export const getCitationsTool = tool('courtlistener_get_citations', {
     const sourceCaseName = `(cluster ${input.cluster_id})`;
 
     const results = data.results.map((r) => ({
-      cluster_id: r.id,
+      cluster_id: r.cluster_id,
       case_name: r.caseName ?? '',
       court: r.court ?? '',
       court_id: r.court_id ?? '',

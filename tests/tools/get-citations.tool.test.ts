@@ -23,7 +23,7 @@ const mockCitingResult = {
   total: 2,
   results: [
     {
-      id: 200,
+      cluster_id: 200,
       caseName: 'Related Case One',
       caseNameFull: '',
       court: 'Ninth Circuit',
@@ -34,7 +34,7 @@ const mockCitingResult = {
       snippet: 'relevant excerpt',
     },
     {
-      id: 201,
+      cluster_id: 201,
       caseName: 'Related Case Two',
       caseNameFull: '',
       court: 'Ninth Circuit',

@@ -31,12 +31,14 @@ export const getJudgeTool = tool('courtlistener_get_judge', {
     dob_state: z.string().nullable().describe('State of birth; null if not recorded.'),
     dod: z.string().nullable().describe('Date of death; null if living or not recorded.'),
     fjc_id: z
-      .string()
+      .number()
       .nullable()
       .describe(
         'Federal Judicial Center ID for cross-referencing with FJC data; null if not available.',
       ),
-    aba_ratings: z.array(z.string()).describe('ABA qualification ratings.'),
+    aba_ratings: z
+      .array(z.string())
+      .describe('ABA qualification rating codes (e.g., "wq"=well qualified, "q"=qualified).'),
     political_affiliations: z
       .array(
         z
@@ -126,8 +128,10 @@ export const getJudgeTool = tool('courtlistener_get_judge', {
     const svc = getCourtListenerService();
     const person = await svc.getPerson(input.person_id, ctx);
 
+    // aba_ratings are inline objects; rating is a code string (e.g., "q", "wq")
     const aba_ratings = (person.aba_ratings ?? []).map((r) => r.rating ?? '').filter(Boolean);
 
+    // political_affiliations are inline objects; political_party is a code (e.g., "r", "d")
     const political_affiliations = (person.political_affiliations ?? []).map((pa) => ({
       affiliation: pa.political_party ?? '',
       date_start: pa.date_start ?? null,
@@ -140,18 +144,24 @@ export const getJudgeTool = tool('courtlistener_get_judge', {
       year: e.graduation_year ?? null,
     }));
 
+    // positions were fetched separately and court is a nested object
     const positions = (person.positions ?? []).map((p) => ({
-      court: p.court ?? '',
-      court_id: p.court_id ?? '',
+      court: p.court?.full_name ?? '',
+      court_id: p.court?.id ?? '',
       position_type: p.position_type ?? '',
+      // appointer is a URI string — extract just the URI for now (full name unavailable)
       appointer: p.appointer ?? null,
-      nomination_process: p.how_selected ?? null,
+      nomination_process: p.how_selected ?? p.nomination_process ?? null,
       date_nominated: p.date_nominated ?? null,
       date_confirmation: p.date_confirmation ?? null,
       date_start: p.date_start ?? null,
       date_termination: p.date_termination ?? null,
       termination_reason: p.termination_reason ?? null,
     }));
+
+    // name_full is null on /people/ — fall back to first + last
+    const name =
+      person.name_full ?? [person.name_first, person.name_last].filter(Boolean).join(' ') ?? '';
 
     ctx.log.info('courtlistener_get_judge complete', {
       person_id: input.person_id,
@@ -160,7 +170,7 @@ export const getJudgeTool = tool('courtlistener_get_judge', {
 
     return {
       person_id: person.id,
-      name: person.name_full ?? '',
+      name,
       gender: person.gender ?? '',
       dob: person.date_dob ?? null,
       dob_city: person.dob_city ?? null,

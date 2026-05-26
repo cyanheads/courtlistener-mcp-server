@@ -41,11 +41,11 @@ export const searchDocketsTool = tool('courtlistener_search_dockets', {
       .number()
       .int()
       .min(1)
-      .max(10)
+      .max(20)
       .optional()
-      .default(5)
+      .default(20)
       .describe(
-        'Number of results (1–10). Lower limit than opinion search — docket results embed document lists and are larger payloads.',
+        'Number of results to request (default 20). CourtListener search enforces a minimum of 20 results per page regardless of the value passed — you will always receive at least 20 results.',
       ),
     cursor: z
       .string()

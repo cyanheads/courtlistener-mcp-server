@@ -65,9 +65,9 @@ export const searchOpinionsTool = tool('courtlistener_search_opinions', {
       .min(1)
       .max(20)
       .optional()
-      .default(10)
+      .default(20)
       .describe(
-        'Number of results (1–20, default 10). Keep low — each search costs one request against the rate limit.',
+        'Number of results to request (default 20). CourtListener search enforces a minimum of 20 results per page regardless of the value passed — you will always receive at least 20 results. Each search costs one request against the rate limit.',
       ),
     cursor: z
       .string()
@@ -152,7 +152,7 @@ export const searchOpinionsTool = tool('courtlistener_search_opinions', {
     );
 
     const results = data.results.map((r) => ({
-      cluster_id: r.id,
+      cluster_id: r.cluster_id,
       case_name: r.caseName ?? '',
       case_name_full: r.caseNameFull ?? '',
       court: r.court ?? '',

@@ -22,7 +22,7 @@ const baseResult = {
   total: 2,
   results: [
     {
-      id: 100,
+      cluster_id: 100,
       caseName: 'Roe v. Wade',
       caseNameFull: 'Roe v. Wade (Full)',
       court: 'Supreme Court',
@@ -37,7 +37,7 @@ const baseResult = {
       status: 'Published',
     },
     {
-      id: 101,
+      cluster_id: 101,
       caseName: 'Planned Parenthood v. Casey',
       caseNameFull: 'Planned Parenthood of S.E. Pa. v. Casey',
       court: 'Supreme Court',

@@ -39,8 +39,10 @@ export const searchJudgesTool = tool('courtlistener_search_judges', {
       .min(1)
       .max(20)
       .optional()
-      .default(10)
-      .describe('Number of results (1–20).'),
+      .default(20)
+      .describe(
+        'Number of results to request (default 20). CourtListener search enforces a minimum of 20 results per page regardless of the value passed.',
+      ),
     cursor: z
       .string()
       .optional()

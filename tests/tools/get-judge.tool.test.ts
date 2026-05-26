@@ -21,17 +21,17 @@ beforeEach(() => {
 
 const basePerson: Person = {
   id: 300,
-  name_full: 'Ruth Bader Ginsburg',
+  name_full: null,
+  name_first: 'Ruth Bader',
+  name_last: 'Ginsburg',
   gender: 'F',
   date_dob: '1933-03-15',
   dob_city: 'Brooklyn',
   dob_state: 'NY',
   date_dod: null,
-  fjc_id: 'fjc123',
-  aba_ratings: [{ rating: 'Highly Qualified', year_rated: 1993 }],
-  political_affiliations: [
-    { political_party: 'Democrat', date_start: '1993-01-01', date_end: null },
-  ],
+  fjc_id: 456,
+  aba_ratings: [{ rating: 'wq', year_rated: 1993 }],
+  political_affiliations: [{ political_party: 'd', date_start: '1993-01-01', date_end: null }],
   educations: [
     {
       school: { name: 'Cornell University' },
@@ -46,11 +46,15 @@ const basePerson: Person = {
   ],
   positions: [
     {
-      court: 'Supreme Court of the United States',
-      court_id: 'scotus',
-      position_type: 'Associate Justice',
-      appointer: 'Clinton',
+      court: {
+        id: 'scotus',
+        full_name: 'Supreme Court of the United States',
+        short_name: 'Supreme Court',
+      },
+      position_type: 'jud',
+      appointer: 'https://www.courtlistener.com/api/rest/v4/positions/44/',
       how_selected: 'Senate confirmation',
+      nomination_process: null,
       date_nominated: '1993-06-22',
       date_confirmation: '1993-08-03',
       date_start: '1993-08-10',
@@ -68,14 +72,17 @@ describe('getJudgeTool', () => {
     const result = await getJudgeTool.handler(input, ctx);
 
     expect(result.person_id).toBe(300);
+    // name_full is null — falls back to name_first + name_last
     expect(result.name).toBe('Ruth Bader Ginsburg');
-    expect(result.aba_ratings).toContain('Highly Qualified');
+    // aba_ratings are rating codes
+    expect(result.aba_ratings).toContain('wq');
     expect(result.education).toHaveLength(2);
     expect(result.education[0].school).toBe('Cornell University');
     expect(result.positions).toHaveLength(1);
     expect(result.positions[0]).toMatchObject({
       court: 'Supreme Court of the United States',
       court_id: 'scotus',
+      // how_selected maps to nomination_process
       nomination_process: 'Senate confirmation',
       date_nominated: '1993-06-22',
       date_confirmation: '1993-08-03',
@@ -97,7 +104,9 @@ describe('getJudgeTool', () => {
   it('handles sparse upstream payload — missing optional fields', async () => {
     const sparsePerson: Person = {
       id: 301,
-      name_full: 'Anonymous Judge',
+      name_full: null,
+      name_first: 'Anonymous',
+      name_last: 'Judge',
       gender: 'U',
       date_dob: null,
       dob_city: null,
@@ -127,11 +136,9 @@ describe('getJudgeTool', () => {
       dob_city: 'Brooklyn',
       dob_state: 'NY',
       dod: null,
-      fjc_id: 'fjc123',
-      aba_ratings: ['Highly Qualified'],
-      political_affiliations: [
-        { affiliation: 'Democrat', date_start: '1993-01-01', date_end: null },
-      ],
+      fjc_id: 456,
+      aba_ratings: ['wq'],
+      political_affiliations: [{ affiliation: 'd', date_start: '1993-01-01', date_end: null }],
       education: [{ school: 'Cornell University', degree: 'BA', year: 1954 }],
       positions: [
         {

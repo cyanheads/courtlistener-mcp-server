@@ -110,7 +110,11 @@ export const getOpinionTool = tool('courtlistener_get_opinion', {
       per_curiam: op.per_curiam ?? false,
       html_text: op.html ?? '',
       plain_text: op.plain_text ?? '',
-      cites: (op.opinions_cited ?? []).map((c) => c.id),
+      // opinions_cited are URI strings — extract the numeric ID from each
+      cites: (op.opinions_cited ?? []).flatMap((uri) => {
+        const match = String(uri).match(/\/opinions\/(\d+)\//);
+        return match?.[1] ? [parseInt(match[1], 10)] : [];
+      }),
       download_url: op.download_url ?? null,
     }));
 

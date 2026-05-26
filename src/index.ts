@@ -46,11 +46,9 @@ await createApp({
     '- courtlistener_get_citations traces precedent networks (direction="cited_by" for downstream influence)',
   setup(core) {
     const serverConfig = getServerConfig();
-    // Pass server config fields through AppConfig by augmenting it
-    const augmentedConfig = Object.assign(Object.create(core.config), {
-      apiToken: serverConfig.apiToken,
-      baseUrl: serverConfig.baseUrl,
-    });
-    initCourtListenerService(augmentedConfig, core.storage);
+    initCourtListenerService(
+      serverConfig as unknown as import('@cyanheads/mcp-ts-core/config').AppConfig,
+      core.storage,
+    );
   },
 });

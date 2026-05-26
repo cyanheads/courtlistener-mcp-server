@@ -15,10 +15,13 @@ import type {
   Court,
   CourtListenerPage,
   Docket,
+  DocketEntry,
   DocketSearchResult,
+  Opinion,
   OpinionCluster,
   OpinionSearchResult,
   Person,
+  PersonPosition,
   PersonSearchResult,
 } from './types.js';
 
@@ -95,6 +98,10 @@ export class CourtListenerService {
             reason: 'rate_limited',
             ...(retryAfter && { retryAfter }),
           });
+        }
+
+        if (response.status === 404) {
+          throw notFound(`Resource not found: ${path}`, { path });
         }
 
         if (!response.ok) {
@@ -236,6 +243,13 @@ export class CourtListenerService {
         clusterId,
       });
     }
+    // /clusters/{id}/ returns sub_opinions as URI strings — fetch the actual opinion objects
+    const opinions = await this.get<CourtListenerPage<Opinion>>(
+      '/opinions/',
+      { cluster: clusterId, page_size: 20 },
+      ctx,
+    );
+    data.sub_opinions = opinions.results;
     return data;
   }
 
@@ -274,14 +288,17 @@ export class CourtListenerService {
   }
 
   async getDocket(docketId: number, entriesPageSize: number, ctx: Context): Promise<Docket> {
-    const data = await this.get<Docket>(
-      `/dockets/${docketId}/`,
-      { page_size: entriesPageSize },
-      ctx,
-    );
+    const data = await this.get<Docket>(`/dockets/${docketId}/`, {}, ctx);
     if (!data?.id) {
       throw notFound(`Docket ${docketId} not found.`, { reason: 'not_found', docketId });
     }
+    // /dockets/{id}/ does not include docket_entries — fetch separately from /docket-entries/
+    const entries = await this.get<CourtListenerPage<DocketEntry>>(
+      '/docket-entries/',
+      { docket: docketId, page_size: entriesPageSize, order_by: 'entry_number' },
+      ctx,
+    );
+    data.docket_entries = entries.results;
     return data;
   }
 
@@ -322,6 +339,13 @@ export class CourtListenerService {
     if (!data?.id) {
       throw notFound(`Person ${personId} not found.`, { reason: 'not_found', personId });
     }
+    // /people/{id}/ returns positions as URI strings — fetch actual position objects separately
+    const positionsPage = await this.get<CourtListenerPage<PersonPosition>>(
+      '/positions/',
+      { person: personId, page_size: 50 },
+      ctx,
+    );
+    data.positions = positionsPage.results;
     return data;
   }
 
@@ -422,8 +446,14 @@ export class CourtListenerService {
   ): Promise<{ total: number; results: OpinionSearchResult[]; nextCursor: string | null }> {
     const cluster = await this.getOpinionCluster(params.clusterId, ctx);
 
+    // opinions_cited are URI strings — extract numeric IDs
     const citedIds = cluster.sub_opinions
-      .flatMap((op) => (op.opinions_cited ?? []).map((c) => c.id))
+      .flatMap((op) =>
+        (op.opinions_cited ?? []).flatMap((uri) => {
+          const match = String(uri).match(/\/opinions\/(\d+)\//);
+          return match?.[1] ? [parseInt(match[1], 10)] : [];
+        }),
+      )
       .filter((id, i, arr) => arr.indexOf(id) === i);
 
     if (citedIds.length === 0) {
@@ -452,16 +482,21 @@ export class CourtListenerService {
   // ── Citation Lookup ───────────────────────────────────────────────────────
 
   async lookupCitation(citation: string, ctx: Context): Promise<CitationLookupResult> {
+    // API expects a single JSON object, not an array
     const result = await this.post<
       Array<{
-        cluster_id?: number;
-        case_name?: string;
-        court?: string;
-        date_filed?: string;
-        citations?: Array<{ volume: number; reporter: string; page: string }>;
-        normalized_citation?: string;
+        citation?: string;
+        normalized_citations?: string[];
+        clusters?: Array<{
+          id?: number;
+          caseName?: string;
+          case_name?: string;
+          court?: string;
+          date_filed?: string;
+          citations?: Array<{ volume: string; reporter: string; page: string }>;
+        }>;
       }>
-    >('/citation-lookup/', [{ text: citation }], ctx);
+    >('/citation-lookup/', { text: citation }, ctx);
 
     if (!result || result.length === 0) {
       throw notFound(`Citation "${citation}" not found in CourtListener database.`, {
@@ -470,16 +505,24 @@ export class CourtListenerService {
       });
     }
 
-    // result.length > 0 checked above — first is defined here
     // biome-ignore lint/style/noNonNullAssertion: length checked above
     const first = result[0]!;
+    const cluster = first.clusters?.[0];
+
+    if (!cluster) {
+      throw notFound(`Citation "${citation}" not found in CourtListener database.`, {
+        reason: 'not_found',
+        citation,
+      });
+    }
+
     return {
-      cluster_id: first.cluster_id ?? null,
-      case_name: first.case_name ?? null,
-      court: first.court ?? null,
-      date_filed: first.date_filed ?? null,
-      citations: (first.citations ?? []).map((c) => `${c.volume} ${c.reporter} ${c.page}`),
-      normalized_citation: first.normalized_citation ?? null,
+      cluster_id: cluster.id ?? null,
+      case_name: cluster.caseName ?? cluster.case_name ?? null,
+      court: cluster.court ?? null,
+      date_filed: cluster.date_filed ?? null,
+      citations: (cluster.citations ?? []).map((c) => `${c.volume} ${c.reporter} ${c.page}`),
+      normalized_citation: first.normalized_citations?.[0] ?? null,
     };
   }
 }
