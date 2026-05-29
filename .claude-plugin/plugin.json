@@ -1,0 +1,21 @@
+{
+  "name": "@cyanheads/courtlistener-mcp-server",
+  "version": "0.1.4",
+  "description": "Search and retrieve US court opinions, federal dockets, judge records, citation networks, and oral arguments from CourtListener's 9M+ opinion corpus via MCP. STDIO or Streamable HTTP.",
+  "author": {
+    "name": "cyanheads"
+  },
+  "homepage": "https://github.com/cyanheads/courtlistener-mcp-server#readme",
+  "repository": "https://github.com/cyanheads/courtlistener-mcp-server",
+  "license": "Apache-2.0",
+  "mcpServers": {
+    "@cyanheads/courtlistener-mcp-server": {
+      "command": "npx",
+      "args": ["-y", "@cyanheads/courtlistener-mcp-server"],
+      "env": {
+        "MCP_TRANSPORT_TYPE": "stdio",
+        "COURTLISTENER_API_TOKEN": "your-api-token"
+      }
+    }
+  }
+}

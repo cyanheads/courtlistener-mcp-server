@@ -38,6 +38,7 @@ await createApp({
   ],
   resources: [courtsReferenceResource],
   prompts: [legalResearchPrompt],
+  landing: { requireAuth: false },
   instructions:
     'CourtListener MCP server — access 9M+ US court opinions, RECAP federal dockets, judge records, citation networks, and oral arguments.\n' +
     '- Start with courtlistener_lookup_courts to discover court IDs before filtering searches\n' +

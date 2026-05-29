@@ -1,0 +1,10 @@
+{
+  "@cyanheads/courtlistener-mcp-server": {
+    "command": "npx",
+    "args": ["-y", "@cyanheads/courtlistener-mcp-server"],
+    "env": {
+      "MCP_TRANSPORT_TYPE": "stdio",
+      "COURTLISTENER_API_TOKEN": "your-api-token"
+    }
+  }
+}

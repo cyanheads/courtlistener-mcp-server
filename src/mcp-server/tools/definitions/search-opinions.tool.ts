@@ -127,7 +127,7 @@ export const searchOpinionsTool = tool('courtlistener_search_opinions', {
     },
     {
       reason: 'invalid_query',
-      code: JsonRpcErrorCode.InvalidParams,
+      code: JsonRpcErrorCode.ValidationError,
       when: 'Query uses invalid field syntax or unsupported operators.',
       recovery: 'Simplify the query, remove field-syntax prefixes, and retry with plain text.',
     },
