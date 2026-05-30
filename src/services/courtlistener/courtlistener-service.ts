@@ -299,6 +299,7 @@ export class CourtListenerService {
       ctx,
     );
     data.docket_entries = entries.results;
+    data.docket_entries_count = entries.count;
     return data;
   }
 

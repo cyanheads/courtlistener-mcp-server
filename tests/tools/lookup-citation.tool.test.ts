@@ -3,7 +3,7 @@
  * @module tests/tools/lookup-citation.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { lookupCitationTool } from '@/mcp-server/tools/definitions/lookup-citation.tool.js';
 import type { CourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
@@ -36,6 +36,10 @@ describe('lookupCitationTool', () => {
     expect(result.case_name).toBe('Roe v. Wade');
     expect(result.citations).toContain('410 U.S. 113');
     expect(result.normalized_citation).toBe('410 U.S. 113');
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.queriedCitation).toBe('410 U.S. 113');
+    expect(enrichment.notice).toBeUndefined();
   });
 
   it('throws not_found when citation is not in database', async () => {
@@ -48,6 +52,25 @@ describe('lookupCitationTool', () => {
     await expect(lookupCitationTool.handler(input, ctx)).rejects.toMatchObject({
       code: JsonRpcErrorCode.NotFound,
     });
+  });
+
+  it('enriches queriedCitation and notice when cluster_id is null', async () => {
+    mockSvc.lookupCitation = vi.fn().mockResolvedValue({
+      cluster_id: null,
+      case_name: null,
+      court: null,
+      date_filed: null,
+      citations: [],
+      normalized_citation: null,
+    });
+    const ctx = createMockContext();
+    const input = lookupCitationTool.input.parse({ citation: '999 F.3d 1' });
+    await lookupCitationTool.handler(input, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.queriedCitation).toBe('999 F.3d 1');
+    expect(typeof enrichment.notice).toBe('string');
+    expect(enrichment.notice).toContain('999 F.3d 1');
   });
 
   it('formats a found citation with cluster_id and case details', () => {

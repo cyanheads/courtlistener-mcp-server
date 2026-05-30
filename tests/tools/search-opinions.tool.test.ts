@@ -3,7 +3,7 @@
  * @module tests/tools/search-opinions.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { searchOpinionsTool } from '@/mcp-server/tools/definitions/search-opinions.tool.js';
 import type { CourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
@@ -56,13 +56,12 @@ const baseResult = {
 };
 
 describe('searchOpinionsTool', () => {
-  it('returns mapped opinion summaries for valid input', async () => {
+  it('returns mapped opinion summaries and enriches total + echo for valid input', async () => {
     mockSvc.searchOpinions = vi.fn().mockResolvedValue(baseResult);
     const ctx = createMockContext();
     const input = searchOpinionsTool.input.parse({ q: 'abortion rights' });
     const result = await searchOpinionsTool.handler(input, ctx);
 
-    expect(result.total_count).toBe(2);
     expect(result.results).toHaveLength(2);
     expect(result.results[0]).toMatchObject({
       cluster_id: 100,
@@ -72,6 +71,11 @@ describe('searchOpinionsTool', () => {
       court_id: 'scotus',
     });
     expect(result.next_cursor).toBeNull();
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.totalCount).toBe(2);
+    expect(enrichment.effectiveQuery).toBe('abortion rights');
+    expect(enrichment.notice).toBeUndefined();
   });
 
   it('passes optional filters to service', async () => {
@@ -90,13 +94,18 @@ describe('searchOpinionsTool', () => {
     );
   });
 
-  it('returns empty results with next_cursor when no matches', async () => {
+  it('enriches notice on empty results', async () => {
     mockSvc.searchOpinions = vi.fn().mockResolvedValue({ total: 0, results: [], nextCursor: null });
     const ctx = createMockContext();
     const input = searchOpinionsTool.input.parse({ q: 'no match query xyz123' });
     const result = await searchOpinionsTool.handler(input, ctx);
-    expect(result.total_count).toBe(0);
+
     expect(result.results).toHaveLength(0);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.totalCount).toBe(0);
+    expect(typeof enrichment.notice).toBe('string');
+    expect(enrichment.notice).toContain('no match query xyz123');
   });
 
   it('throws when service throws', async () => {
@@ -108,7 +117,6 @@ describe('searchOpinionsTool', () => {
 
   it('formats output with required fields', () => {
     const output = searchOpinionsTool.output.parse({
-      total_count: 1,
       results: [
         {
           cluster_id: 100,
@@ -142,7 +150,6 @@ describe('searchOpinionsTool', () => {
 
   it('format handles empty results', () => {
     const output = searchOpinionsTool.output.parse({
-      total_count: 0,
       results: [],
       next_cursor: null,
     });
@@ -153,7 +160,6 @@ describe('searchOpinionsTool', () => {
 
   it('format handles sparse upstream payload — missing optional fields', () => {
     const output = searchOpinionsTool.output.parse({
-      total_count: 1,
       results: [
         {
           cluster_id: 200,

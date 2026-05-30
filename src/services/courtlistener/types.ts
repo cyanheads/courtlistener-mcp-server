@@ -97,13 +97,14 @@ export interface Docket {
   date_filed: string;
   date_terminated: string | null;
   docket_entries: DocketEntry[];
+  /** Total entry count from /docket-entries/?docket=... — may exceed the fetched page. */
+  docket_entries_count?: number;
   docket_number: string;
   id: number;
   jurisdiction_type: string;
   jury_demand: string;
   pacer_case_id: string | null;
   referred_to_str: string | null;
-  // Count may come from search or be derived
 }
 
 /** A single docket entry. */

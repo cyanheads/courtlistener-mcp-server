@@ -3,7 +3,7 @@
  * @module tests/tools/lookup-courts.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { lookupCourtsTool } from '@/mcp-server/tools/definitions/lookup-courts.tool.js';
 import type { CourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
@@ -51,7 +51,6 @@ describe('lookupCourtsTool', () => {
     const input = lookupCourtsTool.input.parse({});
     const result = await lookupCourtsTool.handler(input, ctx);
 
-    expect(result.total_count).toBe(2);
     expect(result.courts).toHaveLength(2);
     expect(result.courts[0]).toMatchObject({
       id: 'scotus',
@@ -61,6 +60,9 @@ describe('lookupCourtsTool', () => {
       jurisdiction: 'F',
       has_opinion_scraper: true,
     });
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.totalCount).toBe(2);
   });
 
   it('passes jurisdiction and in_use filters to service', async () => {
@@ -83,7 +85,6 @@ describe('lookupCourtsTool', () => {
 
   it('formats output as a table including short_name column', () => {
     const output = lookupCourtsTool.output.parse({
-      total_count: 1,
       courts: [
         {
           id: 'scotus',
@@ -106,7 +107,7 @@ describe('lookupCourtsTool', () => {
   });
 
   it('format handles empty results', () => {
-    const output = lookupCourtsTool.output.parse({ total_count: 0, courts: [] });
+    const output = lookupCourtsTool.output.parse({ courts: [] });
     const blocks = lookupCourtsTool.format!(output);
     const text = (blocks[0] as { text: string }).text;
     expect(text).toContain('No courts');

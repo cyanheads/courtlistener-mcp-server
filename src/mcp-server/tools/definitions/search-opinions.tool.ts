@@ -78,7 +78,6 @@ export const searchOpinionsTool = tool('courtlistener_search_opinions', {
   }),
 
   output: z.object({
-    total_count: z.number().describe('Total matching opinions in the corpus.'),
     results: z
       .array(
         z
@@ -115,6 +114,19 @@ export const searchOpinionsTool = tool('courtlistener_search_opinions', {
       .nullable()
       .describe('Pagination cursor for the next page; null when no more results.'),
   }),
+
+  // Agent-facing context: total match count, echoed query/filters, and recovery hint
+  // on empty pages — on both structuredContent and content[] without a format() entry.
+  enrichment: {
+    totalCount: z.number().describe('Total matching opinions in the corpus.'),
+    effectiveQuery: z.string().describe('Query terms sent to CourtListener.'),
+    notice: z
+      .string()
+      .optional()
+      .describe(
+        'Recovery hint when results are empty — echoes filters and suggests how to broaden.',
+      ),
+  },
 
   errors: [
     {
@@ -172,17 +184,27 @@ export const searchOpinionsTool = tool('courtlistener_search_opinions', {
       returned: results.length,
     });
 
-    return {
-      total_count: data.total,
-      results,
-      next_cursor: data.nextCursor,
-    };
+    ctx.enrich.total(data.total);
+    ctx.enrich.echo(input.q);
+    if (results.length === 0) {
+      const filters: string[] = [];
+      if (input.court) filters.push(`court="${input.court}"`);
+      if (input.filed_after) filters.push(`filed_after=${input.filed_after}`);
+      if (input.filed_before) filters.push(`filed_before=${input.filed_before}`);
+      if (input.status) filters.push(`status=${input.status}`);
+      const filterHint = filters.length > 0 ? ` with filters: ${filters.join(', ')}` : '';
+      ctx.enrich.notice(
+        `No opinions matched "${input.q}"${filterHint}. Try broadening filters, checking field syntax, or revising search terms.`,
+      );
+    }
+
+    return { results, next_cursor: data.nextCursor };
   },
 
   format: (result) => {
     const lines: string[] = [
       `## CourtListener Opinion Search`,
-      `**Total matching:** ${result.total_count} | **Returned:** ${result.results.length}`,
+      `**Returned:** ${result.results.length}`,
     ];
 
     if (result.results.length === 0) {

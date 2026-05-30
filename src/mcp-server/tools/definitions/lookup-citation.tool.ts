@@ -37,6 +37,17 @@ export const lookupCitationTool = tool('courtlistener_lookup_citation', {
       .describe('Canonical citation form used by CourtListener; null if not resolved.'),
   }),
 
+  // Agent-facing context: echoed input citation and a recovery hint when not resolved.
+  enrichment: {
+    queriedCitation: z.string().describe('The citation string that was looked up.'),
+    notice: z
+      .string()
+      .optional()
+      .describe(
+        'Recovery hint when the citation is not in the database — suggests alternative lookup strategies.',
+      ),
+  },
+
   errors: [
     {
       reason: 'not_found',
@@ -64,6 +75,13 @@ export const lookupCitationTool = tool('courtlistener_lookup_citation', {
       found: result.cluster_id != null,
       cluster_id: result.cluster_id,
     });
+
+    ctx.enrich({ queriedCitation: input.citation });
+    if (result.cluster_id == null) {
+      ctx.enrich.notice(
+        `Citation "${input.citation}" not found in CourtListener. Verify the reporter format (volume reporter page) or try courtlistener_search_opinions with the case name.`,
+      );
+    }
 
     return {
       cluster_id: result.cluster_id,

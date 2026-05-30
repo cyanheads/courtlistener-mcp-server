@@ -144,6 +144,7 @@ export const getDocketTool = tool('courtlistener_get_docket', {
     ctx.log.info('courtlistener_get_docket complete', {
       docket_id: input.docket_id,
       entries_returned: entries.length,
+      entries_total: docket.docket_entries_count,
     });
 
     return {
@@ -161,7 +162,7 @@ export const getDocketTool = tool('courtlistener_get_docket', {
       cause: docket.cause ?? '',
       jury_demand: docket.jury_demand ?? '',
       jurisdiction_type: docket.jurisdiction_type ?? '',
-      total_entries: entries.length,
+      total_entries: docket.docket_entries_count ?? entries.length,
       entries,
     };
   },

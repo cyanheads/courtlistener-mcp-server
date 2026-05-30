@@ -3,7 +3,7 @@
  * @module tests/tools/search-oral-arguments.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { searchOralArgumentsTool } from '@/mcp-server/tools/definitions/search-oral-arguments.tool.js';
 import type { CourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
@@ -47,7 +47,6 @@ describe('searchOralArgumentsTool', () => {
     const input = searchOralArgumentsTool.input.parse({ q: 'constitutional rights' });
     const result = await searchOralArgumentsTool.handler(input, ctx);
 
-    expect(result.total_count).toBe(1);
     expect(result.results).toHaveLength(1);
     expect(result.results[0]).toMatchObject({
       audio_id: 400,
@@ -57,6 +56,9 @@ describe('searchOralArgumentsTool', () => {
       panel_ids: [100, 101, 102],
     });
     expect(result.next_cursor).toBe('cursor123');
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.totalCount).toBe(1);
   });
 
   it('passes optional filters to service', async () => {
@@ -85,7 +87,6 @@ describe('searchOralArgumentsTool', () => {
 
   it('formats output with duration_seconds and local_path', () => {
     const output = searchOralArgumentsTool.output.parse({
-      total_count: 1,
       results: [
         {
           audio_id: 400,
@@ -118,7 +119,6 @@ describe('searchOralArgumentsTool', () => {
 
   it('format handles empty results', () => {
     const output = searchOralArgumentsTool.output.parse({
-      total_count: 0,
       results: [],
       next_cursor: null,
     });

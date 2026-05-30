@@ -50,7 +50,6 @@ export const searchJudgesTool = tool('courtlistener_search_judges', {
   }),
 
   output: z.object({
-    total_count: z.number().describe('Total matching judge records.'),
     results: z
       .array(
         z
@@ -94,6 +93,17 @@ export const searchJudgesTool = tool('courtlistener_search_judges', {
       .nullable()
       .describe('Pagination cursor for the next page; null when no more results.'),
   }),
+
+  // Agent-facing context: total match count and recovery hint on empty pages.
+  enrichment: {
+    totalCount: z.number().describe('Total matching judge records.'),
+    notice: z
+      .string()
+      .optional()
+      .describe(
+        'Recovery hint when results are empty — echoes filters and suggests how to broaden.',
+      ),
+  },
 
   errors: [
     {
@@ -148,17 +158,25 @@ export const searchJudgesTool = tool('courtlistener_search_judges', {
       returned: results.length,
     });
 
-    return {
-      total_count: data.total,
-      results,
-      next_cursor: data.nextCursor,
-    };
+    ctx.enrich.total(data.total);
+    if (results.length === 0) {
+      const filters: string[] = [];
+      if (input.appointer) filters.push(`appointer="${input.appointer}"`);
+      if (input.court) filters.push(`court="${input.court}"`);
+      if (input.political_affiliation) filters.push(`affiliation=${input.political_affiliation}`);
+      const filterHint = filters.length > 0 ? ` with filters: ${filters.join(', ')}` : '';
+      ctx.enrich.notice(
+        `No judges matched "${input.q}"${filterHint}. Try broadening filters or revising search terms.`,
+      );
+    }
+
+    return { results, next_cursor: data.nextCursor };
   },
 
   format: (result) => {
     const lines: string[] = [
       `## CourtListener Judge Search`,
-      `**Total matching:** ${result.total_count} | **Returned:** ${result.results.length}`,
+      `**Returned:** ${result.results.length}`,
     ];
 
     if (result.results.length === 0) {

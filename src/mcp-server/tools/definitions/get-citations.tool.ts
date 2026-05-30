@@ -60,7 +60,6 @@ export const getCitationsTool = tool('courtlistener_get_citations', {
     direction: z
       .enum(['citing', 'cited_by'])
       .describe('Direction of the citation relationship returned.'),
-    total_count: z.number().describe('Total citations in the requested direction.'),
     results: z
       .array(
         z
@@ -86,6 +85,17 @@ export const getCitationsTool = tool('courtlistener_get_citations', {
       .nullable()
       .describe('Pagination cursor for the next page; null when no more results.'),
   }),
+
+  // Agent-facing context: total citation count and recovery hint on empty results.
+  enrichment: {
+    totalCount: z.number().describe('Total citations in the requested direction.'),
+    notice: z
+      .string()
+      .optional()
+      .describe(
+        'Recovery hint when no citations are found — echoes direction and filters, suggests alternatives.',
+      ),
+  },
 
   errors: [
     {
@@ -137,11 +147,22 @@ export const getCitationsTool = tool('courtlistener_get_citations', {
       returned: results.length,
     });
 
+    ctx.enrich.total(data.total);
+    if (results.length === 0) {
+      const dirLabel = input.direction === 'cited_by' ? 'citing' : 'cited by';
+      const filters: string[] = [];
+      if (input.court) filters.push(`court="${input.court}"`);
+      if (input.filed_after) filters.push(`filed_after=${input.filed_after}`);
+      const filterHint = filters.length > 0 ? ` with filters: ${filters.join(', ')}` : '';
+      ctx.enrich.notice(
+        `No opinions found ${dirLabel} cluster ${input.cluster_id}${filterHint}. Try the opposite direction, remove filters, or verify the cluster ID.`,
+      );
+    }
+
     return {
       source_cluster_id: input.cluster_id,
       source_case_name: sourceCaseName,
       direction: input.direction,
-      total_count: data.total,
       results,
       next_cursor: data.nextCursor,
     };
@@ -152,7 +173,7 @@ export const getCitationsTool = tool('courtlistener_get_citations', {
     const lines: string[] = [
       `## Citation Network — ${dirLabel}`,
       `**Source Cluster:** ${result.source_cluster_id} ${result.source_case_name}`,
-      `**Direction:** ${result.direction} | **Total:** ${result.total_count} | **Returned:** ${result.results.length}`,
+      `**Direction:** ${result.direction} | **Returned:** ${result.results.length}`,
     ];
 
     if (result.results.length === 0) {

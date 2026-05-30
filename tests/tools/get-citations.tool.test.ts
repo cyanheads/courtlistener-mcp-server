@@ -3,7 +3,7 @@
  * @module tests/tools/get-citations.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getCitationsTool } from '@/mcp-server/tools/definitions/get-citations.tool.js';
 import type { CourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
@@ -57,10 +57,12 @@ describe('getCitationsTool', () => {
 
     expect(result.source_cluster_id).toBe(100);
     expect(result.direction).toBe('cited_by');
-    expect(result.total_count).toBe(2);
     expect(result.results).toHaveLength(2);
     expect(result.results[0].cluster_id).toBe(200);
     expect(result.results[0].case_name).toBe('Related Case One');
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.totalCount).toBe(2);
   });
 
   it('fetches citing direction when specified', async () => {
@@ -106,7 +108,6 @@ describe('getCitationsTool', () => {
       source_cluster_id: 100,
       source_case_name: 'Landmark Case',
       direction: 'cited_by',
-      total_count: 1,
       results: [
         {
           cluster_id: 200,
@@ -134,7 +135,6 @@ describe('getCitationsTool', () => {
       source_cluster_id: 100,
       source_case_name: 'Test',
       direction: 'citing',
-      total_count: 0,
       results: [],
       next_cursor: null,
     });

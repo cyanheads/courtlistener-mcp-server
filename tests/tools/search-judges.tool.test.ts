@@ -3,7 +3,7 @@
  * @module tests/tools/search-judges.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { searchJudgesTool } from '@/mcp-server/tools/definitions/search-judges.tool.js';
 import type { CourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
@@ -42,13 +42,12 @@ const basePersonResult = {
 };
 
 describe('searchJudgesTool', () => {
-  it('returns mapped judge records for valid input', async () => {
+  it('returns mapped judge records and enriches total for valid input', async () => {
     mockSvc.searchJudges = vi.fn().mockResolvedValue(basePersonResult);
     const ctx = createMockContext();
     const input = searchJudgesTool.input.parse({ q: 'Ginsburg' });
     const result = await searchJudgesTool.handler(input, ctx);
 
-    expect(result.total_count).toBe(1);
     expect(result.results).toHaveLength(1);
     expect(result.results[0]).toMatchObject({
       person_id: 300,
@@ -61,6 +60,10 @@ describe('searchJudgesTool', () => {
       position_type: 'Associate Justice',
       appointer: 'Clinton',
     });
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.totalCount).toBe(1);
+    expect(enrichment.notice).toBeUndefined();
   });
 
   it('passes optional filters to service', async () => {
@@ -107,6 +110,20 @@ describe('searchJudgesTool', () => {
     expect(result.results[0].current_position).toBeNull();
   });
 
+  it('enriches notice on empty results', async () => {
+    mockSvc.searchJudges = vi.fn().mockResolvedValue({ total: 0, results: [], nextCursor: null });
+    const ctx = createMockContext();
+    const input = searchJudgesTool.input.parse({ q: 'xyz notajudge', appointer: 'Nonexistent' });
+    const result = await searchJudgesTool.handler(input, ctx);
+
+    expect(result.results).toHaveLength(0);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.totalCount).toBe(0);
+    expect(typeof enrichment.notice).toBe('string');
+    expect(enrichment.notice).toContain('xyz notajudge');
+  });
+
   it('throws when service throws', async () => {
     mockSvc.searchJudges = vi.fn().mockRejectedValue(new Error('service error'));
     const ctx = createMockContext();
@@ -116,7 +133,6 @@ describe('searchJudgesTool', () => {
 
   it('formats output including current_position.court_id', () => {
     const output = searchJudgesTool.output.parse({
-      total_count: 1,
       results: [
         {
           person_id: 300,

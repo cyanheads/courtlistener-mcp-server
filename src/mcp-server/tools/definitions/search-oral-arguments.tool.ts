@@ -45,7 +45,6 @@ export const searchOralArgumentsTool = tool('courtlistener_search_oral_arguments
   }),
 
   output: z.object({
-    total_count: z.number().describe('Total matching oral argument recordings.'),
     results: z
       .array(
         z
@@ -85,6 +84,17 @@ export const searchOralArgumentsTool = tool('courtlistener_search_oral_arguments
       .nullable()
       .describe('Pagination cursor for the next page; null when no more results.'),
   }),
+
+  // Agent-facing context: total match count and recovery hint on empty pages.
+  enrichment: {
+    totalCount: z.number().describe('Total matching oral argument recordings.'),
+    notice: z
+      .string()
+      .optional()
+      .describe(
+        'Recovery hint when results are empty — echoes filters and suggests how to broaden.',
+      ),
+  },
 
   errors: [
     {
@@ -133,17 +143,25 @@ export const searchOralArgumentsTool = tool('courtlistener_search_oral_arguments
       returned: results.length,
     });
 
-    return {
-      total_count: data.total,
-      results,
-      next_cursor: data.nextCursor,
-    };
+    ctx.enrich.total(data.total);
+    if (results.length === 0) {
+      const filters: string[] = [];
+      if (input.court) filters.push(`court="${input.court}"`);
+      if (input.argued_after) filters.push(`argued_after=${input.argued_after}`);
+      if (input.argued_before) filters.push(`argued_before=${input.argued_before}`);
+      const filterHint = filters.length > 0 ? ` with filters: ${filters.join(', ')}` : '';
+      ctx.enrich.notice(
+        `No oral argument recordings matched "${input.q}"${filterHint}. Try broadening date range or court filters.`,
+      );
+    }
+
+    return { results, next_cursor: data.nextCursor };
   },
 
   format: (result) => {
     const lines: string[] = [
       `## CourtListener Oral Arguments`,
-      `**Total matching:** ${result.total_count} | **Returned:** ${result.results.length}`,
+      `**Returned:** ${result.results.length}`,
     ];
 
     if (result.results.length === 0) {

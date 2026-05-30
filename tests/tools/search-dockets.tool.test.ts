@@ -3,7 +3,7 @@
  * @module tests/tools/search-dockets.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { searchDocketsTool } from '@/mcp-server/tools/definitions/search-dockets.tool.js';
 import type { CourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
@@ -50,13 +50,12 @@ const baseDocketResult = {
 };
 
 describe('searchDocketsTool', () => {
-  it('returns mapped docket summaries for valid input', async () => {
+  it('returns mapped docket summaries and enriches total for valid input', async () => {
     mockSvc.searchDockets = vi.fn().mockResolvedValue(baseDocketResult);
     const ctx = createMockContext();
     const input = searchDocketsTool.input.parse({ q: 'Apple Samsung patent' });
     const result = await searchDocketsTool.handler(input, ctx);
 
-    expect(result.total_count).toBe(1);
     expect(result.results).toHaveLength(1);
     expect(result.results[0]).toMatchObject({
       docket_id: 8000,
@@ -67,6 +66,10 @@ describe('searchDocketsTool', () => {
     expect(result.results[0].parties).toEqual(['Apple Inc.', 'Samsung Electronics']);
     expect(result.results[0].sample_documents).toHaveLength(1);
     expect(result.coverage_note).toBeTruthy();
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.totalCount).toBe(1);
+    expect(enrichment.notice).toBeUndefined();
   });
 
   it('passes optional filters to service', async () => {
@@ -103,6 +106,20 @@ describe('searchDocketsTool', () => {
     expect(result.results[0].sample_documents).toHaveLength(3);
   });
 
+  it('enriches notice on empty results', async () => {
+    mockSvc.searchDockets = vi.fn().mockResolvedValue({ total: 0, results: [], nextCursor: null });
+    const ctx = createMockContext();
+    const input = searchDocketsTool.input.parse({ q: 'obscure case xyz', court: 'deb' });
+    const result = await searchDocketsTool.handler(input, ctx);
+
+    expect(result.results).toHaveLength(0);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.totalCount).toBe(0);
+    expect(typeof enrichment.notice).toBe('string');
+    expect(enrichment.notice).toContain('obscure case xyz');
+  });
+
   it('throws when service throws', async () => {
     mockSvc.searchDockets = vi.fn().mockRejectedValue(new Error('rate limit'));
     const ctx = createMockContext();
@@ -112,7 +129,6 @@ describe('searchDocketsTool', () => {
 
   it('formats output with all required fields', () => {
     const output = searchDocketsTool.output.parse({
-      total_count: 1,
       results: [
         {
           docket_id: 8000,

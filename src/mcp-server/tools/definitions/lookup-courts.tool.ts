@@ -52,7 +52,6 @@ export const lookupCourtsTool = tool('courtlistener_lookup_courts', {
   }),
 
   output: z.object({
-    total_count: z.number().describe('Total courts returned.'),
     courts: z
       .array(
         z
@@ -75,6 +74,15 @@ export const lookupCourtsTool = tool('courtlistener_lookup_courts', {
       )
       .describe('Matching courts.'),
   }),
+
+  // Agent-facing context: total count and recovery hint on empty results.
+  enrichment: {
+    totalCount: z.number().describe('Total courts returned.'),
+    notice: z
+      .string()
+      .optional()
+      .describe('Recovery hint when no courts match the applied filters.'),
+  },
 
   errors: [
     {
@@ -114,14 +122,22 @@ export const lookupCourtsTool = tool('courtlistener_lookup_courts', {
 
     ctx.log.info('courtlistener_lookup_courts complete', { count: courts.length });
 
-    return {
-      total_count: courts.length,
-      courts,
-    };
+    ctx.enrich.total(data.total);
+    if (courts.length === 0) {
+      const filters: string[] = [];
+      if (input.jurisdiction) filters.push(`jurisdiction=${input.jurisdiction}`);
+      if (input.has_opinion_scraper) filters.push('has_opinion_scraper=true');
+      const filterHint = filters.length > 0 ? ` with filters: ${filters.join(', ')}` : '';
+      ctx.enrich.notice(
+        `No courts matched${filterHint}. Try removing filters or setting in_use=false to include inactive courts.`,
+      );
+    }
+
+    return { courts };
   },
 
   format: (result) => {
-    const lines: string[] = [`## CourtListener Courts`, `**Total:** ${result.total_count}`];
+    const lines: string[] = [`## CourtListener Courts`];
 
     if (result.courts.length === 0) {
       lines.push('\n> No courts matched the filters.');

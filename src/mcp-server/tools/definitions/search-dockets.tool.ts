@@ -54,7 +54,6 @@ export const searchDocketsTool = tool('courtlistener_search_dockets', {
   }),
 
   output: z.object({
-    total_count: z.number().describe('Total matching dockets.'),
     results: z
       .array(
         z
@@ -114,6 +113,17 @@ export const searchDocketsTool = tool('courtlistener_search_dockets', {
     coverage_note: z.string().describe('Note about RECAP coverage limitations.'),
   }),
 
+  // Agent-facing context: total match count and recovery hint on empty pages.
+  enrichment: {
+    totalCount: z.number().describe('Total matching dockets.'),
+    notice: z
+      .string()
+      .optional()
+      .describe(
+        'Recovery hint when results are empty — echoes filters and suggests how to broaden.',
+      ),
+  },
+
   errors: [
     {
       reason: 'rate_limited',
@@ -169,8 +179,20 @@ export const searchDocketsTool = tool('courtlistener_search_dockets', {
       returned: results.length,
     });
 
+    ctx.enrich.total(data.total);
+    if (results.length === 0) {
+      const filters: string[] = [];
+      if (input.court) filters.push(`court="${input.court}"`);
+      if (input.party_name) filters.push(`party="${input.party_name}"`);
+      if (input.filed_after) filters.push(`filed_after=${input.filed_after}`);
+      if (input.filed_before) filters.push(`filed_before=${input.filed_before}`);
+      const filterHint = filters.length > 0 ? ` with filters: ${filters.join(', ')}` : '';
+      ctx.enrich.notice(
+        `No dockets matched "${input.q}"${filterHint}. Try broadening filters or revising search terms.`,
+      );
+    }
+
     return {
-      total_count: data.total,
       results,
       next_cursor: data.nextCursor,
       coverage_note: COVERAGE_NOTE,
@@ -180,7 +202,7 @@ export const searchDocketsTool = tool('courtlistener_search_dockets', {
   format: (result) => {
     const lines: string[] = [
       `## CourtListener Docket Search`,
-      `**Total matching:** ${result.total_count} | **Returned:** ${result.results.length}`,
+      `**Returned:** ${result.results.length}`,
       `\n> ${result.coverage_note}`,
     ];
 
