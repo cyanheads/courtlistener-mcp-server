@@ -12,11 +12,14 @@ import * as svcModule from '@/services/courtlistener/courtlistener-service.js';
 const mockSvc = {
   getCitedBy: vi.fn(),
   getCiting: vi.fn(),
+  getClusterCaseName: vi.fn(),
 } as unknown as CourtListenerService;
 
 beforeEach(() => {
   vi.spyOn(svcModule, 'getCourtListenerService').mockReturnValue(mockSvc);
   vi.clearAllMocks();
+  // cited_by resolves the source name via a lightweight cluster fetch.
+  mockSvc.getClusterCaseName = vi.fn().mockResolvedValue('Landmark Case');
 });
 
 const mockCitingResult = {
@@ -57,6 +60,8 @@ describe('getCitationsTool', () => {
 
     expect(result.source_cluster_id).toBe(100);
     expect(result.direction).toBe('cited_by');
+    // cited_by resolves the source cluster's real case name via getClusterCaseName
+    expect(result.source_case_name).toBe('Landmark Case');
     expect(result.results).toHaveLength(2);
     expect(result.results[0].cluster_id).toBe(200);
     expect(result.results[0].case_name).toBe('Related Case One');
@@ -65,15 +70,30 @@ describe('getCitationsTool', () => {
     expect(enrichment.totalCount).toBe(2);
   });
 
-  it('fetches citing direction when specified', async () => {
-    mockSvc.getCiting = vi
-      .fn()
-      .mockResolvedValue({ total: 1, results: [mockCitingResult.results[0]], nextCursor: null });
+  it('falls back to the cluster-id placeholder when source-name resolution fails', async () => {
+    mockSvc.getCitedBy = vi.fn().mockResolvedValue(mockCitingResult);
+    mockSvc.getClusterCaseName = vi.fn().mockRejectedValue(new Error('lookup failed'));
+    const ctx = createMockContext();
+    const input = getCitationsTool.input.parse({ cluster_id: 100 });
+    const result = await getCitationsTool.handler(input, ctx);
+    expect(result.source_case_name).toBe('(cluster 100)');
+  });
+
+  it('fetches citing direction and threads the source case name', async () => {
+    mockSvc.getCiting = vi.fn().mockResolvedValue({
+      total: 1,
+      results: [mockCitingResult.results[0]],
+      nextCursor: null,
+      sourceCaseName: 'Source Opinion',
+    });
     const ctx = createMockContext();
     const input = getCitationsTool.input.parse({ cluster_id: 100, direction: 'citing' });
     const result = await getCitationsTool.handler(input, ctx);
 
     expect(result.direction).toBe('citing');
+    // citing gets the source name free from getCiting — no extra getClusterCaseName call
+    expect(result.source_case_name).toBe('Source Opinion');
+    expect(mockSvc.getClusterCaseName).not.toHaveBeenCalled();
     expect(mockSvc.getCiting).toHaveBeenCalledWith(
       expect.objectContaining({ clusterId: 100 }),
       ctx,

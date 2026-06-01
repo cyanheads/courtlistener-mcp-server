@@ -6,10 +6,16 @@
 
 import type { Context } from '@cyanheads/mcp-ts-core';
 import type { AppConfig } from '@cyanheads/mcp-ts-core/config';
-import { notFound, rateLimited, serviceUnavailable } from '@cyanheads/mcp-ts-core/errors';
+import {
+  JsonRpcErrorCode,
+  notFound,
+  rateLimited,
+  serviceUnavailable,
+} from '@cyanheads/mcp-ts-core/errors';
 import type { StorageService } from '@cyanheads/mcp-ts-core/storage';
 import { fetchWithTimeout, withRetry } from '@cyanheads/mcp-ts-core/utils';
 import type {
+  Audio,
   AudioSearchResult,
   CitationLookupResult,
   Court,
@@ -17,6 +23,7 @@ import type {
   Docket,
   DocketEntry,
   DocketSearchResult,
+  FinancialDisclosure,
   Opinion,
   OpinionCluster,
   OpinionSearchResult,
@@ -47,6 +54,58 @@ function buildRateLimitMessage(retryAfter: string | null): string {
     return `${base} Retry-After: ${retryAfter}s. ${hint}`;
   }
   return `${base} ${hint}`;
+}
+
+/**
+ * Domain recovery hints keyed by resource type. Shared between the fetch-error
+ * classifier (derives the type from the request path) and the per-resource
+ * not-found guards (the 200-with-null-body edge case).
+ */
+const RECOVERY_HINTS = {
+  cluster:
+    'Verify the cluster ID via courtlistener_search_opinions or courtlistener_lookup_citation.',
+  docket:
+    'Verify the docket ID via courtlistener_search_dockets. The docket may not be in RECAP coverage.',
+  person: 'Verify the person ID via courtlistener_search_judges.',
+  audio: 'Verify the audio ID via courtlistener_search_oral_arguments.',
+} as const;
+
+/** Map a request path to the recovery hint for its resource type. */
+function recoveryHintForPath(path: string): string | undefined {
+  if (path.includes('/clusters/')) return RECOVERY_HINTS.cluster;
+  if (path.includes('/dockets/')) return RECOVERY_HINTS.docket;
+  if (path.includes('/people/')) return RECOVERY_HINTS.person;
+  if (path.includes('/audio/')) return RECOVERY_HINTS.audio;
+  return;
+}
+
+/** Not-found error with reason + path-derived recovery hint and a path-only (non-URL-leaking) message. */
+function notFoundForPath(path: string) {
+  const hint = recoveryHintForPath(path);
+  return notFound(`Resource not found: ${path}`, {
+    path,
+    reason: 'not_found',
+    ...(hint ? { recovery: { hint } } : {}),
+  });
+}
+
+/**
+ * `fetchWithTimeout` throws an McpError on every non-2xx response BEFORE the
+ * manual status checks below can run — carrying `data.statusCode` (not the
+ * machine-readable `data.reason` consumers route on) and leaking the full request
+ * URL in its message. Remap the not-found and rate-limit cases to domain errors
+ * with a reason + recovery hint and a path-only message; pass everything else
+ * (already-classified domain errors, 5xx, timeouts) through untouched.
+ */
+function classifyFetchError(err: unknown, path: string): unknown {
+  const e = err as { code?: number; data?: { statusCode?: number; reason?: string } } | null;
+  if (e?.data?.reason) return err; // already a domain error carrying a reason
+  const status = e?.data?.statusCode;
+  if (status === 404 || e?.code === JsonRpcErrorCode.NotFound) return notFoundForPath(path);
+  if (status === 429 || e?.code === JsonRpcErrorCode.RateLimited) {
+    return rateLimited(buildRateLimitMessage(null), { reason: 'rate_limited' });
+  }
+  return err;
 }
 
 export class CourtListenerService {
@@ -87,11 +146,19 @@ export class CourtListenerService {
 
     return withRetry(
       async () => {
-        const response = await fetchWithTimeout(fullUrl, REQUEST_TIMEOUT_MS, reqCtx, {
-          signal: ctx.signal,
-          headers: this.headers(),
-        });
+        let response: Response;
+        try {
+          response = await fetchWithTimeout(fullUrl, REQUEST_TIMEOUT_MS, reqCtx, {
+            signal: ctx.signal,
+            headers: this.headers(),
+          });
+        } catch (err) {
+          // fetchWithTimeout throws on non-2xx (statusCode, no reason, leaks URL) — remap it.
+          throw classifyFetchError(err, path);
+        }
 
+        // The status checks below are a fallback: fetchWithTimeout throws on non-2xx in
+        // production (handled above), but a Response-returning caller/test double lands here.
         if (response.status === 429) {
           const retryAfter = response.headers.get('Retry-After');
           throw rateLimited(buildRateLimitMessage(retryAfter), {
@@ -101,7 +168,7 @@ export class CourtListenerService {
         }
 
         if (response.status === 404) {
-          throw notFound(`Resource not found: ${path}`, { path });
+          throw notFoundForPath(path);
         }
 
         if (!response.ok) {
@@ -144,13 +211,20 @@ export class CourtListenerService {
 
     return withRetry(
       async () => {
-        const response = await fetchWithTimeout(fullUrl, REQUEST_TIMEOUT_MS, reqCtx, {
-          method: 'POST',
-          signal: ctx.signal,
-          headers: { ...this.headers(), 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
+        let response: Response;
+        try {
+          response = await fetchWithTimeout(fullUrl, REQUEST_TIMEOUT_MS, reqCtx, {
+            method: 'POST',
+            signal: ctx.signal,
+            headers: { ...this.headers(), 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+        } catch (err) {
+          // fetchWithTimeout throws on non-2xx (statusCode, no reason, leaks URL) — remap it.
+          throw classifyFetchError(err, path);
+        }
 
+        // Fallback path for a Response-returning caller/test double (see get()).
         if (response.status === 429) {
           const retryAfter = response.headers.get('Retry-After');
           throw rateLimited(buildRateLimitMessage(retryAfter), {
@@ -241,6 +315,7 @@ export class CourtListenerService {
       throw notFound(`Opinion cluster ${clusterId} not found.`, {
         reason: 'not_found',
         clusterId,
+        recovery: { hint: RECOVERY_HINTS.cluster },
       });
     }
     // /clusters/{id}/ returns sub_opinions as URI strings — fetch the actual opinion objects
@@ -290,7 +365,11 @@ export class CourtListenerService {
   async getDocket(docketId: number, entriesPageSize: number, ctx: Context): Promise<Docket> {
     const data = await this.get<Docket>(`/dockets/${docketId}/`, {}, ctx);
     if (!data?.id) {
-      throw notFound(`Docket ${docketId} not found.`, { reason: 'not_found', docketId });
+      throw notFound(`Docket ${docketId} not found.`, {
+        reason: 'not_found',
+        docketId,
+        recovery: { hint: RECOVERY_HINTS.docket },
+      });
     }
     // /dockets/{id}/ does not include docket_entries — fetch separately from /docket-entries/
     const entries = await this.get<CourtListenerPage<DocketEntry>>(
@@ -301,6 +380,23 @@ export class CourtListenerService {
     data.docket_entries = entries.results;
     data.docket_entries_count = entries.count;
     return data;
+  }
+
+  /**
+   * Lightweight docket metadata fetch (no docket-entries page) used to backfill
+   * court_id and docket_number onto an opinion cluster — the /clusters/{id}/
+   * endpoint omits both. Single upstream call.
+   */
+  async getDocketSummary(
+    docketId: number,
+    ctx: Context,
+  ): Promise<{ court_id: string; docket_number: string; case_name: string }> {
+    const data = await this.get<Docket>(`/dockets/${docketId}/`, {}, ctx);
+    return {
+      court_id: data?.court_id ?? '',
+      docket_number: data?.docket_number ?? '',
+      case_name: data?.case_name ?? '',
+    };
   }
 
   // ── Judges ────────────────────────────────────────────────────────────────
@@ -338,7 +434,11 @@ export class CourtListenerService {
   async getPerson(personId: number, ctx: Context): Promise<Person> {
     const data = await this.get<Person>(`/people/${personId}/`, {}, ctx);
     if (!data?.id) {
-      throw notFound(`Person ${personId} not found.`, { reason: 'not_found', personId });
+      throw notFound(`Person ${personId} not found.`, {
+        reason: 'not_found',
+        personId,
+        recovery: { hint: RECOVERY_HINTS.person },
+      });
     }
     // /people/{id}/ returns positions as URI strings — fetch actual position objects separately
     const positionsPage = await this.get<CourtListenerPage<PersonPosition>>(
@@ -434,6 +534,12 @@ export class CourtListenerService {
     };
   }
 
+  /** Fetch only an opinion cluster's case name — lighter than getOpinionCluster (skips the sub-opinions fetch). */
+  async getClusterCaseName(clusterId: number, ctx: Context): Promise<string | null> {
+    const data = await this.get<{ case_name?: string }>(`/clusters/${clusterId}/`, {}, ctx);
+    return data?.case_name ?? null;
+  }
+
   /** Get opinions cited by this cluster ("citing" direction). Fetches cluster detail to get citation IDs. */
   async getCiting(
     params: {
@@ -444,8 +550,14 @@ export class CourtListenerService {
       cursor?: string | undefined;
     },
     ctx: Context,
-  ): Promise<{ total: number; results: OpinionSearchResult[]; nextCursor: string | null }> {
+  ): Promise<{
+    total: number;
+    results: OpinionSearchResult[];
+    nextCursor: string | null;
+    sourceCaseName: string | null;
+  }> {
     const cluster = await this.getOpinionCluster(params.clusterId, ctx);
+    const sourceCaseName = cluster.case_name ?? null;
 
     // opinions_cited are URI strings — extract numeric IDs
     const citedIds = cluster.sub_opinions
@@ -458,7 +570,7 @@ export class CourtListenerService {
       .filter((id, i, arr) => arr.indexOf(id) === i);
 
     if (citedIds.length === 0) {
-      return { total: 0, results: [], nextCursor: null };
+      return { total: 0, results: [], nextCursor: null, sourceCaseName };
     }
 
     const pageSize = params.page_size ?? 10;
@@ -477,6 +589,7 @@ export class CourtListenerService {
       total: citedIds.length,
       results: data.results,
       nextCursor: citedIds.length > pageSize ? String(pageSize) : null,
+      sourceCaseName,
     };
   }
 
@@ -525,6 +638,53 @@ export class CourtListenerService {
       citations: (cluster.citations ?? []).map((c) => `${c.volume} ${c.reporter} ${c.page}`),
       normalized_citation: first.normalized_citations?.[0] ?? null,
     };
+  }
+
+  // ── Financial Disclosures ───────────────────────────────────────────────────
+
+  async searchFinancialDisclosures(
+    params: {
+      person?: number | undefined;
+      page_size?: number | undefined;
+      cursor?: string | undefined;
+    },
+    ctx: Context,
+  ): Promise<{ total: number | null; results: FinancialDisclosure[]; nextCursor: string | null }> {
+    // /financial-disclosures/ exposes only `person` as a filter — it rejects unknown params
+    // (e.g. `year`) with a 400, so year filtering is applied client-side in the handler.
+    const query: Record<string, string | number | boolean | undefined> = {
+      person: params.person,
+      page_size: params.page_size ?? 20,
+      cursor: params.cursor,
+    };
+
+    const data = await this.get<CourtListenerPage<FinancialDisclosure>>(
+      '/financial-disclosures/',
+      query,
+      ctx,
+    );
+
+    // This list endpoint returns `count` as a URL string unless ?count=on is set — treat non-numeric as unknown.
+    const rawCount: unknown = data.count;
+    return {
+      total: typeof rawCount === 'number' ? rawCount : null,
+      results: data.results,
+      nextCursor: extractCursor(data.next),
+    };
+  }
+
+  // ── Oral Argument Detail ────────────────────────────────────────────────────
+
+  async getOralArgument(audioId: number, ctx: Context): Promise<Audio> {
+    const data = await this.get<Audio>(`/audio/${audioId}/`, {}, ctx);
+    if (!data?.id) {
+      throw notFound(`Oral argument ${audioId} not found.`, {
+        reason: 'not_found',
+        audioId,
+        recovery: { hint: RECOVERY_HINTS.audio },
+      });
+    }
+    return data;
   }
 }
 

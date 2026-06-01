@@ -5,6 +5,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { resolveCourtName } from '@/services/courtlistener/court-names.js';
 import { getCourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
 
 export const getOpinionTool = tool('courtlistener_get_opinion', {
@@ -103,6 +104,20 @@ export const getOpinionTool = tool('courtlistener_get_opinion', {
       if (match?.[1]) docketId = parseInt(match[1], 10);
     }
 
+    // /clusters/{id}/ omits court_id and docket_number — backfill from the linked
+    // docket (one extra call, non-fatal so a docket miss never fails the opinion fetch).
+    let courtId = cluster.court_id ?? '';
+    let docketNumber = cluster.docket_number ?? '';
+    if (docketId) {
+      try {
+        const summary = await svc.getDocketSummary(docketId, ctx);
+        courtId ||= summary.court_id;
+        docketNumber ||= summary.docket_number;
+      } catch (err) {
+        ctx.log.debug('docket summary backfill failed', { docketId, err: String(err) });
+      }
+    }
+
     const opinions = (cluster.sub_opinions ?? []).map((op) => ({
       id: op.id,
       type: op.type ?? '',
@@ -125,13 +140,13 @@ export const getOpinionTool = tool('courtlistener_get_opinion', {
 
     return {
       cluster_id: cluster.id,
-      case_name: cluster.caseName ?? '',
-      case_name_full: cluster.caseNameFull ?? '',
-      court: cluster.court ?? '',
-      court_id: cluster.court_id ?? '',
+      case_name: cluster.case_name ?? '',
+      case_name_full: cluster.case_name_full ?? '',
+      court: resolveCourtName(courtId),
+      court_id: courtId,
       date_filed: cluster.date_filed ?? '',
       docket_id: docketId,
-      docket_number: cluster.docket_number ?? '',
+      docket_number: docketNumber,
       judges: cluster.judges ?? '',
       citations,
       cite_count: cluster.citation_count ?? 0,

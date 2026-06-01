@@ -1,6 +1,6 @@
 {
   "name": "@cyanheads/courtlistener-mcp-server",
-  "version": "0.1.5",
+  "version": "0.2.0",
   "mcpName": "io.github.cyanheads/courtlistener-mcp-server",
   "description": "Search and retrieve US court opinions, federal dockets, judge records, citation networks, and oral arguments from CourtListener's 9M+ opinion corpus via MCP. STDIO or Streamable HTTP.",
   "type": "module",
@@ -92,6 +92,6 @@
     "ignore": "^7.0.5",
     "tsc-alias": "^1.8.17",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.7"
+    "vitest": "^4.1.8"
   }
 }

@@ -44,8 +44,9 @@ export interface Opinion {
 
 /** Full opinion cluster from /clusters/{id}/. */
 export interface OpinionCluster {
-  caseName: string;
-  caseNameFull: string;
+  /** Upstream returns snake_case `case_name` — not the camelCase form the search API uses. */
+  case_name: string;
+  case_name_full: string;
   citation_count: number;
   citations: Array<{ volume: number; reporter: string; page: string; type: number }>;
   court: string;
@@ -226,4 +227,59 @@ export interface CitationLookupResult {
   court: string | null;
   date_filed: string | null;
   normalized_citation: string | null;
+}
+
+/** A single gift line item embedded in a financial disclosure. */
+export interface FinancialGift {
+  description: string;
+  source: string;
+  /** Pre-formatted dollar string (e.g., "$6,580.00"); empty when not reported. */
+  value: string;
+}
+
+/**
+ * Judicial financial disclosure from /financial-disclosures/.
+ * Line-item categories (investments, debts, positions, etc.) arrive inline as
+ * arrays — investments can run to hundreds of coded entries per filing, so the
+ * tool surfaces category counts plus the linked PDF rather than the raw rows.
+ */
+export interface FinancialDisclosure {
+  agreements: unknown[];
+  debts: unknown[];
+  /** URL to the source disclosure PDF on CourtListener; null if unavailable. */
+  filepath: string | null;
+  gifts: FinancialGift[];
+  has_been_extracted: boolean;
+  id: number;
+  investments: unknown[];
+  is_amended: boolean;
+  non_investment_incomes: unknown[];
+  page_count: number | null;
+  /** Resource URI for the filer — extract the person id and chain to get_judge. */
+  person: string;
+  positions: unknown[];
+  reimbursements: unknown[];
+  /** Report-type code (-1 unknown, 0 nomination, 1 initial, 2 annual, 3 final). */
+  report_type: number;
+  spouse_incomes: unknown[];
+  year: number;
+}
+
+/** Full oral argument audio record from /audio/{id}/. */
+export interface Audio {
+  case_name: string;
+  case_name_full: string;
+  /** Resource URI for the docket — extract the id and chain to get_docket. */
+  docket: string;
+  download_url: string | null;
+  duration: number;
+  id: number;
+  /** Free-text judge names; frequently empty on this endpoint. */
+  judges: string;
+  /** Person ids of the panel; pass to get_judge. */
+  panel: number[];
+  source: string;
+  stt_status: number;
+  /** Speech-to-text transcript; empty until transcription completes. */
+  stt_transcript: string;
 }

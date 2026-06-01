@@ -1,6 +1,6 @@
 # courtlistener-mcp-server - Directory Structure
 
-Generated on: 2026-05-29 05:00:31
+Generated on: 2026-06-01 11:05:20
 
 ```text
 courtlistener-mcp-server/
@@ -21,6 +21,7 @@ courtlistener-mcp-server/
 │   └── settings.json
 ├── changelog/
 │   ├── 0.1.x/
+│   ├── 0.2.x/
 │   └── template.md
 ├── docs/
 │   ├── design.md
@@ -125,14 +126,17 @@ courtlistener-mcp-server/
 │   │           ├── get-docket.tool.ts
 │   │           ├── get-judge.tool.ts
 │   │           ├── get-opinion.tool.ts
+│   │           ├── get-oral-argument.tool.ts
 │   │           ├── lookup-citation.tool.ts
 │   │           ├── lookup-courts.tool.ts
 │   │           ├── search-dockets.tool.ts
+│   │           ├── search-financial-disclosures.tool.ts
 │   │           ├── search-judges.tool.ts
 │   │           ├── search-opinions.tool.ts
 │   │           └── search-oral-arguments.tool.ts
 │   ├── services/
 │   │   └── courtlistener/
+│   │       ├── court-names.ts
 │   │       ├── courtlistener-service.ts
 │   │       └── types.ts
 │   └── index.ts
@@ -141,17 +145,22 @@ courtlistener-mcp-server/
 │   │   └── legal-research.prompt.test.ts
 │   ├── resources/
 │   │   └── courts-reference.resource.test.ts
-│   └── tools/
-│       ├── get-citations.tool.test.ts
-│       ├── get-docket.tool.test.ts
-│       ├── get-judge.tool.test.ts
-│       ├── get-opinion.tool.test.ts
-│       ├── lookup-citation.tool.test.ts
-│       ├── lookup-courts.tool.test.ts
-│       ├── search-dockets.tool.test.ts
-│       ├── search-judges.tool.test.ts
-│       ├── search-opinions.tool.test.ts
-│       └── search-oral-arguments.tool.test.ts
+│   ├── service/
+│   │   └── courtlistener-service.test.ts
+│   ├── tools/
+│   │   ├── get-citations.tool.test.ts
+│   │   ├── get-docket.tool.test.ts
+│   │   ├── get-judge.tool.test.ts
+│   │   ├── get-opinion.tool.test.ts
+│   │   ├── get-oral-argument.tool.test.ts
+│   │   ├── lookup-citation.tool.test.ts
+│   │   ├── lookup-courts.tool.test.ts
+│   │   ├── search-dockets.tool.test.ts
+│   │   ├── search-financial-disclosures.tool.test.ts
+│   │   ├── search-judges.tool.test.ts
+│   │   ├── search-opinions.tool.test.ts
+│   │   └── search-oral-arguments.tool.test.ts
+│   └── security.test.ts
 ├── .dockerignore
 ├── .env.example
 ├── .gitignore

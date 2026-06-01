@@ -128,7 +128,25 @@ export const getCitationsTool = tool('courtlistener_get_citations', {
         ? await svc.getCitedBy(citationParams, ctx)
         : await svc.getCiting(citationParams, ctx);
 
-    const sourceCaseName = `(cluster ${input.cluster_id})`;
+    // Resolve the source cluster's real case name. "citing" gets it free (getCiting
+    // already fetched the cluster); "cited_by" needs a lightweight name-only fetch
+    // (non-fatal — falls back to the cluster-id placeholder if it fails).
+    let sourceCaseName = `(cluster ${input.cluster_id})`;
+    if ('sourceCaseName' in data && typeof data.sourceCaseName === 'string') {
+      // "citing" — getCiting already resolved the name.
+      sourceCaseName = data.sourceCaseName;
+    } else if (input.direction === 'cited_by') {
+      // "cited_by" — getCitedBy never fetched the cluster; resolve the name cheaply (non-fatal).
+      try {
+        const name = await svc.getClusterCaseName(input.cluster_id, ctx);
+        if (name) sourceCaseName = name;
+      } catch (err) {
+        ctx.log.debug('source case name resolution failed', {
+          clusterId: input.cluster_id,
+          err: String(err),
+        });
+      }
+    }
 
     const results = data.results.map((r) => ({
       cluster_id: r.cluster_id,

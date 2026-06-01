@@ -23,7 +23,8 @@ const baseDocket: Docket = {
   id: 8000,
   case_name: 'Apple Inc. v. Samsung',
   case_name_full: 'Apple Incorporated v. Samsung Electronics Co., Ltd.',
-  court: 'N.D. Cal.',
+  // Upstream returns court as a resource URI; the handler resolves it via court_id.
+  court: 'https://www.courtlistener.com/api/rest/v4/courts/cand/',
   court_id: 'cand',
   date_filed: '2011-04-15',
   date_terminated: '2018-06-27',
@@ -66,10 +67,26 @@ describe('getDocketTool', () => {
     expect(result.case_name).toBe('Apple Inc. v. Samsung');
     expect(result.case_name_full).toBe('Apple Incorporated v. Samsung Electronics Co., Ltd.');
     expect(result.jury_demand).toBe('Both');
+    // court is resolved from court_id, never the raw URI — unmapped courts fall back to the id
+    expect(result.court).toBe('cand');
+    expect(result.court).not.toContain('http');
     expect(result.entries).toHaveLength(1);
     expect(result.entries[0].id).toBe(50001);
     expect(result.entries[0].documents[0].id).toBe(90001);
     expect(result.entries[0].documents[0].attachment_number).toBeNull();
+  });
+
+  it('resolves a known court_id to its display name', async () => {
+    mockSvc.getDocket = vi.fn().mockResolvedValue({
+      ...baseDocket,
+      court_id: 'scotus',
+      court: 'https://www.courtlistener.com/api/rest/v4/courts/scotus/',
+    });
+    const ctx = createMockContext();
+    const input = getDocketTool.input.parse({ docket_id: 8000 });
+    const result = await getDocketTool.handler(input, ctx);
+    expect(result.court).toBe('Supreme Court of the United States');
+    expect(result.court_id).toBe('scotus');
   });
 
   it('throws not_found for missing docket', async () => {

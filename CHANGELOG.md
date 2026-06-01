@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.2.0](changelog/0.2.x/0.2.0.md) — 2026-06-01
+
+Two new tools (financial disclosures, oral arguments), data-normalization fixes across five tools, machine-readable error contracts
+
 ## [0.1.5](changelog/0.1.x/0.1.5.md) — 2026-05-30
 
 enrichment adoption — query echoes, true result totals, and empty-result guidance on search/list tools; fixed total_entries and lookup_courts count fields

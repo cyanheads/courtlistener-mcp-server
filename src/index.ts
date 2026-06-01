@@ -14,9 +14,11 @@ import { getCitationsTool } from './mcp-server/tools/definitions/get-citations.t
 import { getDocketTool } from './mcp-server/tools/definitions/get-docket.tool.js';
 import { getJudgeTool } from './mcp-server/tools/definitions/get-judge.tool.js';
 import { getOpinionTool } from './mcp-server/tools/definitions/get-opinion.tool.js';
+import { getOralArgumentTool } from './mcp-server/tools/definitions/get-oral-argument.tool.js';
 import { lookupCitationTool } from './mcp-server/tools/definitions/lookup-citation.tool.js';
 import { lookupCourtsTool } from './mcp-server/tools/definitions/lookup-courts.tool.js';
 import { searchDocketsTool } from './mcp-server/tools/definitions/search-dockets.tool.js';
+import { searchFinancialDisclosuresTool } from './mcp-server/tools/definitions/search-financial-disclosures.tool.js';
 import { searchJudgesTool } from './mcp-server/tools/definitions/search-judges.tool.js';
 // Tool definitions
 import { searchOpinionsTool } from './mcp-server/tools/definitions/search-opinions.tool.js';
@@ -35,6 +37,8 @@ await createApp({
     getJudgeTool,
     lookupCourtsTool,
     searchOralArgumentsTool,
+    getOralArgumentTool,
+    searchFinancialDisclosuresTool,
   ],
   resources: [courtsReferenceResource],
   prompts: [legalResearchPrompt],

@@ -5,6 +5,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { resolveCourtName } from '@/services/courtlistener/court-names.js';
 import { getCourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
 
 export const getDocketTool = tool('courtlistener_get_docket', {
@@ -36,8 +37,10 @@ export const getDocketTool = tool('courtlistener_get_docket', {
     docket_id: z.number().describe('Docket ID.'),
     case_name: z.string().describe('Short case name.'),
     case_name_full: z.string().describe('Full case name.'),
-    court: z.string().describe('Court display name.'),
-    court_id: z.string().describe('Court identifier.'),
+    court: z
+      .string()
+      .describe('Court display name for major federal courts; the court identifier otherwise.'),
+    court_id: z.string().describe('Court identifier — the stable value for filtering.'),
     date_filed: z.string().describe('Date the case was filed.'),
     date_terminated: z
       .string()
@@ -151,7 +154,7 @@ export const getDocketTool = tool('courtlistener_get_docket', {
       docket_id: docket.id,
       case_name: docket.case_name ?? '',
       case_name_full: docket.case_name_full ?? '',
-      court: docket.court ?? '',
+      court: resolveCourtName(docket.court_id),
       court_id: docket.court_id ?? '',
       date_filed: docket.date_filed ?? '',
       date_terminated: docket.date_terminated ?? null,

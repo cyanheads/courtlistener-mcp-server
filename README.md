@@ -1,13 +1,13 @@
 <div align="center">
   <h1>@cyanheads/courtlistener-mcp-server</h1>
   <p><b>Search and retrieve US court opinions, federal dockets, judge records, citation networks, and oral arguments from CourtListener's 9M+ opinion corpus via MCP. STDIO or Streamable HTTP.</b>
-  <div>10 Tools</div>
+  <div>12 Tools</div>
   </p>
 </div>
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.1.5-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/courtlistener-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/courtlistener-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/courtlistener-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.2-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.2.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/courtlistener-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/courtlistener-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/courtlistener-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.2-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -29,7 +29,7 @@
 
 ## Tools
 
-10 tools spanning the full CourtListener dataset — opinion search and retrieval, citation network traversal, federal docket lookup, judge biography, court discovery, and oral argument search:
+12 tools spanning the full CourtListener dataset — opinion search and retrieval, citation network traversal, federal docket lookup, judge biography, judicial financial disclosures, court discovery, and oral argument search and detail:
 
 | Tool | Description |
 |:---|:---|
@@ -43,6 +43,8 @@
 | `courtlistener_get_judge` | Fetch full biographical profile, appointment history, and education for a single judge |
 | `courtlistener_lookup_courts` | List courts filtered by jurisdiction type and active-scraper status |
 | `courtlistener_search_oral_arguments` | Search appellate oral argument audio recordings by case name, court, and date argued |
+| `courtlistener_get_oral_argument` | Fetch full detail for a single oral argument — panel, duration, MP3 link, and speech-to-text transcript |
+| `courtlistener_search_financial_disclosures` | Search federal judicial financial disclosure filings by judge and year — category counts, itemized gifts, and source PDF |
 
 ### `courtlistener_search_opinions`
 
@@ -149,6 +151,26 @@ Search appellate oral argument audio recordings — the largest public collectio
 - Filters by court, argued-after, and argued-before date
 - Returns `download_url` (MP3), `duration_seconds`, `panel_ids` (chaining to `courtlistener_get_judge`), and transcript `snippet`
 
+---
+
+### `courtlistener_get_oral_argument`
+
+Fetch the full detail record for a single oral argument by audio ID.
+
+- Returns the speech-to-text `transcript` when transcription has completed, plus `panel_ids`, `duration_seconds`, MP3 `download_url`, and the linked `docket_id`
+- Audio IDs come from `courtlistener_search_oral_arguments` results
+- The argument date is not on this record — take it from the search result or the linked docket
+
+---
+
+### `courtlistener_search_financial_disclosures`
+
+Search federal judicial financial disclosure filings for ethics and recusal research.
+
+- Filter by `judge_id` (a `person_id` from `courtlistener_search_judges`) and/or filing `year`
+- Returns per-filing category counts (investments, gifts, debts, positions, reimbursements, income), itemized gifts, and a link to the source PDF
+- Line-item investments — often hundreds per filing, with coded values — are summarized as counts; the linked PDF carries the full itemization
+
 ## Features
 
 Built on [`@cyanheads/mcp-ts-core`](https://www.npmjs.com/package/@cyanheads/mcp-ts-core):
@@ -166,7 +188,7 @@ CourtListener-specific:
 - Rate-limit-aware client: 429 responses classified by window (minute / hour / day) with actionable error messages; retry with Retry-After respect
 - Cursor-based pagination throughout — consistent results across all paginated endpoints
 - RECAP coverage note surfaced on every docket response — sets expectations on partial PACER mirror completeness
-- No workflow tool exceeds 2 upstream calls per invocation, keeping the free tier (125 req/day) usable for multi-step research
+- Tight upstream-call budget — most tools make 1–2 calls; opinion detail and citation traversal make up to 3 (resolving the linked docket or source cluster), keeping the free tier (125 req/day) usable for multi-step research
 
 Agent-friendly output:
 

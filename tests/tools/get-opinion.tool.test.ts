@@ -12,23 +12,27 @@ import type { OpinionCluster } from '@/services/courtlistener/types.js';
 
 const mockSvc = {
   getOpinionCluster: vi.fn(),
+  getDocketSummary: vi.fn(),
 } as unknown as CourtListenerService;
 
 beforeEach(() => {
   vi.spyOn(svcModule, 'getCourtListenerService').mockReturnValue(mockSvc);
   vi.clearAllMocks();
+  // Default: linked docket backfills court_id and docket_number (the cluster endpoint omits both).
+  mockSvc.getDocketSummary = vi
+    .fn()
+    .mockResolvedValue({ court_id: 'scotus', docket_number: '70-18', case_name: 'Roe v. Wade' });
 });
 
+// The /clusters/{id}/ endpoint returns case_name (snake_case) but omits court_id and docket_number.
 const baseCluster: OpinionCluster = {
   id: 100,
-  caseName: 'Roe v. Wade',
-  caseNameFull: 'Roe v. Wade (Full)',
-  court: 'Supreme Court',
-  court_id: 'scotus',
+  case_name: 'Roe v. Wade',
+  case_name_full: 'Roe v. Wade (Full)',
+  court: '',
   date_filed: '1973-01-22',
   docket: 'https://www.courtlistener.com/api/rest/v4/dockets/5000/',
   docket_id: 5000,
-  docket_number: '70-18',
   judges: 'Blackmun',
   citations: [{ volume: 410, reporter: 'U.S.', page: '113', type: 1 }],
   citation_count: 10000,
@@ -59,7 +63,10 @@ describe('getOpinionTool', () => {
     expect(result.cluster_id).toBe(100);
     expect(result.case_name).toBe('Roe v. Wade');
     expect(result.case_name_full).toBe('Roe v. Wade (Full)');
+    // court_id and docket_number are backfilled from the linked docket; court resolved via the map
     expect(result.court_id).toBe('scotus');
+    expect(result.court).toBe('Supreme Court of the United States');
+    expect(result.docket_number).toBe('70-18');
     expect(result.citations).toEqual(['410 U.S. 113']);
     expect(result.cite_count).toBe(10000);
     expect(result.opinions).toHaveLength(1);
@@ -78,6 +85,18 @@ describe('getOpinionTool', () => {
     const input = getOpinionTool.input.parse({ cluster_id: 100 });
     const result = await getOpinionTool.handler(input, ctx);
     expect(result.docket_id).toBe(5000);
+  });
+
+  it('still returns the opinion when docket backfill fails (non-fatal)', async () => {
+    mockSvc.getOpinionCluster = vi.fn().mockResolvedValue(baseCluster);
+    mockSvc.getDocketSummary = vi.fn().mockRejectedValue(new Error('docket fetch failed'));
+    const ctx = createMockContext();
+    const input = getOpinionTool.input.parse({ cluster_id: 100 });
+    const result = await getOpinionTool.handler(input, ctx);
+    expect(result.case_name).toBe('Roe v. Wade');
+    // backfill failed → court_id/docket_number stay empty, but the opinion still returns
+    expect(result.court_id).toBe('');
+    expect(result.docket_number).toBe('');
   });
 
   it('throws not_found for missing cluster', async () => {
