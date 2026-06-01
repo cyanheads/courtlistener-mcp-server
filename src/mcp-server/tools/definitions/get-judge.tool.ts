@@ -7,6 +7,33 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getCourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
 
+/**
+ * The /people/{id}/ endpoint returns single-letter codes for gender, ABA rating,
+ * and political affiliation, where the search endpoint returns pre-expanded labels.
+ * These maps expand them so get_judge output matches search_judges. Unknown codes
+ * pass through unchanged rather than being dropped or guessed.
+ */
+const GENDER_LABELS: Record<string, string> = { m: 'Male', f: 'Female', o: 'Other' };
+const ABA_RATING_LABELS: Record<string, string> = {
+  ewq: 'Exceptionally Well Qualified',
+  wq: 'Well Qualified',
+  q: 'Qualified',
+  nq: 'Not Qualified',
+  nqnot: 'Not Qualified (Not of this Time)',
+};
+const PARTY_LABELS: Record<string, string> = {
+  d: 'Democratic',
+  r: 'Republican',
+  i: 'Independent',
+  g: 'Green',
+  l: 'Libertarian',
+};
+
+const expandCode = (map: Record<string, string>, code: string | null | undefined): string => {
+  if (!code) return '';
+  return map[code.toLowerCase()] ?? code;
+};
+
 export const getJudgeTool = tool('courtlistener_get_judge', {
   title: 'Get Judge Profile',
   description:
@@ -38,12 +65,14 @@ export const getJudgeTool = tool('courtlistener_get_judge', {
       ),
     aba_ratings: z
       .array(z.string())
-      .describe('ABA qualification rating codes (e.g., "wq"=well qualified, "q"=qualified).'),
+      .describe('ABA qualification ratings, expanded to readable labels (e.g., "Well Qualified").'),
     political_affiliations: z
       .array(
         z
           .object({
-            affiliation: z.string().describe('Political party or affiliation code.'),
+            affiliation: z
+              .string()
+              .describe('Political party, expanded to a readable label (e.g., "Democratic").'),
             date_start: z.string().nullable().describe('Start date of this affiliation.'),
             date_end: z
               .string()
@@ -128,12 +157,14 @@ export const getJudgeTool = tool('courtlistener_get_judge', {
     const svc = getCourtListenerService();
     const person = await svc.getPerson(input.person_id, ctx);
 
-    // aba_ratings are inline objects; rating is a code string (e.g., "q", "wq")
-    const aba_ratings = (person.aba_ratings ?? []).map((r) => r.rating ?? '').filter(Boolean);
+    // aba_ratings/political_affiliations arrive as single-letter codes — expand to
+    // readable labels so output matches courtlistener_search_judges.
+    const aba_ratings = (person.aba_ratings ?? [])
+      .map((r) => expandCode(ABA_RATING_LABELS, r.rating))
+      .filter(Boolean);
 
-    // political_affiliations are inline objects; political_party is a code (e.g., "r", "d")
     const political_affiliations = (person.political_affiliations ?? []).map((pa) => ({
-      affiliation: pa.political_party ?? '',
+      affiliation: expandCode(PARTY_LABELS, pa.political_party),
       date_start: pa.date_start ?? null,
       date_end: pa.date_end ?? null,
     }));
@@ -171,7 +202,7 @@ export const getJudgeTool = tool('courtlistener_get_judge', {
     return {
       person_id: person.id,
       name,
-      gender: person.gender ?? '',
+      gender: expandCode(GENDER_LABELS, person.gender),
       dob: person.date_dob ?? null,
       dob_city: person.dob_city ?? null,
       dob_state: person.dob_state ?? null,

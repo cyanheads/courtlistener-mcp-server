@@ -74,8 +74,10 @@ describe('getJudgeTool', () => {
     expect(result.person_id).toBe(300);
     // name_full is null — falls back to name_first + name_last
     expect(result.name).toBe('Ruth Bader Ginsburg');
-    // aba_ratings are rating codes
-    expect(result.aba_ratings).toContain('wq');
+    // single-letter codes are expanded to readable labels (matching search_judges output)
+    expect(result.gender).toBe('Female');
+    expect(result.aba_ratings).toContain('Well Qualified');
+    expect(result.political_affiliations[0].affiliation).toBe('Democratic');
     expect(result.education).toHaveLength(2);
     expect(result.education[0].school).toBe('Cornell University');
     expect(result.positions).toHaveLength(1);
@@ -125,6 +127,8 @@ describe('getJudgeTool', () => {
     expect(result.aba_ratings).toEqual([]);
     expect(result.positions).toEqual([]);
     expect(result.education).toEqual([]);
+    // unknown codes pass through unchanged rather than being dropped or guessed
+    expect(result.gender).toBe('U');
   });
 
   it('formats output with nomination_process, date_nominated, and date_confirmation', () => {
