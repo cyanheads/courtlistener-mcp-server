@@ -1,13 +1,13 @@
 <div align="center">
   <h1>@cyanheads/courtlistener-mcp-server</h1>
   <p><b>Search and retrieve US court opinions, federal dockets, judge records, citation networks, and oral arguments from CourtListener's 9M+ opinion corpus via MCP. STDIO or Streamable HTTP.</b>
-  <div>12 Tools</div>
+  <div>13 Tools</div>
   </p>
 </div>
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.2.1-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/courtlistener-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/courtlistener-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/courtlistener-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.2-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.2.2-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/courtlistener-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/courtlistener-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/courtlistener-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.2-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -29,7 +29,7 @@
 
 ## Tools
 
-12 tools spanning the full CourtListener dataset — opinion search and retrieval, citation network traversal, federal docket lookup, judge biography, judicial financial disclosures, court discovery, and oral argument search and detail:
+13 tools spanning the full CourtListener dataset — opinion search and retrieval, citation network traversal, federal docket lookup, party and attorney lookup, judge biography, judicial financial disclosures, court discovery, and oral argument search and detail:
 
 | Tool | Description |
 |:---|:---|
@@ -39,6 +39,7 @@
 | `courtlistener_lookup_citation` | Resolve a legal citation string (e.g., "410 U.S. 113") to a cluster ID and case metadata |
 | `courtlistener_search_dockets` | Search RECAP federal court dockets by party name, attorney, court, and date |
 | `courtlistener_get_docket` | Fetch docket metadata and entry list for a single federal case |
+| `courtlistener_get_parties` | Fetch all parties and attorneys of record for a RECAP federal docket by docket ID |
 | `courtlistener_search_judges` | Search judge records by name, appointing president, court, and political affiliation |
 | `courtlistener_get_judge` | Fetch full biographical profile, appointment history, and education for a single judge |
 | `courtlistener_lookup_courts` | List courts filtered by jurisdiction type and active-scraper status |
@@ -109,6 +110,17 @@ Fetch full docket metadata and entry list for a single federal case.
 - Returns all available docket entries with document availability, page count, and RECAP file path
 - `entries_page_size` controls how many entries are returned (1–50); large cases have hundreds
 - Documents with `is_available: false` require a PACER account or CourtListener RECAP filing — document retrieval is not exposed
+
+---
+
+### `courtlistener_get_parties`
+
+Fetch all parties and attorneys of record for a RECAP federal docket.
+
+- Returns each party's name, docket-scoped role (Plaintiff, Defendant, Petitioner, Respondent, etc.), and attorneys with contact information
+- Attorney names and contact details are resolved in a single batch call per page — 2 upstream requests total per invocation
+- Paginate large party lists with `page` and `page_size` (max 10); keep `page_size` low to stay within the free-tier rate limit
+- Obtain docket IDs from `courtlistener_search_dockets` or `courtlistener_get_docket`
 
 ---
 

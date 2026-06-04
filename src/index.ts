@@ -15,6 +15,7 @@ import { getDocketTool } from './mcp-server/tools/definitions/get-docket.tool.js
 import { getJudgeTool } from './mcp-server/tools/definitions/get-judge.tool.js';
 import { getOpinionTool } from './mcp-server/tools/definitions/get-opinion.tool.js';
 import { getOralArgumentTool } from './mcp-server/tools/definitions/get-oral-argument.tool.js';
+import { getPartiesTool } from './mcp-server/tools/definitions/get-parties.tool.js';
 import { lookupCitationTool } from './mcp-server/tools/definitions/lookup-citation.tool.js';
 import { lookupCourtsTool } from './mcp-server/tools/definitions/lookup-courts.tool.js';
 import { searchDocketsTool } from './mcp-server/tools/definitions/search-dockets.tool.js';
@@ -33,6 +34,7 @@ await createApp({
     lookupCitationTool,
     searchDocketsTool,
     getDocketTool,
+    getPartiesTool,
     searchJudgesTool,
     getJudgeTool,
     lookupCourtsTool,

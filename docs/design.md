@@ -11,6 +11,7 @@
 | `courtlistener_get_citations` | Retrieve the citation network for an opinion: what it cites, and what cites it | `cluster_id`, `direction`, `page_size` | `readOnlyHint`, `openWorldHint` |
 | `courtlistener_search_dockets` | Search RECAP federal court dockets with party name, attorney, court, and date filters | `q`, `court`, `filed_after`, `filed_before`, `party_name`, `page_size` | `readOnlyHint`, `openWorldHint` |
 | `courtlistener_get_docket` | Fetch docket metadata and entries for a single federal case by docket ID | `docket_id` | `readOnlyHint`, `idempotentHint` |
+| `courtlistener_get_parties` | Fetch parties and attorneys of record for a RECAP federal docket | `docket_id`, `page`, `page_size` | `readOnlyHint`, `idempotentHint` |
 | `courtlistener_search_judges` | Search judge/person records by name, appointing president, court, political affiliation, or demographic | `q`, `appointer`, `court`, `political_affiliation`, `page_size` | `readOnlyHint`, `openWorldHint` |
 | `courtlistener_get_judge` | Fetch biographical profile, appointment history, and education for a single judge | `person_id` | `readOnlyHint`, `idempotentHint` |
 | `courtlistener_lookup_courts` | List courts filtered by jurisdiction type and active-scraper status | `jurisdiction`, `in_use`, `has_opinion_scraper` | `readOnlyHint`, `openWorldHint` |
@@ -65,6 +66,7 @@ Single service, single base URL. Auth via `Authorization: Token <token>` header.
 |:-----|:-----------|:---------|
 | Opinion cluster | search, get | `/search/?type=o`, `/clusters/{id}/` |
 | Docket | search, get | `/search/?type=r`, `/dockets/{id}/` |
+| Parties/attorneys | get (by docket) | `/parties/?docket={id}`, `/attorneys/` (batch) |
 | Judge/person | search, get | `/search/?type=p`, `/people/{id}/` |
 | Court | list/filter | `/courts/` |
 | Oral argument | search | `/search/?type=oa` |
@@ -77,7 +79,7 @@ Single service, single base URL. Auth via `Authorization: Token <token>` header.
 - Tags/docket-tags — organizational tooling
 - Financial disclosures — separate domain; data quality and ID linkage complexity not justified for initial release
 - Visualizations — SCOTUS-specific, niche utility
-- Parties/attorneys — covered adequately by docket search results
+- Party cross-docket aggregation or entity-resolution across cases
 
 ---
 

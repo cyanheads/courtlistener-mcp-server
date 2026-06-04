@@ -15,6 +15,8 @@ import {
 import type { StorageService } from '@cyanheads/mcp-ts-core/storage';
 import { fetchWithTimeout, withRetry } from '@cyanheads/mcp-ts-core/utils';
 import type {
+  AttorneyDetail,
+  AttorneyRelationship,
   Audio,
   AudioSearchResult,
   CitationLookupResult,
@@ -27,6 +29,8 @@ import type {
   Opinion,
   OpinionCluster,
   OpinionSearchResult,
+  Party,
+  PartyType,
   Person,
   PersonPosition,
   PersonSearchResult,
@@ -66,6 +70,8 @@ const RECOVERY_HINTS = {
     'Verify the cluster ID via courtlistener_search_opinions or courtlistener_lookup_citation.',
   docket:
     'Verify the docket ID via courtlistener_search_dockets. The docket may not be in RECAP coverage.',
+  parties:
+    'Verify the docket ID via courtlistener_search_dockets. Parties data requires RECAP coverage for the docket.',
   person: 'Verify the person ID via courtlistener_search_judges.',
   audio: 'Verify the audio ID via courtlistener_search_oral_arguments.',
 } as const;
@@ -73,6 +79,7 @@ const RECOVERY_HINTS = {
 /** Map a request path to the recovery hint for its resource type. */
 function recoveryHintForPath(path: string): string | undefined {
   if (path.includes('/clusters/')) return RECOVERY_HINTS.cluster;
+  if (path.includes('/parties/')) return RECOVERY_HINTS.parties;
   if (path.includes('/dockets/')) return RECOVERY_HINTS.docket;
   if (path.includes('/people/')) return RECOVERY_HINTS.person;
   if (path.includes('/audio/')) return RECOVERY_HINTS.audio;
@@ -126,15 +133,18 @@ export class CourtListenerService {
     };
   }
 
-  /** Generic GET with retry, rate-limit detection, and JSON parse. */
+  /** Generic GET with retry, rate-limit detection, and JSON parse. Arrays are serialized as repeated params (e.g., id=1&id=2). */
   private get<T>(
     path: string,
-    params: Record<string, string | number | boolean | undefined>,
+    params: Record<string, string | number | boolean | undefined | number[]>,
     ctx: Context,
   ): Promise<T> {
     const url = new URL(`${this.baseUrl}${path}`);
     for (const [k, v] of Object.entries(params)) {
-      if (v !== undefined && v !== '') {
+      if (v === undefined || v === '') continue;
+      if (Array.isArray(v)) {
+        for (const item of v) url.searchParams.append(k, String(item));
+      } else {
         url.searchParams.set(k, String(v));
       }
     }
@@ -670,6 +680,92 @@ export class CourtListenerService {
       total: typeof rawCount === 'number' ? rawCount : null,
       results: data.results,
       nextCursor: extractCursor(data.next),
+    };
+  }
+
+  // ── Parties ───────────────────────────────────────────────────────────────
+
+  /**
+   * Fetch parties and their attorneys for a docket. Two upstream calls per page:
+   * 1. GET /parties/?docket=<id>&page=<n>&page_size=<n>&filter_nested_results=True
+   * 2. GET /attorneys/?id=<a>&id=<b>&... (batch fetch for all attorney IDs on the page)
+   *
+   * Attorney names and contact details require the second call — the /parties/ response
+   * embeds only attorney_id, role code, and docket_id inline.
+   */
+  async getParties(
+    docketId: number,
+    page: number,
+    pageSize: number,
+    ctx: Context,
+  ): Promise<{ count: number; next_cursor: string | null; parties: Party[] }> {
+    // Raw /parties/ shape from the upstream API
+    type RawParty = {
+      id: number;
+      name: string;
+      extra_info: string;
+      party_types: PartyType[];
+      attorneys: AttorneyRelationship[];
+    };
+
+    const pageData = await this.get<CourtListenerPage<RawParty>>(
+      '/parties/',
+      {
+        docket: docketId,
+        page,
+        page_size: pageSize,
+        filter_nested_results: true,
+      },
+      ctx,
+    );
+
+    // Collect unique attorney IDs from this page to batch-fetch names/contact
+    const allAttorneyIds = [
+      ...new Set(pageData.results.flatMap((p) => p.attorneys.map((a) => a.attorney_id))),
+    ];
+
+    // Map attorney_id → detail; empty when there are no attorneys on this page
+    const attorneyMap = new Map<number, AttorneyDetail>();
+    if (allAttorneyIds.length > 0) {
+      // /attorneys/ accepts repeated id= params for batch lookup
+      const attPage = await this.get<CourtListenerPage<AttorneyDetail>>(
+        '/attorneys/',
+        { id: allAttorneyIds, page_size: allAttorneyIds.length + 5 },
+        ctx,
+      );
+      for (const att of attPage.results) {
+        attorneyMap.set(att.id, att);
+      }
+    }
+
+    const parties: Party[] = pageData.results.map((raw) => {
+      // Derive role for this docket from party_types — pick the entry whose docket matches
+      const roleEntry = raw.party_types.find((pt) => Number(pt.docket) === docketId);
+      const role = roleEntry?.name ?? null;
+
+      const attorneys = raw.attorneys.map((rel) => {
+        const detail = attorneyMap.get(rel.attorney_id);
+        return {
+          attorney_id: rel.attorney_id,
+          name: detail?.name ?? '',
+          contact_raw: detail?.contact_raw ?? '',
+          role_code: rel.role,
+        };
+      });
+
+      return {
+        id: raw.id,
+        name: raw.name ?? '',
+        role,
+        extra_info: raw.extra_info ?? '',
+        attorneys,
+      };
+    });
+
+    return {
+      count: pageData.count,
+      next_cursor: extractCursor(pageData.next),
+      parties,
     };
   }
 

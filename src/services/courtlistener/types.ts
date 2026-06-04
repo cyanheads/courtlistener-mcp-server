@@ -265,6 +265,59 @@ export interface FinancialDisclosure {
   year: number;
 }
 
+/** Role entry for a party within a specific docket — party_types[] from /parties/. */
+export interface PartyType {
+  /** Docket this role applies to (numeric ID as string or number). */
+  docket: number | string;
+  /** Role name for this docket, e.g. "Plaintiff", "Defendant", "Petitioner", "Respondent". */
+  name: string;
+}
+
+/** Attorney–party relationship from the /parties/ response (embedded in party's attorneys[]). */
+export interface AttorneyRelationship {
+  /** Numeric attorney ID — pass to /attorneys/{id}/ for name and contact. */
+  attorney_id: number;
+  /** Docket this relationship applies to. */
+  docket_id: number;
+  /** Numeric role code from the party–attorney relationship (e.g. 1 = "Lead attorney"). */
+  role: number;
+}
+
+/** Attorney detail from /attorneys/{id}/. */
+export interface AttorneyDetail {
+  /** Free-text address/phone block as returned by the API. */
+  contact_raw: string;
+  /** Email address if separately recorded; empty string if not. */
+  email: string;
+  /** Fax number if separately recorded; empty string if not. */
+  fax: string;
+  /** Attorney person ID. */
+  id: number;
+  /** Attorney display name. */
+  name: string;
+  /** Phone number if separately recorded; empty string if not. */
+  phone: string;
+}
+
+/** A party and their attorneys for a docket, assembled from /parties/ + /attorneys/. */
+export interface Party {
+  /** Attorneys of record for this party on this docket. */
+  attorneys: {
+    attorney_id: number;
+    name: string;
+    contact_raw: string;
+    role_code: number;
+  }[];
+  /** Additional metadata from upstream (e.g., pro se status, date range). */
+  extra_info: string;
+  /** Upstream party record ID. */
+  id: number;
+  /** Party display name (e.g., "Jane Doe", "Acme Corporation"). */
+  name: string;
+  /** Role for this docket derived from party_types[].name (e.g., "Plaintiff", "Defendant"); null if unavailable. */
+  role: string | null;
+}
+
 /** Full oral argument audio record from /audio/{id}/. */
 export interface Audio {
   case_name: string;
