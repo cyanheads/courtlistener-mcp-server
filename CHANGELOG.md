@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.2.2](changelog/0.2.x/0.2.2.md) — 2026-06-04
+
+Add courtlistener_get_parties tool — fetch parties and attorneys of record for a RECAP federal docket
+
 ## [0.2.1](changelog/0.2.x/0.2.1.md) — 2026-06-02
 
 Adopt @cyanheads/mcp-ts-core 0.9.21 — per-request log context fix, secret-stripped error messages, withRetry fail-fast

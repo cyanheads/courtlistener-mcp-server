@@ -1,6 +1,6 @@
 # courtlistener-mcp-server - Directory Structure
 
-Generated on: 2026-06-02 13:56:59
+Generated on: 2026-06-04 09:17:24
 
 ```text
 courtlistener-mcp-server/
@@ -138,6 +138,7 @@ courtlistener-mcp-server/
 │   │           ├── get-judge.tool.ts
 │   │           ├── get-opinion.tool.ts
 │   │           ├── get-oral-argument.tool.ts
+│   │           ├── get-parties.tool.ts
 │   │           ├── lookup-citation.tool.ts
 │   │           ├── lookup-courts.tool.ts
 │   │           ├── search-dockets.tool.ts
@@ -164,6 +165,7 @@ courtlistener-mcp-server/
 │   │   ├── get-judge.tool.test.ts
 │   │   ├── get-opinion.tool.test.ts
 │   │   ├── get-oral-argument.tool.test.ts
+│   │   ├── get-parties.tool.test.ts
 │   │   ├── lookup-citation.tool.test.ts
 │   │   ├── lookup-courts.tool.test.ts
 │   │   ├── search-dockets.tool.test.ts
