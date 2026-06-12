@@ -1,9 +1,10 @@
 # courtlistener-mcp-server - Directory Structure
 
-Generated on: 2026-06-04 09:17:24
+Generated on: 2026-06-12 03:40:27
 
 ```text
 courtlistener-mcp-server/
+├── .agents/
 ├── .claude/
 ├── .claude-plugin/
 │   └── plugin.json
@@ -33,6 +34,7 @@ courtlistener-mcp-server/
 │   ├── check-framework-antipatterns.ts
 │   ├── check-skill-versions.ts
 │   ├── check-skills-sync.ts
+│   ├── clean-mcpb.ts
 │   ├── clean.ts
 │   ├── devcheck.ts
 │   ├── lint-mcp.ts
@@ -118,6 +120,10 @@ courtlistener-mcp-server/
 │   ├── security-pass/
 │   │   └── SKILL.md
 │   ├── setup/
+│   │   └── SKILL.md
+│   ├── techniques/
+│   │   ├── references/
+│   │   │   └── outline-on-overflow.md
 │   │   └── SKILL.md
 │   └── tool-defs-analysis/
 │       └── SKILL.md

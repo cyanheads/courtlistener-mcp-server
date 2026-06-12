@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.2.3](changelog/0.2.x/0.2.3.md) — 2026-06-11
+
+Adopt mcp-ts-core ^0.10.6: server identity pair, get_parties total-count enrichment, Dockerfile healthcheck and writable data dirs, anchored bundle ignores with post-pack cleaner.
+
 ## [0.2.2](changelog/0.2.x/0.2.2.md) — 2026-06-04
 
 Add courtlistener_get_parties tool — fetch parties and attorneys of record for a RECAP federal docket
