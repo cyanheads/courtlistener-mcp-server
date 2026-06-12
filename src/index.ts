@@ -27,6 +27,8 @@ import { searchOralArgumentsTool } from './mcp-server/tools/definitions/search-o
 import { initCourtListenerService } from './services/courtlistener/courtlistener-service.js';
 
 await createApp({
+  name: 'courtlistener-mcp-server',
+  title: 'courtlistener-mcp-server',
   tools: [
     searchOpinionsTool,
     getOpinionTool,

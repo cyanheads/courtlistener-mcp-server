@@ -95,6 +95,12 @@ export const getPartiesTool = tool('courtlistener_get_parties', {
       .describe('Parties on this page.'),
   }),
 
+  // Surfaces the upstream party total on both response surfaces so the agent
+  // knows when a page_size-capped page is a partial view of the full list.
+  enrichment: {
+    totalCount: z.number().describe('Total parties on this docket across all pages.'),
+  },
+
   errors: [
     {
       reason: 'not_found',
@@ -127,6 +133,8 @@ export const getPartiesTool = tool('courtlistener_get_parties', {
       total_parties: result.count,
       parties_returned: result.parties.length,
     });
+
+    ctx.enrich.total(result.count);
 
     return {
       docket_id: input.docket_id,
