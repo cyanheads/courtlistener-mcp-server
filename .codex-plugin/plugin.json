@@ -1,6 +1,6 @@
 {
   "name": "courtlistener-mcp-server",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Search and retrieve US court opinions, federal dockets, judge records, citation networks, and oral arguments from CourtListener's 9M+ opinion corpus via MCP. STDIO or Streamable HTTP.",
   "author": {
     "name": "cyanheads",
@@ -15,7 +15,7 @@
   "interface": {
     "displayName": "courtlistener-mcp-server",
     "shortDescription": "Search US court opinions, federal dockets, judges, citations, and oral arguments via CourtListener.",
-    "longDescription": "",
+    "longDescription": "Access CourtListener's corpus of 9M+ US court opinions, federal RECAP dockets, judge records, citation networks, and oral arguments over MCP. Search and retrieve full opinion text, resolve citation strings (e.g. \"410 U.S. 113\") to clusters, and trace precedent networks in either direction. Look up courts and judges, pull docket entries and party listings, search and fetch oral argument recordings, and query judicial financial disclosures. Runs over STDIO or Streamable HTTP; a free CourtListener API token raises rate limits.",
     "developerName": "cyanheads",
     "category": "",
     "capabilities": ["Read"],

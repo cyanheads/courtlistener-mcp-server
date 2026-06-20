@@ -129,7 +129,7 @@ export class CourtListenerService {
     return {
       Authorization: `Token ${this.token}`,
       Accept: 'application/json',
-      'User-Agent': 'courtlistener-mcp-server/0.1.2',
+      'User-Agent': 'courtlistener-mcp-server/0.2.4',
     };
   }
 

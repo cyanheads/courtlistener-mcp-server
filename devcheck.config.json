@@ -15,5 +15,8 @@
   },
   "skillVersions": {
     "ignore": ["report-issue-local"]
+  },
+  "packaging": {
+    "pluginManifests": true
   }
 }
