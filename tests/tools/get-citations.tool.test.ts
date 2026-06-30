@@ -116,6 +116,28 @@ describe('getCitationsTool', () => {
     );
   });
 
+  it('passes the cursor through to getCiting and surfaces the advanced next_cursor (#24)', async () => {
+    mockSvc.getCiting = vi.fn().mockResolvedValue({
+      total: 5,
+      results: [],
+      nextCursor: '4',
+      sourceCaseName: 'Source Opinion',
+    });
+    const ctx = createMockContext();
+    const input = getCitationsTool.input.parse({
+      cluster_id: 100,
+      direction: 'citing',
+      cursor: '2',
+      page_size: 2,
+    });
+    const result = await getCitationsTool.handler(input, ctx);
+    expect(mockSvc.getCiting).toHaveBeenCalledWith(
+      expect.objectContaining({ cursor: '2', page_size: 2 }),
+      ctx,
+    );
+    expect(result.next_cursor).toBe('4');
+  });
+
   it('throws when service throws', async () => {
     mockSvc.getCitedBy = vi.fn().mockRejectedValue(new Error('API error'));
     const ctx = createMockContext();

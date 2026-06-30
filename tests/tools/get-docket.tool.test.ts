@@ -44,12 +44,13 @@ const baseDocket: Docket = {
       recap_documents: [
         {
           id: 90001,
-          document_number: 1,
+          // /docket-entries/ returns document_number as a string and filepath_local as a relative path.
+          document_number: '1',
           attachment_number: null,
           description: 'Complaint',
           is_available: true,
           page_count: 42,
-          filepath_local: 'https://storage.courtlistener.com/recap/gov.uscourts.cand.123/doc1.pdf',
+          filepath_local: 'recap/gov.uscourts.cand.123/doc1.pdf',
         },
       ],
     },
@@ -74,6 +75,14 @@ describe('getDocketTool', () => {
     expect(result.entries[0].id).toBe(50001);
     expect(result.entries[0].documents[0].id).toBe(90001);
     expect(result.entries[0].documents[0].attachment_number).toBeNull();
+    // document_number is preserved as the string the upstream sends — not coerced (#23)
+    expect(result.entries[0].documents[0].document_number).toBe('1');
+    // relative filepath_local is normalized to a directly fetchable storage URL (#26)
+    expect(result.entries[0].documents[0].filepath_local).toBe(
+      'https://storage.courtlistener.com/recap/gov.uscourts.cand.123/doc1.pdf',
+    );
+    // the real upstream types validate against the declared output schema
+    expect(() => getDocketTool.output.parse(result)).not.toThrow();
   });
 
   it('resolves a known court_id to its display name', async () => {
@@ -109,6 +118,39 @@ describe('getDocketTool', () => {
     expect(mockSvc.getDocket).toHaveBeenCalledWith(8000, 50, ctx);
   });
 
+  it('preserves a non-integer document_number and leaves an already-absolute filepath_local untouched', async () => {
+    mockSvc.getDocket = vi.fn().mockResolvedValue({
+      ...baseDocket,
+      docket_entries: [
+        {
+          id: 50002,
+          entry_number: 70,
+          date_filed: '2012-01-01',
+          description: 'Attachment',
+          recap_documents: [
+            {
+              id: 90002,
+              document_number: '70-1', // PACER attachment numbering — not integer-parseable
+              attachment_number: 1,
+              description: 'Exhibit A',
+              is_available: true,
+              page_count: 3,
+              filepath_local: 'https://storage.courtlistener.com/recap/already-absolute.pdf',
+            },
+          ],
+        },
+      ],
+    });
+    const ctx = createMockContext();
+    const result = await getDocketTool.handler(getDocketTool.input.parse({ docket_id: 8000 }), ctx);
+    expect(result.entries[0].documents[0].document_number).toBe('70-1');
+    // an already-absolute URL is passed through, never double-prefixed
+    expect(result.entries[0].documents[0].filepath_local).toBe(
+      'https://storage.courtlistener.com/recap/already-absolute.pdf',
+    );
+    expect(() => getDocketTool.output.parse(result)).not.toThrow();
+  });
+
   it('formats output with case_name_full, jury_demand, and entry/doc IDs', () => {
     const output = getDocketTool.output.parse({
       docket_id: 8000,
@@ -135,7 +177,7 @@ describe('getDocketTool', () => {
           documents: [
             {
               id: 90001,
-              document_number: 1,
+              document_number: '1',
               attachment_number: 2,
               description: 'Complaint',
               is_available: true,

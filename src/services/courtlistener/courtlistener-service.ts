@@ -49,6 +49,19 @@ function extractCursor(nextUrl: string | null): string | null {
   }
 }
 
+/**
+ * Resolve a CourtListener docket reference to a numeric ID. `/parties/` serializes
+ * `party_types[].docket` as a `.../dockets/<id>/` URL, but older/other shapes send a
+ * number or numeric string — accept all three. Returns null when no ID is parseable.
+ */
+function toDocketId(docket: number | string): number | null {
+  if (typeof docket === 'number') return docket;
+  const match = String(docket).match(/\/dockets\/(\d+)\//);
+  if (match?.[1]) return parseInt(match[1], 10);
+  const n = Number(docket);
+  return Number.isFinite(n) ? n : null;
+}
+
 /** Classify the rate-limit window from headers or response body. */
 function buildRateLimitMessage(retryAfter: string | null): string {
   const base = 'CourtListener rate limit reached.';
@@ -110,7 +123,9 @@ function classifyFetchError(err: unknown, path: string): unknown {
   const status = e?.data?.statusCode;
   if (status === 404 || e?.code === JsonRpcErrorCode.NotFound) return notFoundForPath(path);
   if (status === 429 || e?.code === JsonRpcErrorCode.RateLimited) {
-    return rateLimited(buildRateLimitMessage(null), { reason: 'rate_limited' });
+    // retryable: false — CourtListener's free-tier windows are per-minute/hour/day; withRetry's
+    // 2/4/8s backoff can never clear them, so fail fast and let the agent honor Retry-After.
+    return rateLimited(buildRateLimitMessage(null), { reason: 'rate_limited', retryable: false });
   }
   return err;
 }
@@ -129,7 +144,7 @@ export class CourtListenerService {
     return {
       Authorization: `Token ${this.token}`,
       Accept: 'application/json',
-      'User-Agent': 'courtlistener-mcp-server/0.2.4',
+      'User-Agent': 'courtlistener-mcp-server/0.2.5',
     };
   }
 
@@ -171,8 +186,10 @@ export class CourtListenerService {
         // production (handled above), but a Response-returning caller/test double lands here.
         if (response.status === 429) {
           const retryAfter = response.headers.get('Retry-After');
+          // retryable: false — a per-minute/hour/day window can't clear within withRetry's backoff.
           throw rateLimited(buildRateLimitMessage(retryAfter), {
             reason: 'rate_limited',
+            retryable: false,
             ...(retryAfter && { retryAfter }),
           });
         }
@@ -237,8 +254,10 @@ export class CourtListenerService {
         // Fallback path for a Response-returning caller/test double (see get()).
         if (response.status === 429) {
           const retryAfter = response.headers.get('Retry-After');
+          // retryable: false — a per-minute/hour/day window can't clear within withRetry's backoff.
           throw rateLimited(buildRateLimitMessage(retryAfter), {
             reason: 'rate_limited',
+            retryable: false,
             ...(retryAfter && { retryAfter }),
           });
         }
@@ -388,7 +407,13 @@ export class CourtListenerService {
       ctx,
     );
     data.docket_entries = entries.results;
-    data.docket_entries_count = entries.count;
+    // /docket-entries/ returns `count` as a URL string when its count isn't cached (like
+    // /parties/) — keep only a numeric count so total_entries stays a number; the tool falls
+    // back to the fetched page length otherwise.
+    const rawCount: unknown = entries.count;
+    if (typeof rawCount === 'number') {
+      data.docket_entries_count = rawCount;
+    }
     return data;
   }
 
@@ -584,7 +609,10 @@ export class CourtListenerService {
     }
 
     const pageSize = params.page_size ?? 10;
-    const pageIds = citedIds.slice(0, pageSize);
+    // Cursor is an offset into the already-computed cited-ID list — wire it so pages advance
+    // (the IDs are all in hand; no extra upstream call needed to paginate).
+    const offset = params.cursor ? parseInt(params.cursor, 10) : 0;
+    const pageIds = citedIds.slice(offset, offset + pageSize);
     const query: Record<string, string | number | boolean | undefined> = {
       q: pageIds.map((id) => `id:(${id})`).join(' OR '),
       type: 'o',
@@ -598,7 +626,7 @@ export class CourtListenerService {
     return {
       total: citedIds.length,
       results: data.results,
-      nextCursor: citedIds.length > pageSize ? String(pageSize) : null,
+      nextCursor: offset + pageSize < citedIds.length ? String(offset + pageSize) : null,
       sourceCaseName,
     };
   }
@@ -698,7 +726,7 @@ export class CourtListenerService {
     page: number,
     pageSize: number,
     ctx: Context,
-  ): Promise<{ count: number; next_cursor: string | null; parties: Party[] }> {
+  ): Promise<{ count: number | null; next_cursor: string | null; parties: Party[] }> {
     // Raw /parties/ shape from the upstream API
     type RawParty = {
       id: number;
@@ -739,8 +767,9 @@ export class CourtListenerService {
     }
 
     const parties: Party[] = pageData.results.map((raw) => {
-      // Derive role for this docket from party_types — pick the entry whose docket matches
-      const roleEntry = raw.party_types.find((pt) => Number(pt.docket) === docketId);
+      // Derive role for this docket from party_types — pick the entry whose docket matches.
+      // pt.docket arrives as a `.../dockets/<id>/` URL, so resolve it to a numeric ID first.
+      const roleEntry = raw.party_types.find((pt) => toDocketId(pt.docket) === docketId);
       const role = roleEntry?.name ?? null;
 
       const attorneys = raw.attorneys.map((rel) => {
@@ -762,9 +791,22 @@ export class CourtListenerService {
       };
     });
 
+    // /parties/ returns `count` as a URL string unless ?count=on is passed — but count=on makes
+    // the endpoint drop `results`, so we request results (no count=on) and derive the total:
+    // a numeric count when upstream gives one, else the exact row count when this is the only page.
+    const rawCount: unknown = pageData.count;
+    const count =
+      typeof rawCount === 'number'
+        ? rawCount
+        : pageData.next === null && page === 1
+          ? parties.length
+          : null;
+
     return {
-      count: pageData.count,
-      next_cursor: extractCursor(pageData.next),
+      count,
+      // /parties/ is page-paginated (?page=N), so `next` is a page URL with no cursor token —
+      // signal the next page by number when upstream reports more.
+      next_cursor: pageData.next ? String(page + 1) : null,
       parties,
     };
   }

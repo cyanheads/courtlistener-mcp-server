@@ -22,6 +22,8 @@ vi.mock('@cyanheads/mcp-ts-core/utils', async (importOriginal) => {
 });
 
 import type { AppConfig } from '@cyanheads/mcp-ts-core/config';
+import { getDocketTool } from '@/mcp-server/tools/definitions/get-docket.tool.js';
+import { getPartiesTool } from '@/mcp-server/tools/definitions/get-parties.tool.js';
 import {
   CourtListenerService,
   getCourtListenerService,
@@ -695,5 +697,299 @@ describe('getOralArgument', () => {
         recovery: { hint: expect.stringContaining('courtlistener_search_oral_arguments') },
       },
     });
+  });
+});
+
+// ── getCiting cursor pagination (#24) ────────────────────────────────────────
+// getCiting holds the full cited-ID list in memory; the cursor is an offset into it.
+// The bug ignored the cursor and re-sliced from index 0, returning page 1 forever.
+
+describe('getCiting cursor pagination (#24)', () => {
+  let svc: CourtListenerService;
+  let ctx: ReturnType<typeof createMockContext>;
+
+  beforeEach(() => {
+    svc = new CourtListenerService(makeMockConfig(), makeMockStorage());
+    ctx = createMockContext();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('advances to a different page when the cursor is passed', async () => {
+    const searchUrls: string[] = [];
+    const citedUris = [101, 102, 103, 104, 105].map(
+      (n) => `https://www.courtlistener.com/api/rest/v4/opinions/${n}/`,
+    );
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) => {
+        let body: string;
+        if (url.includes('/clusters/')) {
+          body = JSON.stringify({ id: 100, case_name: 'Source Opinion', sub_opinions: [] });
+        } else if (url.includes('/opinions/')) {
+          // sub_opinions for the cluster — these carry the opinions_cited URIs.
+          body = JSON.stringify({
+            count: 1,
+            next: null,
+            previous: null,
+            results: [{ id: 9, opinions_cited: citedUris }],
+          });
+        } else if (url.includes('/search/')) {
+          searchUrls.push(url);
+          body = JSON.stringify({ count: 0, next: null, previous: null, results: [] });
+        } else {
+          body = JSON.stringify({ count: 0, next: null, previous: null, results: [] });
+        }
+        return { status: 200, ok: true, headers: { get: () => null }, text: async () => body };
+      }),
+    );
+
+    const page1 = await svc.getCiting({ clusterId: 100, page_size: 2 }, ctx);
+    const page2 = await svc.getCiting({ clusterId: 100, page_size: 2, cursor: '2' }, ctx);
+
+    // Page boundaries advance by page_size (offset 0 → 2 → 4) over 5 cited IDs.
+    expect(page1.nextCursor).toBe('2');
+    expect(page2.nextCursor).toBe('4');
+
+    // The cursored page queries DIFFERENT cited IDs — not the first page again.
+    const q1 = new URL(searchUrls[0]).searchParams.get('q') ?? '';
+    const q2 = new URL(searchUrls[1]).searchParams.get('q') ?? '';
+    expect(q1).toContain('id:(101)');
+    expect(q1).toContain('id:(102)');
+    expect(q1).not.toContain('id:(103)');
+    expect(q2).toContain('id:(103)');
+    expect(q2).toContain('id:(104)');
+    expect(q2).not.toContain('id:(101)');
+  });
+});
+
+// ── raw upstream payloads → tool output schema (regression: #22 #23 #26) ──────
+// The pre-existing tool tests mock the SERVICE with already-normalized values, so the
+// real /parties/ and /docket-entries/ shapes (URL-string counts, string document_number,
+// relative filepath_local) were never validated — that gap let these bugs ship. These
+// drive the RAW upstream shapes through the real service + tool handler and assert the
+// declared output schema parses.
+
+describe('raw upstream payloads validate through the tool output schema', () => {
+  let ctx: ReturnType<typeof createMockContext>;
+
+  beforeEach(() => {
+    initCourtListenerService(makeMockConfig(), makeMockStorage());
+    ctx = createMockContext();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('get_parties: URL-string count + relative party_types docket → schema-valid output (#22)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) => {
+        const body = url.includes('/attorneys/')
+          ? JSON.stringify({
+              count: 1,
+              next: null,
+              previous: null,
+              results: [
+                {
+                  id: 7001,
+                  name: 'Jane Lawyer',
+                  contact_raw: '1 Main St',
+                  email: '',
+                  fax: '',
+                  phone: '',
+                },
+              ],
+            })
+          : JSON.stringify({
+              // /parties/ count is a URL string unless ?count=on (which drops results).
+              count:
+                'https://www.courtlistener.com/api/rest/v4/parties/?count=on&docket=5578727&page=1',
+              next: null,
+              previous: null,
+              results: [
+                {
+                  id: 1001,
+                  name: 'Acme Plaintiff',
+                  extra_info: '',
+                  party_types: [
+                    {
+                      docket: 'https://www.courtlistener.com/api/rest/v4/dockets/5578727/',
+                      name: 'Plaintiff',
+                    },
+                  ],
+                  attorneys: [{ attorney_id: 7001, docket_id: 5578727, role: 1 }],
+                },
+                {
+                  id: 1002,
+                  name: 'Beta Defendant',
+                  extra_info: '',
+                  party_types: [
+                    {
+                      docket: 'https://www.courtlistener.com/api/rest/v4/dockets/5578727/',
+                      name: 'Defendant',
+                    },
+                  ],
+                  attorneys: [],
+                },
+              ],
+            });
+        return { status: 200, ok: true, headers: { get: () => null }, text: async () => body };
+      }),
+    );
+
+    const input = getPartiesTool.input.parse({ docket_id: 5578727 });
+    const result = await getPartiesTool.handler(input, ctx);
+
+    // The bug: total_parties (z.number) received a URL string and failed .parse().
+    expect(() => getPartiesTool.output.parse(result)).not.toThrow();
+    // Single page (next=null, page=1) → total is the exact row count, not the URL string.
+    expect(result.total_parties).toBe(2);
+    expect(result.next_cursor).toBeNull();
+    expect(result.parties).toHaveLength(2);
+    // #29 — role resolves from party_types even though pt.docket is a `.../dockets/<id>/` URL
+    // (Number(url) is NaN, so the pre-fix find() never matched and role was always null).
+    expect(result.parties[0].role).toBe('Plaintiff');
+    expect(result.parties[1].role).toBe('Defendant');
+  });
+
+  it('get_parties: multi-page (next set) → null total, page-number next_cursor (#22)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) => {
+        const body = url.includes('/attorneys/')
+          ? JSON.stringify({ count: 0, next: null, previous: null, results: [] })
+          : JSON.stringify({
+              count: 'https://www.courtlistener.com/api/rest/v4/parties/?count=on',
+              next: 'https://www.courtlistener.com/api/rest/v4/parties/?docket=5578727&page=2',
+              previous: null,
+              results: [{ id: 1001, name: 'Acme', extra_info: '', party_types: [], attorneys: [] }],
+            });
+        return { status: 200, ok: true, headers: { get: () => null }, text: async () => body };
+      }),
+    );
+
+    const input = getPartiesTool.input.parse({ docket_id: 5578727, page_size: 1 });
+    const result = await getPartiesTool.handler(input, ctx);
+
+    expect(() => getPartiesTool.output.parse(result)).not.toThrow();
+    expect(result.total_parties).toBeNull();
+    expect(result.next_cursor).toBe('2');
+  });
+
+  it('get_docket: string document_number + URL-string count + relative filepath_local (#23 #26)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) => {
+        const body = url.includes('/docket-entries/')
+          ? JSON.stringify({
+              // Intermittent URL-string count (when CourtListener's count isn't cached).
+              count:
+                'https://www.courtlistener.com/api/rest/v4/docket-entries/?count=on&docket=5578727',
+              next: null,
+              previous: null,
+              results: [
+                {
+                  id: 50001,
+                  entry_number: 1,
+                  date_filed: '2020-01-02',
+                  description: 'Complaint',
+                  recap_documents: [
+                    {
+                      id: 90001,
+                      document_number: '1', // string from /docket-entries/
+                      attachment_number: null,
+                      description: 'Main Document',
+                      is_available: true,
+                      page_count: 10,
+                      // relative RECAP path, not a URL
+                      filepath_local:
+                        'recap/gov.uscourts.nysd.458699/gov.uscourts.nysd.458699.1.0.pdf',
+                    },
+                  ],
+                },
+              ],
+            })
+          : JSON.stringify({
+              id: 5578727,
+              case_name: 'United States v. Example',
+              case_name_full: '',
+              court: 'https://www.courtlistener.com/api/rest/v4/courts/nysd/',
+              court_id: 'nysd',
+              date_filed: '2020-01-01',
+              date_terminated: null,
+              docket_number: '1:20-cv-00001',
+              pacer_case_id: '458699',
+              assigned_to_str: null,
+              referred_to_str: null,
+              cause: '',
+              jury_demand: '',
+              jurisdiction_type: 'Federal Question',
+            });
+        return { status: 200, ok: true, headers: { get: () => null }, text: async () => body };
+      }),
+    );
+
+    const input = getDocketTool.input.parse({ docket_id: 5578727 });
+    const result = await getDocketTool.handler(input, ctx);
+
+    // The bug: document_number (z.number) received "1"; total_entries received a URL string.
+    expect(() => getDocketTool.output.parse(result)).not.toThrow();
+    expect(result.entries[0].documents[0].document_number).toBe('1');
+    // URL-string count guarded → total_entries falls back to the fetched page length (a number).
+    expect(typeof result.total_entries).toBe('number');
+    expect(result.total_entries).toBe(1);
+    // #26 — relative path becomes a directly fetchable storage URL.
+    expect(result.entries[0].documents[0].filepath_local).toBe(
+      'https://storage.courtlistener.com/recap/gov.uscourts.nysd.458699/gov.uscourts.nysd.458699.1.0.pdf',
+    );
+  });
+
+  it('get_docket: numeric count is used directly for total_entries (#23)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) => {
+        const body = url.includes('/docket-entries/')
+          ? JSON.stringify({
+              count: 153,
+              next: null,
+              previous: null,
+              results: [
+                {
+                  id: 50001,
+                  entry_number: 1,
+                  date_filed: '2020-01-02',
+                  description: 'Complaint',
+                  recap_documents: [],
+                },
+              ],
+            })
+          : JSON.stringify({
+              id: 5578727,
+              case_name: 'X',
+              case_name_full: '',
+              court: '',
+              court_id: 'nysd',
+              date_filed: '2020-01-01',
+              date_terminated: null,
+              docket_number: '1',
+              pacer_case_id: null,
+              assigned_to_str: null,
+              referred_to_str: null,
+              cause: '',
+              jury_demand: '',
+              jurisdiction_type: '',
+            });
+        return { status: 200, ok: true, headers: { get: () => null }, text: async () => body };
+      }),
+    );
+    const result = await getDocketTool.handler(
+      getDocketTool.input.parse({ docket_id: 5578727 }),
+      ctx,
+    );
+    expect(result.total_entries).toBe(153);
   });
 });

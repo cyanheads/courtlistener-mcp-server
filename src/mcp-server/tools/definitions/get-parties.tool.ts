@@ -44,12 +44,19 @@ export const getPartiesTool = tool('courtlistener_get_parties', {
 
   output: z.object({
     docket_id: z.number().describe('Docket ID these parties belong to.'),
-    total_parties: z.number().describe('Total number of parties on this docket across all pages.'),
+    total_parties: z
+      .number()
+      .nullable()
+      .describe(
+        'Total parties on this docket across all pages; null when upstream reports no count (a multi-page list whose total is unknown until the last page).',
+      ),
     page: z.number().describe('Current page number.'),
     next_cursor: z
       .string()
       .nullable()
-      .describe('Opaque cursor for the next page; null when this is the last page.'),
+      .describe(
+        'Next page number to pass as the `page` argument (this list is page-paginated); null when this is the last page.',
+      ),
     parties: z
       .array(
         z
@@ -134,7 +141,7 @@ export const getPartiesTool = tool('courtlistener_get_parties', {
       parties_returned: result.parties.length,
     });
 
-    ctx.enrich.total(result.count);
+    if (result.count !== null) ctx.enrich.total(result.count);
 
     return {
       docket_id: input.docket_id,
@@ -148,7 +155,7 @@ export const getPartiesTool = tool('courtlistener_get_parties', {
   format: (result) => {
     const lines: string[] = [
       `## Parties — Docket ${result.docket_id}`,
-      `**Total parties:** ${result.total_parties} | **Page:** ${result.page} | **Next cursor:** ${result.next_cursor ?? 'none'}`,
+      `**Total parties:** ${result.total_parties ?? 'unknown'} | **Page:** ${result.page} | **Next cursor:** ${result.next_cursor ?? 'none'}`,
     ];
 
     if (result.parties.length === 0) {

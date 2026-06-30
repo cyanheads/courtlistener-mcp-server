@@ -116,7 +116,12 @@ export interface DocketEntry {
   id: number;
   recap_documents: Array<{
     id: number;
-    document_number: number | null;
+    /**
+     * PACER document number. The /docket-entries/ endpoint serializes this as a
+     * string ("1"); attachments can be non-integer ("70-1"). (The /search/ endpoint
+     * returns it as an int — see DocketSearchResult.)
+     */
+    document_number: number | string | null;
     attachment_number: number | null;
     description: string;
     is_available: boolean;
@@ -267,7 +272,7 @@ export interface FinancialDisclosure {
 
 /** Role entry for a party within a specific docket — party_types[] from /parties/. */
 export interface PartyType {
-  /** Docket this role applies to (numeric ID as string or number). */
+  /** Docket this role applies to — a `.../dockets/<id>/` URL from /parties/, or a numeric ID/string. */
   docket: number | string;
   /** Role name for this docket, e.g. "Plaintiff", "Defendant", "Petitioner", "Respondent". */
   name: string;

@@ -8,6 +8,12 @@ import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { resolveCourtName } from '@/services/courtlistener/court-names.js';
 import { getCourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
 
+/** CourtListener serves `filepath_local` as a relative RECAP path; make it a directly fetchable URL. */
+function toStorageUrl(path: string | null): string | null {
+  if (!path) return null;
+  return /^https?:\/\//.test(path) ? path : `https://storage.courtlistener.com/${path}`;
+}
+
 export const getDocketTool = tool('courtlistener_get_docket', {
   title: 'Get Docket',
   description:
@@ -73,9 +79,11 @@ export const getDocketTool = tool('courtlistener_get_docket', {
                   .object({
                     id: z.number().describe('Document ID.'),
                     document_number: z
-                      .number()
+                      .string()
                       .nullable()
-                      .describe('PACER document number; null if not assigned.'),
+                      .describe(
+                        'PACER document number as a string (e.g. "1"); attachments can be non-integer like "70-1". Null if not assigned.',
+                      ),
                     attachment_number: z
                       .number()
                       .nullable()
@@ -91,7 +99,7 @@ export const getDocketTool = tool('courtlistener_get_docket', {
                       .string()
                       .nullable()
                       .describe(
-                        'RECAP storage URL for available documents; null if not available.',
+                        'Fully-qualified RECAP storage URL (https://storage.courtlistener.com/...) for the document; null if not available.',
                       ),
                   })
                   .describe('Document attached to a docket entry.'),
@@ -135,12 +143,14 @@ export const getDocketTool = tool('courtlistener_get_docket', {
       description: e.description ?? '',
       documents: (e.recap_documents ?? []).map((d) => ({
         id: d.id,
-        document_number: d.document_number ?? null,
+        // /docket-entries/ sends document_number as a string ("1"); normalize to a string
+        // (preserving non-integer attachment forms like "70-1") rather than coercing to a number.
+        document_number: d.document_number == null ? null : String(d.document_number),
         attachment_number: d.attachment_number ?? null,
         description: d.description ?? '',
         is_available: d.is_available ?? false,
         page_count: d.page_count ?? null,
-        filepath_local: d.filepath_local ?? null,
+        filepath_local: toStorageUrl(d.filepath_local ?? null),
       })),
     }));
 

@@ -86,16 +86,31 @@ describe('getPartiesTool', () => {
     expect(mockSvc.getParties).toHaveBeenCalledWith(9999, 2, 5, ctx);
   });
 
-  it('surfaces next_cursor when more pages exist', async () => {
+  it('surfaces next_cursor (a page number) when more pages exist', async () => {
     mockSvc.getParties = vi.fn().mockResolvedValue({
       count: 20,
-      next_cursor: 'abc123',
+      next_cursor: '2',
       parties: [basePlaintiff],
     });
     const ctx = createMockContext();
     const input = getPartiesTool.input.parse({ docket_id: 8000, page_size: 1 });
     const result = await getPartiesTool.handler(input, ctx);
-    expect(result.next_cursor).toBe('abc123');
+    expect(result.next_cursor).toBe('2');
+  });
+
+  it('returns null total_parties when the service cannot derive a count (multi-page)', async () => {
+    mockSvc.getParties = vi.fn().mockResolvedValue({
+      count: null,
+      next_cursor: '2',
+      parties: [basePlaintiff],
+    });
+    const ctx = createMockContext();
+    const input = getPartiesTool.input.parse({ docket_id: 8000, page_size: 1 });
+    const result = await getPartiesTool.handler(input, ctx);
+    expect(result.total_parties).toBeNull();
+    expect(result.next_cursor).toBe('2');
+    // nullable total must still validate, and the enrich.total call must be skipped (no throw)
+    expect(() => getPartiesTool.output.parse(result)).not.toThrow();
   });
 
   it('throws not_found when service throws NotFound', async () => {
@@ -214,5 +229,17 @@ describe('getPartiesTool', () => {
     const blocks = getPartiesTool.format!(output);
     const text = (blocks[0] as { text: string }).text;
     expect(text).toContain('page=2');
+  });
+
+  it('format renders "unknown" when total_parties is null', () => {
+    const output = getPartiesTool.output.parse({
+      docket_id: 8000,
+      total_parties: null,
+      page: 1,
+      next_cursor: null,
+      parties: [],
+    });
+    const text = (getPartiesTool.format!(output)[0] as { text: string }).text;
+    expect(text).toContain('unknown');
   });
 });
