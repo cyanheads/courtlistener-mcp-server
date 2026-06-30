@@ -28,6 +28,20 @@ const PARTY_LABELS: Record<string, string> = {
   g: 'Green',
   l: 'Libertarian',
 };
+/**
+ * CourtListener `Position.how_selected` selection-method codes → readable labels.
+ * The complete documented enum (election, appointment, and court-restructuring
+ * transfers). Unknown codes pass through unchanged via expandCode.
+ */
+const HOW_SELECTED_LABELS: Record<string, string> = {
+  e_part: 'Partisan Election',
+  e_non_part: 'Non-Partisan Election',
+  a_pres: 'Appointment (President)',
+  a_gov: 'Appointment (Governor)',
+  a_legis: 'Appointment (Legislature)',
+  a_judge: 'Appointment (Judge)',
+  ct_trans: 'Transferred (Court Restructuring)',
+};
 
 const expandCode = (map: Record<string, string>, code: string | null | undefined): string => {
   if (!code) return '';
@@ -107,11 +121,15 @@ export const getJudgeTool = tool('courtlistener_get_judge', {
             appointer: z
               .string()
               .nullable()
-              .describe('Appointing president name; null if elected or not recorded.'),
+              .describe(
+                'Position URI of the appointing authority (e.g., ".../positions/123/"), not resolved to a name; null if elected or not recorded.',
+              ),
             nomination_process: z
               .string()
               .nullable()
-              .describe('Nomination process; null if not recorded.'),
+              .describe(
+                'Selection method, expanded to a readable label (e.g., "Appointment (President)"); null if not recorded.',
+              ),
             date_nominated: z.string().nullable().describe('Date nominated; null if not recorded.'),
             date_confirmation: z
               .string()
@@ -180,9 +198,14 @@ export const getJudgeTool = tool('courtlistener_get_judge', {
       court: p.court?.full_name ?? '',
       court_id: p.court?.id ?? '',
       position_type: p.position_type ?? '',
-      // appointer is a URI string — extract just the URI for now (full name unavailable)
+      // appointer is a position URI; resolving it to the appointing person's name
+      // needs extra /positions/ → /people/ hops (deferred — rate-limit-sensitive).
       appointer: p.appointer ?? null,
-      nomination_process: p.how_selected ?? p.nomination_process ?? null,
+      // how_selected is a coded selection method (e.g. "a_pres") — expand to a
+      // readable label; fall back to nomination_process when how_selected is absent.
+      nomination_process: p.how_selected
+        ? expandCode(HOW_SELECTED_LABELS, p.how_selected)
+        : (p.nomination_process ?? null),
       date_nominated: p.date_nominated ?? null,
       date_confirmation: p.date_confirmation ?? null,
       date_start: p.date_start ?? null,

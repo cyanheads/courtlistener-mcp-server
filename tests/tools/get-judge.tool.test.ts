@@ -8,7 +8,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getJudgeTool } from '@/mcp-server/tools/definitions/get-judge.tool.js';
 import type { CourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
 import * as svcModule from '@/services/courtlistener/courtlistener-service.js';
-import type { Person } from '@/services/courtlistener/types.js';
+import type { Person, PersonPosition } from '@/services/courtlistener/types.js';
 
 const mockSvc = {
   getPerson: vi.fn(),
@@ -53,7 +53,7 @@ const basePerson: Person = {
       },
       position_type: 'jud',
       appointer: 'https://www.courtlistener.com/api/rest/v4/positions/44/',
-      how_selected: 'Senate confirmation',
+      how_selected: 'a_pres',
       nomination_process: null,
       date_nominated: '1993-06-22',
       date_confirmation: '1993-08-03',
@@ -84,11 +84,44 @@ describe('getJudgeTool', () => {
     expect(result.positions[0]).toMatchObject({
       court: 'Supreme Court of the United States',
       court_id: 'scotus',
-      // how_selected maps to nomination_process
-      nomination_process: 'Senate confirmation',
+      // how_selected code (a_pres) expands to a readable selection-method label
+      nomination_process: 'Appointment (President)',
+      // appointer is surfaced as the raw position URI (not resolved to a name)
+      appointer: 'https://www.courtlistener.com/api/rest/v4/positions/44/',
       date_nominated: '1993-06-22',
       date_confirmation: '1993-08-03',
     });
+  });
+
+  it('expands known how_selected codes and passes unknown codes through', async () => {
+    const mkPosition = (how_selected: string): PersonPosition => ({
+      court: {
+        id: 'scotus',
+        full_name: 'Supreme Court of the United States',
+        short_name: 'Supreme Court',
+      },
+      position_type: 'jud',
+      appointer: null,
+      how_selected,
+      nomination_process: null,
+      date_nominated: null,
+      date_confirmation: null,
+      date_start: null,
+      date_termination: null,
+      termination_reason: null,
+    });
+    const person: Person = {
+      ...basePerson,
+      positions: [mkPosition('e_part'), mkPosition('x_unknown_code')],
+    };
+    mockSvc.getPerson = vi.fn().mockResolvedValue(person);
+    const ctx = createMockContext();
+    const input = getJudgeTool.input.parse({ person_id: 300 });
+    const result = await getJudgeTool.handler(input, ctx);
+    // known code expands
+    expect(result.positions[0].nomination_process).toBe('Partisan Election');
+    // unknown code passes through unchanged rather than being dropped or guessed
+    expect(result.positions[1].nomination_process).toBe('x_unknown_code');
   });
 
   it('throws not_found for missing person', async () => {
@@ -149,8 +182,8 @@ describe('getJudgeTool', () => {
           court: 'Supreme Court',
           court_id: 'scotus',
           position_type: 'Associate Justice',
-          appointer: 'Clinton',
-          nomination_process: 'Senate confirmation',
+          appointer: 'https://www.courtlistener.com/api/rest/v4/positions/44/',
+          nomination_process: 'Appointment (President)',
           date_nominated: '1993-06-22',
           date_confirmation: '1993-08-03',
           date_start: '1993-08-10',
@@ -164,7 +197,7 @@ describe('getJudgeTool', () => {
     expect(text).toContain('300');
     expect(text).toContain('Ruth Bader Ginsburg');
     // nomination_process must be rendered
-    expect(text).toContain('Senate confirmation');
+    expect(text).toContain('Appointment (President)');
     // date_nominated must be rendered
     expect(text).toContain('1993-06-22');
     // date_confirmation must be rendered
