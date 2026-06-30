@@ -78,6 +78,59 @@ describe('getOpinionTool', () => {
     });
   });
 
+  it('falls back across HTML variants for html_text when html/plain_text are empty', async () => {
+    // Mirrors the real Roe v. Wade shape (cluster 108713): the lead/dissent
+    // sub-opinions carry text only in html_with_citations / xml_harvard.
+    const variantCluster: OpinionCluster = {
+      ...baseCluster,
+      sub_opinions: [
+        {
+          id: 9425157,
+          type: '020lead',
+          author_id: null,
+          per_curiam: false,
+          html: '',
+          plain_text: '',
+          html_with_citations: '<p>lead opinion via citations</p>',
+          download_url: null,
+        },
+        {
+          id: 9425159,
+          type: '040dissent',
+          author_id: null,
+          per_curiam: false,
+          html: '',
+          plain_text: '',
+          xml_harvard: '<opinion>dissent via harvard</opinion>',
+          download_url: null,
+        },
+        {
+          id: 9425160,
+          type: '010combined',
+          author_id: null,
+          per_curiam: false,
+          html: '<p>plain html</p>',
+          plain_text: '',
+          html_with_citations: '<p>combined via citations</p>',
+          download_url: null,
+        },
+      ],
+    };
+    mockSvc.getOpinionCluster = vi.fn().mockResolvedValue(variantCluster);
+    const ctx = createMockContext();
+    const input = getOpinionTool.input.parse({ cluster_id: 100 });
+    const result = await getOpinionTool.handler(input, ctx);
+
+    // lead: only html_with_citations present → used
+    expect(result.opinions[0].html_text).toBe('<p>lead opinion via citations</p>');
+    // dissent: only xml_harvard present → deeper-variant fallback used
+    expect(result.opinions[1].html_text).toBe('<opinion>dissent via harvard</opinion>');
+    // combined: both html and html_with_citations present → citation-linked variant preferred
+    expect(result.opinions[2].html_text).toBe('<p>combined via citations</p>');
+    // plain_text stays its own (empty) field, not backfilled from the HTML variants
+    expect(result.opinions[0].plain_text).toBe('');
+  });
+
   it('extracts docket_id from docket URI when not directly provided', async () => {
     const clusterNoDocketId: OpinionCluster = { ...baseCluster, docket_id: undefined };
     mockSvc.getOpinionCluster = vi.fn().mockResolvedValue(clusterNoDocketId);

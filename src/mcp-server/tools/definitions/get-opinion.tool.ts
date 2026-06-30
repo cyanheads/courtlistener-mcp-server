@@ -56,7 +56,7 @@ export const getOpinionTool = tool('courtlistener_get_opinion', {
             html_text: z
               .string()
               .describe(
-                'Full opinion text as HTML; may be empty if only a download URL is available.',
+                'Full opinion text as HTML, drawn from the best available variant (citation-linked when present); empty only when no HTML text is stored — use download_url then.',
               ),
             plain_text: z.string().describe('Plain text version of the opinion; may be empty.'),
             cites: z.array(z.number()).describe('Opinion IDs this opinion cites.'),
@@ -123,7 +123,17 @@ export const getOpinionTool = tool('courtlistener_get_opinion', {
       type: op.type ?? '',
       author_id: op.author_id ?? null,
       per_curiam: op.per_curiam ?? false,
-      html_text: op.html ?? '',
+      // CourtListener spreads opinion text across source-dependent variant fields;
+      // `html` is often empty (e.g. pre-2000 case law) while `html_with_citations`
+      // carries the full text. Fall back across variants, preferring the richest.
+      html_text:
+        op.html_with_citations ||
+        op.html ||
+        op.html_columbia ||
+        op.html_lawbox ||
+        op.xml_harvard ||
+        op.html_anon_2020 ||
+        '',
       plain_text: op.plain_text ?? '',
       // opinions_cited are URI strings — extract the numeric ID from each
       cites: (op.opinions_cited ?? []).flatMap((uri) => {

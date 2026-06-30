@@ -32,7 +32,15 @@ export interface OpinionSearchResult {
 export interface Opinion {
   author_id: number | null;
   download_url: string | null;
+  /**
+   * Opinion text variants. CourtListener populates a different field depending
+   * on the import source — `html`/`plain_text` are often empty for pre-2000 case
+   * law, while `html_with_citations` (and `xml_harvard`) carry the full text.
+   */
   html: string;
+  html_anon_2020?: string;
+  html_columbia?: string;
+  html_lawbox?: string;
   html_with_citations?: string;
   id: number;
   /** URI strings pointing to cited opinions (e.g., ".../opinions/12345/"). */
@@ -40,6 +48,7 @@ export interface Opinion {
   per_curiam: boolean;
   plain_text: string;
   type: string;
+  xml_harvard?: string;
 }
 
 /** Full opinion cluster from /clusters/{id}/. */
