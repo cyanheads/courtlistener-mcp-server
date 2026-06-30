@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.2.5](changelog/0.2.x/0.2.5.md) — 2026-06-30
+
+Six live-API bug fixes: get_parties output validation, page-based next_cursor, and party-role resolution; get_docket string document_number and fully-qualified filepath_local; get_citations citing-direction pagination; 429 fail-fast. Output-contract shifts are patch-safe — the fields failed validation before.
+
 ## [0.2.4](changelog/0.2.x/0.2.4.md) — 2026-06-20
 
 Adopt mcp-ts-core ^0.10.9: new check-dependency-specifiers + plugin-manifest devcheck guards, ctx.content media collector, Canvas SQL classification fixes; resync 14 skills, fill codex plugin longDescription, dependency refresh.
