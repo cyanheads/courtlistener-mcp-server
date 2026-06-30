@@ -1,6 +1,6 @@
 {
   "name": "courtlistener-mcp-server",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "Search and retrieve US court opinions, federal dockets, judge records, citation networks, and oral arguments from CourtListener's 9M+ opinion corpus via MCP. STDIO or Streamable HTTP.",
   "author": {
     "name": "cyanheads",

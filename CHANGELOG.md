@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.2.6](changelog/0.2.x/0.2.6.md) — 2026-06-30 · 🛡️ Security
+
+Three CourtListener display fixes plus a security framework bump. get_opinion surfaces text from all HTML/XML variant fields (pre-2000 opinions no longer empty), court names resolve for all 471 in-use courts, get_judge expands how_selected codes to readable labels. mcp-ts-core 0.10.10 clears hono, js-yaml, and vite advisories.
+
 ## [0.2.5](changelog/0.2.x/0.2.5.md) — 2026-06-30
 
 Six live-API bug fixes: get_parties output validation, page-based next_cursor, and party-role resolution; get_docket string document_number and fully-qualified filepath_local; get_citations citing-direction pagination; 429 fail-fast. Output-contract shifts are patch-safe — the fields failed validation before.
