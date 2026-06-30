@@ -68,8 +68,9 @@ describe('getDocketTool', () => {
     expect(result.case_name).toBe('Apple Inc. v. Samsung');
     expect(result.case_name_full).toBe('Apple Incorporated v. Samsung Electronics Co., Ltd.');
     expect(result.jury_demand).toBe('Both');
-    // court is resolved from court_id, never the raw URI — unmapped courts fall back to the id
-    expect(result.court).toBe('cand');
+    // court is resolved from court_id to the full name, never the raw URI (#27 —
+    // district/bankruptcy/state courts now resolve, not just federal appellate)
+    expect(result.court).toBe('District Court, N.D. California');
     expect(result.court).not.toContain('http');
     expect(result.entries).toHaveLength(1);
     expect(result.entries[0].id).toBe(50001);
