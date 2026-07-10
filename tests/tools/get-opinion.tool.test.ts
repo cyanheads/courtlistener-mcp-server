@@ -60,6 +60,7 @@ describe('getOpinionTool', () => {
     const input = getOpinionTool.input.parse({ cluster_id: 100 });
     const result = await getOpinionTool.handler(input, ctx);
 
+    expect(result.kind).toBe('full');
     expect(result.cluster_id).toBe(100);
     expect(result.case_name).toBe('Roe v. Wade');
     expect(result.case_name_full).toBe('Roe v. Wade (Full)');
@@ -70,7 +71,7 @@ describe('getOpinionTool', () => {
     expect(result.citations).toEqual(['410 U.S. 113']);
     expect(result.cite_count).toBe(10000);
     expect(result.opinions).toHaveLength(1);
-    expect(result.opinions[0]).toMatchObject({
+    expect(result.opinions?.[0]).toMatchObject({
       id: 1000,
       type: 'lead-opinion',
       author_id: 42,
@@ -122,13 +123,13 @@ describe('getOpinionTool', () => {
     const result = await getOpinionTool.handler(input, ctx);
 
     // lead: only html_with_citations present → used
-    expect(result.opinions[0].html_text).toBe('<p>lead opinion via citations</p>');
+    expect(result.opinions?.[0]?.html_text).toBe('<p>lead opinion via citations</p>');
     // dissent: only xml_harvard present → deeper-variant fallback used
-    expect(result.opinions[1].html_text).toBe('<opinion>dissent via harvard</opinion>');
+    expect(result.opinions?.[1]?.html_text).toBe('<opinion>dissent via harvard</opinion>');
     // combined: both html and html_with_citations present → citation-linked variant preferred
-    expect(result.opinions[2].html_text).toBe('<p>combined via citations</p>');
+    expect(result.opinions?.[2]?.html_text).toBe('<p>combined via citations</p>');
     // plain_text stays its own (empty) field, not backfilled from the HTML variants
-    expect(result.opinions[0].plain_text).toBe('');
+    expect(result.opinions?.[0]?.plain_text).toBe('');
   });
 
   it('extracts docket_id from docket URI when not directly provided', async () => {
@@ -164,8 +165,78 @@ describe('getOpinionTool', () => {
     });
   });
 
+  // #31 — the repro cluster (108713) has 4 independently-large sub-opinions inside one
+  // `opinions` array. Overflow must split it into one section per variant while keeping
+  // the cheap cluster metadata in every response.
+  describe('outline-on-overflow (#31)', () => {
+    const bigOpinionHtml = `<p>${'opinion body text. '.repeat(900)}</p>`; // ~17 KB each
+
+    const overflowCluster: OpinionCluster = {
+      ...baseCluster,
+      sub_opinions: [
+        {
+          id: 111,
+          type: '020lead',
+          author_id: 42,
+          per_curiam: false,
+          html: bigOpinionHtml,
+          plain_text: '',
+          download_url: null,
+        },
+        {
+          id: 222,
+          type: '040dissent',
+          author_id: 99,
+          per_curiam: false,
+          html: bigOpinionHtml,
+          plain_text: '',
+          download_url: null,
+        },
+      ],
+    };
+
+    it('overflows to a per-variant outline while keeping cheap cluster metadata', async () => {
+      mockSvc.getOpinionCluster = vi.fn().mockResolvedValue(overflowCluster);
+      const ctx = createMockContext();
+      const input = getOpinionTool.input.parse({ cluster_id: 100 });
+      const result = await getOpinionTool.handler(input, ctx);
+
+      expect(result.kind).toBe('outline');
+      // opinions omitted in outline mode
+      expect(result.opinions).toBeUndefined();
+      // one section per opinion variant, named opinion_<id>
+      const names = (result.sections ?? []).map((s) => s.name);
+      expect(names).toEqual(expect.arrayContaining(['opinion_111', 'opinion_222']));
+      expect(result.retrieval_notice).toContain('opinion_');
+      // cheap cluster metadata survives overflow — present in every response
+      expect(result.cluster_id).toBe(100);
+      expect(result.case_name).toBe('Roe v. Wade');
+      expect(result.court).toBe('Supreme Court of the United States');
+      expect(result.citations).toEqual(['410 U.S. 113']);
+      expect(result.syllabus).toBe('The right of privacy extends to reproductive choices.');
+      // structuredContent parse holds
+      expect(() => getOpinionTool.output.parse(result)).not.toThrow();
+    });
+
+    it('returns a selected opinion variant in full on a section re-call', async () => {
+      mockSvc.getOpinionCluster = vi.fn().mockResolvedValue(overflowCluster);
+      const ctx = createMockContext();
+      const input = getOpinionTool.input.parse({ cluster_id: 100, sections: ['opinion_222'] });
+      const result = await getOpinionTool.handler(input, ctx);
+
+      expect(result.kind).toBe('full');
+      expect(result.opinions).toHaveLength(1);
+      expect(result.opinions?.[0]?.id).toBe(222);
+      expect(result.opinions?.[0]?.html_text).toContain('opinion body text');
+      // cheap metadata still present alongside the selected variant
+      expect(result.case_name).toBe('Roe v. Wade');
+      expect(() => getOpinionTool.output.parse(result)).not.toThrow();
+    });
+  });
+
   it('formats output including html_text and case_name_full', () => {
     const output = getOpinionTool.output.parse({
+      kind: 'full',
       cluster_id: 100,
       case_name: 'Roe v. Wade',
       case_name_full: 'Roe v. Wade (Full Title)',
@@ -206,6 +277,7 @@ describe('getOpinionTool', () => {
 
   it('format renders plain_text when available', () => {
     const output = getOpinionTool.output.parse({
+      kind: 'full',
       cluster_id: 101,
       case_name: 'Test v. Test',
       case_name_full: 'Test v. Test Full',
@@ -241,6 +313,7 @@ describe('getOpinionTool', () => {
 
   it('format shows download_url when no text stored', () => {
     const output = getOpinionTool.output.parse({
+      kind: 'full',
       cluster_id: 102,
       case_name: 'Sparse v. Case',
       case_name_full: '',
@@ -271,5 +344,77 @@ describe('getOpinionTool', () => {
     const blocks = getOpinionTool.format!(output);
     const text = (blocks[0] as { text: string }).text;
     expect(text).toContain('download_url');
+  });
+
+  it('format renders full opinion text without truncation (#31)', () => {
+    const longText = 'opinion paragraph. '.repeat(3000); // ~57 KB
+    const output = getOpinionTool.output.parse({
+      kind: 'full',
+      cluster_id: 100,
+      case_name: 'Roe v. Wade',
+      case_name_full: '',
+      court: 'Supreme Court',
+      court_id: 'scotus',
+      date_filed: '1973-01-22',
+      docket_id: 5000,
+      docket_number: '70-18',
+      judges: '',
+      citations: [],
+      cite_count: 0,
+      precedential_status: 'Published',
+      syllabus: '',
+      posture: '',
+      opinions: [
+        {
+          id: 1000,
+          type: 'lead-opinion',
+          author_id: 42,
+          per_curiam: false,
+          html_text: longText,
+          plain_text: '',
+          cites: [],
+          download_url: null,
+        },
+      ],
+    });
+    const blocks = getOpinionTool.format!(output);
+    const text = (blocks[0] as { text: string }).text;
+    expect(text).toContain(longText);
+    expect(text).not.toContain('truncated');
+  });
+
+  it('format renders the opinion outline arm with cheap metadata (#31)', () => {
+    const output = getOpinionTool.output.parse({
+      kind: 'outline',
+      cluster_id: 108713,
+      case_name: 'Roe v. Wade',
+      case_name_full: 'Jane Roe v. Henry Wade',
+      court: 'Supreme Court of the United States',
+      court_id: 'scotus',
+      date_filed: '1973-01-22',
+      docket_id: 5000,
+      docket_number: '70-18',
+      judges: 'Blackmun',
+      citations: ['410 U.S. 113'],
+      cite_count: 25000,
+      precedential_status: 'Published',
+      syllabus: 'Privacy includes reproductive choices.',
+      posture: '',
+      sections: [
+        { name: 'opinion_9425157', bytes: 166178 },
+        { name: 'opinion_9425159', bytes: 141669 },
+      ],
+      retrieval_notice:
+        'Re-call with sections:["opinion_9425157"] to retrieve that variant in full.',
+    });
+    const blocks = getOpinionTool.format!(output);
+    const text = blocks.map((b) => (b as { text: string }).text).join('\n');
+    // cheap metadata rendered even in outline mode (survives overflow on content[] too)
+    expect(text).toContain('Roe v. Wade');
+    expect(text).toContain('410 U.S. 113');
+    // outline section list + notice rendered
+    expect(text).toContain('opinion_9425157');
+    expect(text).toContain('sections available');
+    expect(text).toContain('Re-call with sections');
   });
 });

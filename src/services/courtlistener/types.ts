@@ -343,8 +343,8 @@ export interface Audio {
   id: number;
   /** Free-text judge names; frequently empty on this endpoint. */
   judges: string;
-  /** Person ids of the panel; pass to get_judge. */
-  panel: number[];
+  /** Person resource URIs for the panel judges (e.g. ".../people/77/") — extract each id and chain to get_judge. */
+  panel: string[];
   source: string;
   stt_status: number;
   /** Speech-to-text transcript; empty until transcription completes. */
