@@ -50,7 +50,9 @@ export const searchFinancialDisclosuresTool = tool('courtlistener_search_financi
       .max(20)
       .optional()
       .default(20)
-      .describe('Number of filings to return (1–20).'),
+      .describe(
+        'Number of filings to request (default 20). CourtListener enforces a minimum of 20 results per page regardless of the value passed — you will always receive at least 20 filings.',
+      ),
     cursor: z
       .string()
       .optional()

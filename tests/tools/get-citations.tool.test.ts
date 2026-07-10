@@ -145,6 +145,18 @@ describe('getCitationsTool', () => {
     await expect(getCitationsTool.handler(input, ctx)).rejects.toThrow();
   });
 
+  it('page_size defaults to 20 and scopes the 20-result floor to cited_by (#33)', () => {
+    // default aligns with CourtListener's 20-result floor (mirrors #7)
+    expect(getCitationsTool.input.parse({ cluster_id: 100 }).page_size).toBe(20);
+
+    const desc = getCitationsTool.input.shape.page_size.description ?? '';
+    expect(desc).toMatch(/minimum of 20/i);
+    // the floor is scoped to cited_by; citing is documented as capped at page_size, not floored
+    // (getCiting slices the cited-opinion list, so it returns fewer when the source cites less)
+    expect(desc).toContain('cited_by');
+    expect(desc).toContain('citing');
+  });
+
   it('formats output with source and result details', () => {
     const output = getCitationsTool.output.parse({
       source_cluster_id: 100,

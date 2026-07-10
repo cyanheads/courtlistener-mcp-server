@@ -154,4 +154,10 @@ describe('searchFinancialDisclosuresTool', () => {
     const text = (blocks[0] as { text: string }).text;
     expect(text).toContain('No financial disclosure');
   });
+
+  it('page_size defaults to 20 and documents the 20-result floor (#33)', () => {
+    expect(searchFinancialDisclosuresTool.input.parse({}).page_size).toBe(20);
+    const desc = searchFinancialDisclosuresTool.input.shape.page_size.description ?? '';
+    expect(desc).toMatch(/minimum of 20/i);
+  });
 });

@@ -44,9 +44,9 @@ export const getCitationsTool = tool('courtlistener_get_citations', {
       .min(1)
       .max(20)
       .optional()
-      .default(10)
+      .default(20)
       .describe(
-        'Number of results (1–20). Each citation tool call costs one request against the rate limit — keep page_size low for multi-hop traversal.',
+        'Number of results to request (default 20). For direction="cited_by", CourtListener enforces a minimum of 20 results per page regardless of the value passed — you will always receive at least 20 results. direction="citing" returns at most page_size (the cited-opinion list is sliced before querying) — fewer when the opinion cites fewer than page_size distinct opinions. Each citation tool call costs one request against the rate limit — keep low for multi-hop traversal.',
       ),
     cursor: z
       .string()
