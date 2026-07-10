@@ -64,7 +64,7 @@
     "url": "https://github.com/cyanheads/courtlistener-mcp-server/issues"
   },
   "homepage": "https://github.com/cyanheads/courtlistener-mcp-server#readme",
-  "author": "cyanheads <casey@caseyjhand.com> (https://github.com/cyanheads/courtlistener-mcp-server#readme)",
+  "author": "Casey Hand <casey@caseyjhand.com> (https://caseyjhand.com)",
   "funding": [
     {
       "type": "github",
@@ -76,6 +76,7 @@
     }
   ],
   "license": "Apache-2.0",
+  "packageManager": "bun@1.3.14",
   "engines": {
     "bun": ">=1.3.0",
     "node": ">=24.0.0"
@@ -83,18 +84,20 @@
   "publishConfig": {
     "access": "public"
   },
+  "trustedDependencies": ["@socketsecurity/bun-security-scanner"],
   "dependencies": {
-    "@cyanheads/mcp-ts-core": "^0.10.10",
+    "@cyanheads/mcp-ts-core": "^0.10.14",
     "pino-pretty": "^13.1.3",
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.1",
-    "@types/node": "^26.0.1",
+    "@biomejs/biome": "2.5.2",
+    "@socketsecurity/bun-security-scanner": "^1.1.2",
+    "@types/node": "^26.1.0",
     "depcheck": "^1.4.7",
     "ignore": "^7.0.5",
-    "tsc-alias": "^1.8.17",
+    "tsc-alias": "^1.9.0",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.9"
+    "vitest": "^4.1.10"
   }
 }
