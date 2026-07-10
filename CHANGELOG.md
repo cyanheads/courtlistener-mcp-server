@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.3.1](changelog/0.3.x/0.3.1.md) — 2026-07-10
+
+get_docket exposes retrievable docket-entry pagination via a new entries_page input and next_cursor continuation; get_citations and search_financial_disclosures page_size descriptions now document CourtListener's 20-result minimum.
+
 ## [0.3.0](changelog/0.3.x/0.3.0.md) — 2026-07-10 · ⚠️ Breaking
 
 get_opinion and get_oral_argument adopt honest outline-on-overflow (breaking): large opinion/transcript text returns a re-callable outline instead of truncating in content[]. Also fixes get_oral_argument panel_ids validation failures. mcp-ts-core bumped to 0.10.14 plus Socket supply-chain scanning.
