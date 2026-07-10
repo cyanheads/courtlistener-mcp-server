@@ -111,12 +111,53 @@ describe('getDocketTool', () => {
     });
   });
 
-  it('passes entries_page_size to service', async () => {
+  it('threads entries_page and entries_page_size through to the service', async () => {
     mockSvc.getDocket = vi.fn().mockResolvedValue(baseDocket);
     const ctx = createMockContext();
-    const input = getDocketTool.input.parse({ docket_id: 8000, entries_page_size: 50 });
+    const input = getDocketTool.input.parse({
+      docket_id: 8000,
+      entries_page: 3,
+      entries_page_size: 50,
+    });
     await getDocketTool.handler(input, ctx);
-    expect(mockSvc.getDocket).toHaveBeenCalledWith(8000, 50, ctx);
+    // Signature is getDocket(docketId, entriesPageSize, entriesPage, ctx) — page-size then page.
+    expect(mockSvc.getDocket).toHaveBeenCalledWith(8000, 50, 3, ctx);
+  });
+
+  it('defaults entries_page to 1 when omitted', async () => {
+    mockSvc.getDocket = vi.fn().mockResolvedValue(baseDocket);
+    const ctx = createMockContext();
+    const input = getDocketTool.input.parse({ docket_id: 8000 });
+    await getDocketTool.handler(input, ctx);
+    expect(mockSvc.getDocket).toHaveBeenCalledWith(8000, 20, 1, ctx);
+  });
+
+  it('surfaces next_cursor and echoes entries_page when more entry pages exist', async () => {
+    mockSvc.getDocket = vi.fn().mockResolvedValue({
+      ...baseDocket,
+      docket_entries_count: 153,
+      docket_entries_next_page: '3',
+    });
+    const ctx = createMockContext();
+    const input = getDocketTool.input.parse({ docket_id: 8000, entries_page: 2 });
+    const result = await getDocketTool.handler(input, ctx);
+    expect(result.entries_page).toBe(2);
+    // next page is surfaced as a stringified page number (page-paginated, not a cursor token)
+    expect(result.next_cursor).toBe('3');
+    expect(result.total_entries).toBe(153);
+    expect(() => getDocketTool.output.parse(result)).not.toThrow();
+  });
+
+  it('returns a null next_cursor on the last entry page', async () => {
+    mockSvc.getDocket = vi.fn().mockResolvedValue({
+      ...baseDocket,
+      docket_entries_next_page: null,
+    });
+    const ctx = createMockContext();
+    const input = getDocketTool.input.parse({ docket_id: 8000 });
+    const result = await getDocketTool.handler(input, ctx);
+    expect(result.next_cursor).toBeNull();
+    expect(() => getDocketTool.output.parse(result)).not.toThrow();
   });
 
   it('preserves a non-integer document_number and leaves an already-absolute filepath_local untouched', async () => {
@@ -169,6 +210,8 @@ describe('getDocketTool', () => {
       jury_demand: 'Both',
       jurisdiction_type: 'Federal Question',
       total_entries: 1,
+      entries_page: 1,
+      next_cursor: null,
       entries: [
         {
           id: 50001,
@@ -203,5 +246,32 @@ describe('getDocketTool', () => {
     expect(text).toContain('90001');
     // attachment_number must be rendered
     expect(text).toContain('2');
+  });
+
+  it('format shows the continuation hint when next_cursor is set', () => {
+    const output = getDocketTool.output.parse({
+      docket_id: 8000,
+      case_name: 'Apple v. Samsung',
+      case_name_full: '',
+      court: 'N.D. Cal.',
+      court_id: 'cand',
+      date_filed: '2011-04-15',
+      date_terminated: null,
+      docket_number: '11-cv-01846',
+      pacer_case_id: null,
+      assigned_to: null,
+      referred_to: null,
+      cause: '',
+      jury_demand: '',
+      jurisdiction_type: '',
+      total_entries: 153,
+      entries_page: 1,
+      next_cursor: '2',
+      entries: [],
+    });
+    const text = (getDocketTool.format!(output)[0] as { text: string }).text;
+    // page number and next-page continuation hint must both render
+    expect(text).toContain('**Page:** 1');
+    expect(text).toContain('entries_page=2');
   });
 });

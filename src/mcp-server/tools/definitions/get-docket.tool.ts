@@ -27,6 +27,15 @@ export const getDocketTool = tool('courtlistener_get_docket', {
       .describe(
         "Docket ID from a search result's docket_id field or from an opinion cluster result.",
       ),
+    entries_page: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .default(1)
+      .describe(
+        'Page of docket entries to fetch (1-indexed). Docket entries are page-paginated at 20 per page; pass the next_cursor from a previous response here to page through large cases.',
+      ),
     entries_page_size: z
       .number()
       .int()
@@ -35,7 +44,7 @@ export const getDocketTool = tool('courtlistener_get_docket', {
       .optional()
       .default(20)
       .describe(
-        'Number of docket entries to return (1–50). Large cases can have hundreds of entries.',
+        'Requested docket entries per page. NOTE: CourtListener ignores this value — /docket-entries/ always returns a fixed 20-entry page regardless of what is passed. Use entries_page to reach entries beyond the first 20 (large cases can have hundreds).',
       ),
   }),
 
@@ -62,6 +71,13 @@ export const getDocketTool = tool('courtlistener_get_docket', {
     total_entries: z
       .number()
       .describe('Total number of docket entries available — may exceed the returned entries list.'),
+    entries_page: z.number().describe('Current entries page number (1-indexed).'),
+    next_cursor: z
+      .string()
+      .nullable()
+      .describe(
+        'Next page number to pass as the `entries_page` argument (docket entries are page-paginated); null when this is the last page.',
+      ),
     entries: z
       .array(
         z
@@ -108,7 +124,9 @@ export const getDocketTool = tool('courtlistener_get_docket', {
           })
           .describe('Docket entry with attached documents.'),
       )
-      .describe('Docket entries up to entries_page_size.'),
+      .describe(
+        'Docket entries for this page (fixed at 20 per page; entries_page_size is not honored by upstream).',
+      ),
   }),
 
   errors: [
@@ -131,10 +149,16 @@ export const getDocketTool = tool('courtlistener_get_docket', {
   async handler(input, ctx) {
     ctx.log.info('courtlistener_get_docket', {
       docket_id: input.docket_id,
+      entries_page: input.entries_page,
       entries_page_size: input.entries_page_size,
     });
     const svc = getCourtListenerService();
-    const docket = await svc.getDocket(input.docket_id, input.entries_page_size, ctx);
+    const docket = await svc.getDocket(
+      input.docket_id,
+      input.entries_page_size,
+      input.entries_page,
+      ctx,
+    );
 
     const entries = (docket.docket_entries ?? []).map((e) => ({
       id: e.id,
@@ -158,6 +182,7 @@ export const getDocketTool = tool('courtlistener_get_docket', {
       docket_id: input.docket_id,
       entries_returned: entries.length,
       entries_total: docket.docket_entries_count,
+      entries_next_page: docket.docket_entries_next_page,
     });
 
     return {
@@ -176,6 +201,8 @@ export const getDocketTool = tool('courtlistener_get_docket', {
       jury_demand: docket.jury_demand ?? '',
       jurisdiction_type: docket.jurisdiction_type ?? '',
       total_entries: docket.docket_entries_count ?? entries.length,
+      entries_page: input.entries_page,
+      next_cursor: docket.docket_entries_next_page ?? null,
       entries,
     };
   },
@@ -196,7 +223,9 @@ export const getDocketTool = tool('courtlistener_get_docket', {
     if (result.jury_demand) lines.push(`**Jury demand:** ${result.jury_demand}`);
     if (result.jurisdiction_type) lines.push(`**Jurisdiction:** ${result.jurisdiction_type}`);
     if (result.pacer_case_id) lines.push(`**PACER ID:** ${result.pacer_case_id}`);
-    lines.push(`**Total entries:** ${result.total_entries}`);
+    lines.push(
+      `**Total entries:** ${result.total_entries} | **Page:** ${result.entries_page} | **Next cursor:** ${result.next_cursor ?? 'none'}`,
+    );
 
     if (result.entries.length > 0) {
       lines.push('\n### Docket Entries');
@@ -215,6 +244,12 @@ export const getDocketTool = tool('courtlistener_get_docket', {
           );
         }
       }
+    }
+
+    if (result.next_cursor) {
+      lines.push(
+        `\n*More entries available — pass entries_page=${result.next_cursor} to continue.*`,
+      );
     }
 
     return [{ type: 'text', text: lines.join('\n') }];

@@ -109,6 +109,13 @@ export interface Docket {
   docket_entries: DocketEntry[];
   /** Total entry count from /docket-entries/?docket=... — may exceed the fetched page. */
   docket_entries_count?: number;
+  /**
+   * Next page number to fetch from /docket-entries/?docket=...&page=N; null when the fetched
+   * page is the last. /docket-entries/ is page-paginated (its `next` is a `...&page=N` URL, not a
+   * cursor token), so this is populated as a stringified page number — set the same way
+   * docket_entries_count is, from the /docket-entries/ response.
+   */
+  docket_entries_next_page?: string | null;
   docket_number: string;
   id: number;
   jurisdiction_type: string;

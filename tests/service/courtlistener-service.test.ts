@@ -227,7 +227,7 @@ describe('HTTP error classification', () => {
   it('getDocket throws notFound when docket id is missing from response', async () => {
     const { JsonRpcErrorCode } = await import('@cyanheads/mcp-ts-core/errors');
     mockFetchResponse({ body: JSON.stringify({ id: null }) });
-    await expect(svc.getDocket(99999, 20, ctx)).rejects.toMatchObject({
+    await expect(svc.getDocket(99999, 20, 1, ctx)).rejects.toMatchObject({
       code: JsonRpcErrorCode.NotFound,
     });
   });
@@ -495,7 +495,7 @@ describe('error contracts — reason and recovery hints', () => {
 
   it('getDocket not-found carries a recovery hint', async () => {
     mockFetchResponse({ body: JSON.stringify({ id: null }) });
-    await expect(svc.getDocket(99999, 20, ctx)).rejects.toMatchObject({
+    await expect(svc.getDocket(99999, 20, 1, ctx)).rejects.toMatchObject({
       data: {
         reason: 'not_found',
         recovery: { hint: expect.stringContaining('courtlistener_search_dockets') },
@@ -765,6 +765,79 @@ describe('getCiting cursor pagination (#24)', () => {
   });
 });
 
+// ── getDocket entries pagination (#32) ───────────────────────────────────────
+// /docket-entries/ is page-paginated: entriesPage must reach the upstream `page` param,
+// and a non-null upstream `next` (a ...&page=N URL, not a cursor token) must surface as a
+// stringified next-page number on the docket.
+
+describe('getDocket entries pagination (#32)', () => {
+  let svc: CourtListenerService;
+  let ctx: ReturnType<typeof createMockContext>;
+
+  beforeEach(() => {
+    svc = new CourtListenerService(makeMockConfig(), makeMockStorage());
+    ctx = createMockContext();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('threads entriesPage into the upstream page param and surfaces the next page', async () => {
+    const entryUrls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) => {
+        let body: string;
+        if (url.includes('/docket-entries/')) {
+          entryUrls.push(url);
+          body = JSON.stringify({
+            count: 153,
+            next: 'https://www.courtlistener.com/api/rest/v4/docket-entries/?docket=5578727&page=3',
+            previous: null,
+            results: [
+              {
+                id: 60021,
+                entry_number: 21,
+                date_filed: '2020-02-01',
+                description: 'Order',
+                recap_documents: [],
+              },
+            ],
+          });
+        } else {
+          body = JSON.stringify({ id: 5578727, case_name: 'X', court_id: 'nysd' });
+        }
+        return { status: 200, ok: true, headers: { get: () => null }, text: async () => body };
+      }),
+    );
+
+    const docket = await svc.getDocket(5578727, 20, 2, ctx);
+
+    // entriesPage (2) reaches the upstream `page` query param — not hardcoded to page 1.
+    const entryUrl = new URL(entryUrls[0]);
+    expect(entryUrl.searchParams.get('page')).toBe('2');
+    expect(entryUrl.searchParams.get('docket')).toBe('5578727');
+    // A non-null upstream `next` surfaces as the stringified next page number (2 → "3").
+    expect(docket.docket_entries_next_page).toBe('3');
+    expect(docket.docket_entries_count).toBe(153);
+  });
+
+  it('surfaces a null next page when upstream reports no more entries', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) => {
+        const body = url.includes('/docket-entries/')
+          ? JSON.stringify({ count: 5, next: null, previous: null, results: [] })
+          : JSON.stringify({ id: 5578727, case_name: 'X', court_id: 'nysd' });
+        return { status: 200, ok: true, headers: { get: () => null }, text: async () => body };
+      }),
+    );
+    const docket = await svc.getDocket(5578727, 20, 1, ctx);
+    expect(docket.docket_entries_next_page).toBeNull();
+  });
+});
+
 // ── raw upstream payloads → tool output schema (regression: #22 #23 #26) ──────
 // The pre-existing tool tests mock the SERVICE with already-normalized values, so the
 // real /parties/ and /docket-entries/ shapes (URL-string counts, string document_number,
@@ -991,5 +1064,60 @@ describe('raw upstream payloads validate through the tool output schema', () => 
       ctx,
     );
     expect(result.total_entries).toBe(153);
+  });
+
+  it('get_docket: non-null upstream next surfaces as next_cursor through the tool (#32)', async () => {
+    const entryUrls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) => {
+        let body: string;
+        if (url.includes('/docket-entries/')) {
+          entryUrls.push(url);
+          body = JSON.stringify({
+            count: 153,
+            // page-paginated: `next` is a ...&page=N URL, not a cursor token.
+            next: 'https://www.courtlistener.com/api/rest/v4/docket-entries/?docket=5578727&page=2',
+            previous: null,
+            results: [
+              {
+                id: 50001,
+                entry_number: 1,
+                date_filed: '2020-01-02',
+                description: 'Complaint',
+                recap_documents: [],
+              },
+            ],
+          });
+        } else {
+          body = JSON.stringify({
+            id: 5578727,
+            case_name: 'United States v. Example',
+            case_name_full: '',
+            court: '',
+            court_id: 'nysd',
+            date_filed: '2020-01-01',
+            date_terminated: null,
+            docket_number: '1:20-cv-00001',
+            pacer_case_id: null,
+            assigned_to_str: null,
+            referred_to_str: null,
+            cause: '',
+            jury_demand: '',
+            jurisdiction_type: '',
+          });
+        }
+        return { status: 200, ok: true, headers: { get: () => null }, text: async () => body };
+      }),
+    );
+
+    const input = getDocketTool.input.parse({ docket_id: 5578727, entries_page: 1 });
+    const result = await getDocketTool.handler(input, ctx);
+
+    expect(() => getDocketTool.output.parse(result)).not.toThrow();
+    // page 1 requested; upstream reports a next page → next_cursor is the next page number.
+    expect(new URL(entryUrls[0]).searchParams.get('page')).toBe('1');
+    expect(result.entries_page).toBe(1);
+    expect(result.next_cursor).toBe('2');
   });
 });

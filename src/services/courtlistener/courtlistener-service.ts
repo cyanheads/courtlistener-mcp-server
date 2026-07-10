@@ -391,7 +391,12 @@ export class CourtListenerService {
     };
   }
 
-  async getDocket(docketId: number, entriesPageSize: number, ctx: Context): Promise<Docket> {
+  async getDocket(
+    docketId: number,
+    entriesPageSize: number,
+    entriesPage: number,
+    ctx: Context,
+  ): Promise<Docket> {
     const data = await this.get<Docket>(`/dockets/${docketId}/`, {}, ctx);
     if (!data?.id) {
       throw notFound(`Docket ${docketId} not found.`, {
@@ -400,10 +405,11 @@ export class CourtListenerService {
         recovery: { hint: RECOVERY_HINTS.docket },
       });
     }
-    // /dockets/{id}/ does not include docket_entries — fetch separately from /docket-entries/
+    // /dockets/{id}/ does not include docket_entries — fetch separately from /docket-entries/.
+    // /docket-entries/ is page-paginated (?page=N); page_size is ignored upstream (always 20/page).
     const entries = await this.get<CourtListenerPage<DocketEntry>>(
       '/docket-entries/',
-      { docket: docketId, page_size: entriesPageSize, order_by: 'entry_number' },
+      { docket: docketId, page: entriesPage, page_size: entriesPageSize, order_by: 'entry_number' },
       ctx,
     );
     data.docket_entries = entries.results;
@@ -414,6 +420,9 @@ export class CourtListenerService {
     if (typeof rawCount === 'number') {
       data.docket_entries_count = rawCount;
     }
+    // `next` is a `...&page=N` URL (no cursor token), so signal the next page by number when
+    // upstream reports more entries exist — mirrors getParties' next_cursor derivation.
+    data.docket_entries_next_page = entries.next ? String(entriesPage + 1) : null;
     return data;
   }
 
