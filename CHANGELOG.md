@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.3.0](changelog/0.3.x/0.3.0.md) — 2026-07-10 · ⚠️ Breaking
+
+get_opinion and get_oral_argument adopt honest outline-on-overflow (breaking): large opinion/transcript text returns a re-callable outline instead of truncating in content[]. Also fixes get_oral_argument panel_ids validation failures. mcp-ts-core bumped to 0.10.14 plus Socket supply-chain scanning.
+
 ## [0.2.6](changelog/0.2.x/0.2.6.md) — 2026-06-30 · 🛡️ Security
 
 Three CourtListener display fixes plus a security framework bump. get_opinion surfaces text from all HTML/XML variant fields (pre-2000 opinions no longer empty), court names resolve for all 471 in-use courts, get_judge expands how_selected codes to readable labels. mcp-ts-core 0.10.10 clears hono, js-yaml, and vite advisories.
