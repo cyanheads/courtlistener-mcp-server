@@ -8,6 +8,7 @@ import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { formatOutline, OUTLINE_VARIANT, outlineOnOverflow } from '@cyanheads/mcp-ts-core/utils';
 import { resolveCourtName } from '@/services/courtlistener/court-names.js';
 import { getCourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
+import { idFromUri } from '@/services/courtlistener/uri.js';
 
 /** A single opinion variant within a cluster. Optional in the tool output: the
  *  full arm carries them all; on overflow they're replaced by a section outline. */
@@ -134,8 +135,7 @@ export const getOpinionTool = tool('courtlistener_get_opinion', {
     // Extract docket_id from the docket resource URI if not directly provided
     let docketId = cluster.docket_id ?? 0;
     if (!docketId && cluster.docket) {
-      const match = cluster.docket.match(/\/dockets\/(\d+)\//);
-      if (match?.[1]) docketId = parseInt(match[1], 10);
+      docketId = idFromUri(cluster.docket, 'dockets') ?? 0;
     }
 
     // /clusters/{id}/ omits court_id and docket_number — backfill from the linked
@@ -171,8 +171,8 @@ export const getOpinionTool = tool('courtlistener_get_opinion', {
       plain_text: op.plain_text ?? '',
       // opinions_cited are URI strings — extract the numeric ID from each
       cites: (op.opinions_cited ?? []).flatMap((uri) => {
-        const match = String(uri).match(/\/opinions\/(\d+)\//);
-        return match?.[1] ? [parseInt(match[1], 10)] : [];
+        const id = idFromUri(String(uri), 'opinions');
+        return id !== null ? [id] : [];
       }),
       download_url: op.download_url ?? null,
     }));

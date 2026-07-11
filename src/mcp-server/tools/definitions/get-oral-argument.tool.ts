@@ -12,6 +12,7 @@ import {
   selectSections,
 } from '@cyanheads/mcp-ts-core/utils';
 import { getCourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
+import { idFromUri, personIdFromUri } from '@/services/courtlistener/uri.js';
 
 /** Full-mode fields — the record itself. Made optional in the tool output so an
  *  outline (or a section-scoped re-call) can omit the fields it doesn't carry. */
@@ -100,8 +101,7 @@ export const getOralArgumentTool = tool('courtlistener_get_oral_argument', {
     // docket arrives as a resource URI — extract the numeric ID.
     let docketId = 0;
     if (audio.docket) {
-      const match = audio.docket.match(/\/dockets\/(\d+)\//);
-      if (match?.[1]) docketId = parseInt(match[1], 10);
+      docketId = idFromUri(audio.docket, 'dockets') ?? 0;
     }
 
     const transcript = audio.stt_transcript ?? '';
@@ -109,8 +109,8 @@ export const getOralArgumentTool = tool('courtlistener_get_oral_argument', {
     // panel arrives as person resource URIs (/people/{id}/) — extract the numeric
     // IDs, dropping any that don't parse. Mirrors the docket + opinions_cited extraction.
     const panelIds = (audio.panel ?? []).flatMap((uri) => {
-      const match = String(uri).match(/\/people\/(\d+)\//);
-      return match?.[1] ? [parseInt(match[1], 10)] : [];
+      const id = personIdFromUri(String(uri));
+      return id !== null ? [id] : [];
     });
 
     const detail = {

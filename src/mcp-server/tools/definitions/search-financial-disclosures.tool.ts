@@ -6,6 +6,7 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getCourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
+import { personIdFromUri } from '@/services/courtlistener/uri.js';
 
 /** Disclosure report-type codes from CourtListener. */
 const REPORT_TYPE_LABELS: Record<number, string> = {
@@ -15,12 +16,6 @@ const REPORT_TYPE_LABELS: Record<number, string> = {
   2: 'Annual',
   3: 'Final',
 };
-
-/** Extract the numeric person id from a `/people/{id}/` resource URI. */
-function personIdFromUri(uri: string): number | null {
-  const match = uri.match(/\/people\/(\d+)\//);
-  return match?.[1] ? parseInt(match[1], 10) : null;
-}
 
 export const searchFinancialDisclosuresTool = tool('courtlistener_search_financial_disclosures', {
   title: 'Search Financial Disclosures',
