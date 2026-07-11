@@ -1,13 +1,13 @@
 <div align="center">
   <h1>@cyanheads/courtlistener-mcp-server</h1>
   <p><b>Search and retrieve US court opinions, federal dockets, judge records, citation networks, and oral arguments from CourtListener's 9M+ opinion corpus via MCP. STDIO or Streamable HTTP.</b>
-  <div>13 Tools</div>
+  <div>14 Tools</div>
   </p>
 </div>
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.3.1-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/courtlistener-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/courtlistener-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/courtlistener-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.2-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.4.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/courtlistener-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/courtlistener-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/courtlistener-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.2-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -29,7 +29,7 @@
 
 ## Tools
 
-13 tools spanning the full CourtListener dataset — opinion search and retrieval, citation network traversal, federal docket lookup, party and attorney lookup, judge biography, judicial financial disclosures, court discovery, and oral argument search and detail:
+14 tools spanning the full CourtListener dataset — opinion search and retrieval, citation network traversal, federal docket lookup, party and attorney lookup, judge biography, judicial financial disclosure search and detail, court discovery, and oral argument search and detail:
 
 | Tool | Description |
 |:---|:---|
@@ -46,6 +46,7 @@
 | `courtlistener_search_oral_arguments` | Search appellate oral argument audio recordings by case name, court, and date argued |
 | `courtlistener_get_oral_argument` | Fetch full detail for a single oral argument — panel, duration, MP3 link, and speech-to-text transcript |
 | `courtlistener_search_financial_disclosures` | Search federal judicial financial disclosure filings by judge and year — category counts, itemized gifts, and source PDF |
+| `courtlistener_get_financial_disclosure` | Fetch one disclosure's parsed line items — investments, debts, positions, income, gifts — with coded values decoded to dollar ranges; selectable by category |
 
 ### `courtlistener_search_opinions`
 
@@ -182,6 +183,17 @@ Search federal judicial financial disclosure filings for ethics and recusal rese
 - Filter by `judge_id` (a `person_id` from `courtlistener_search_judges`) and/or filing `year`
 - Returns per-filing category counts (investments, gifts, debts, positions, reimbursements, income), itemized gifts, and a link to the source PDF
 - Line-item investments — often hundreds per filing, with coded values — are summarized as counts; the linked PDF carries the full itemization
+
+---
+
+### `courtlistener_get_financial_disclosure`
+
+Fetch one disclosure's parsed line items in full — the itemized companion to the search tool.
+
+- Keyed by `disclosure_id` (from a `courtlistener_search_financial_disclosures` result); one upstream call returns every category inline
+- Returns filing metadata, per-category counts, and the requested line-item rows — investments, debts, positions, reimbursements, non-investment and spouse income, agreements, and gifts
+- Coded income/value columns are decoded to readable dollar ranges (e.g. `N` → `$250,001 - $500,000`)
+- Pass `categories: [...]` to select specific categories; omit for all. When the full itemization is too large to inline, the response returns an outline of categories by size — re-call with `categories: [...]` to pull specific ones in full
 
 ## Features
 
@@ -383,7 +395,7 @@ The Dockerfile defaults to HTTP transport, stateless session mode, and logs to `
 |:----------|:--------|
 | `src/index.ts` | `createApp()` entry point — registers tools and inits services. |
 | `src/config` | Server-specific environment variable parsing and validation with Zod. |
-| `src/mcp-server/tools` | Tool definitions (`*.tool.ts`). Ten tools across opinions, dockets, judges, courts, and oral arguments. |
+| `src/mcp-server/tools` | Tool definitions (`*.tool.ts`). 14 tools across opinions, citations, dockets, parties, judges, financial disclosures, courts, and oral arguments. |
 | `src/services/courtlistener` | CourtListener REST API client — auth, retry, rate-limit error classification. |
 | `tests/` | Unit and integration tests mirroring `src/`. |
 
@@ -393,7 +405,7 @@ See [`CLAUDE.md`](./CLAUDE.md) for development guidelines and architectural rule
 
 - Handlers throw, framework catches — no `try/catch` in tool logic
 - Use `ctx.log` for request-scoped logging, `ctx.state` for tenant-scoped storage
-- Register new tools via the barrels in `src/mcp-server/tools/definitions/index.ts`
+- Register new tools by importing them in `src/index.ts` and adding to the `createApp({ tools: [...] })` array
 - Wrap CourtListener API calls: validate raw → normalize to domain type → return output schema; never fabricate missing fields
 
 ## Contributing

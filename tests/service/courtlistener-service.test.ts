@@ -596,6 +596,152 @@ describe('searchFinancialDisclosures', () => {
   });
 });
 
+describe('getFinancialDisclosure', () => {
+  let svc: CourtListenerService;
+  let ctx: ReturnType<typeof createMockContext>;
+
+  beforeEach(() => {
+    svc = new CourtListenerService(makeMockConfig(), makeMockStorage());
+    ctx = createMockContext();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  // A recorded slice of the live /financial-disclosures/34207/ payload (person 3045,
+  // 2022). Categories arrive inline as arrays of rows carrying resource_uri,
+  // timestamps, and a financial_disclosure back-reference — noise the tool ignores.
+  // Kept here so a change to the raw upstream shape surfaces in the service test.
+  const RECORDED_34207 = {
+    resource_uri: 'https://www.courtlistener.com/api/rest/v4/financial-disclosures/34207/',
+    id: 34207,
+    person: 'https://www.courtlistener.com/api/rest/v4/people/3045/',
+    year: 2022,
+    report_type: 2,
+    page_count: 12,
+    is_amended: false,
+    has_been_extracted: true,
+    filepath: 'https://storage.courtlistener.com/us/federal/.../3045-disclosure.2022.pdf',
+    thumbnail: null,
+    sha1: 'abc123',
+    gifts: [],
+    agreements: [],
+    spouse_incomes: [],
+    investments: [
+      {
+        resource_uri: 'https://www.courtlistener.com/api/rest/v4/investments/5385757/',
+        id: 5385757,
+        date_created: '2023-08-31T08:48:07.096436-07:00',
+        page_number: 5,
+        description: 'Citibank, N.A. Accounts',
+        redacted: false,
+        income_during_reporting_period_code: 'A',
+        income_during_reporting_period_type: 'Interest',
+        gross_value_code: 'N',
+        gross_value_method: 'T',
+        transaction_during_reporting_period: '',
+        transaction_date_raw: '',
+        transaction_value_code: '',
+        transaction_gain_code: '',
+        transaction_partner: '',
+        has_inferred_values: false,
+        financial_disclosure:
+          'https://www.courtlistener.com/api/rest/v4/financial-disclosures/34207/',
+      },
+    ],
+    debts: [
+      {
+        resource_uri: 'https://www.courtlistener.com/api/rest/v4/debts/53678/',
+        id: 53678,
+        creditor_name: 'Wells Fargo Bank, NA',
+        description: 'Mortgage on Rental Property #1',
+        value_code: 'N',
+        redacted: false,
+      },
+    ],
+    positions: [
+      {
+        resource_uri: 'https://www.courtlistener.com/api/rest/v3/disclosure-positions/99105/',
+        id: 99105,
+        position: 'Governing Director',
+        organization_name: 'iCivics',
+        redacted: false,
+      },
+    ],
+    reimbursements: [
+      {
+        resource_uri: 'https://www.courtlistener.com/api/rest/v4/reimbursements/97031/',
+        id: 97031,
+        source: 'Washington University in St. Louis',
+        date_raw: 'April 3-5, 2022',
+        location: 'St Louis, MO',
+        purpose: 'Meeting with students, meeting with local judges',
+        items_paid_or_provided: 'Transportation, Lodging and Meals',
+        redacted: false,
+      },
+    ],
+    non_investment_incomes: [
+      {
+        resource_uri: 'https://www.courtlistener.com/api/rest/v4/non-investment-incomes/42529/',
+        id: 42529,
+        date_raw: '3/10/2022',
+        source_type: 'DHX Media Ltd. (second option fee)',
+        income_amount: '$10,116.00',
+        redacted: false,
+      },
+    ],
+  };
+
+  it('returns the disclosure with every category inlined in one call (#34)', async () => {
+    mockFetchResponse({ body: JSON.stringify(RECORDED_34207) });
+    const result = await svc.getFinancialDisclosure(34207, ctx);
+
+    expect(result.id).toBe(34207);
+    expect(result.year).toBe(2022);
+    // categories are inline arrays — the detail endpoint returns them in one call
+    expect(result.investments).toHaveLength(1);
+    expect(result.investments[0].description).toBe('Citibank, N.A. Accounts');
+    expect(result.investments[0].gross_value_code).toBe('N');
+    expect(result.debts[0].value_code).toBe('N');
+    expect(result.positions[0].organization_name).toBe('iCivics');
+    expect(result.non_investment_incomes[0].income_amount).toBe('$10,116.00');
+  });
+
+  it('throws not_found with a recovery hint when the disclosure id is missing', async () => {
+    const { JsonRpcErrorCode } = await import('@cyanheads/mcp-ts-core/errors');
+    mockFetchResponse({ body: JSON.stringify({ id: null }) });
+    await expect(svc.getFinancialDisclosure(99999, ctx)).rejects.toMatchObject({
+      code: JsonRpcErrorCode.NotFound,
+      data: {
+        reason: 'not_found',
+        recovery: { hint: expect.stringContaining('courtlistener_search_financial_disclosures') },
+      },
+    });
+  });
+
+  it('drives the recorded payload through the tool to schema-valid decoded output (#34)', async () => {
+    const { getFinancialDisclosureTool } = await import(
+      '@/mcp-server/tools/definitions/get-financial-disclosure.tool.js'
+    );
+    initCourtListenerService(makeMockConfig(), makeMockStorage());
+    mockFetchResponse({ body: JSON.stringify(RECORDED_34207) });
+
+    const input = getFinancialDisclosureTool.input.parse({
+      disclosure_id: 34207,
+      categories: ['investments', 'debts'],
+    });
+    const result = await getFinancialDisclosureTool.handler(input, ctx);
+
+    // Raw coded columns decode to readable ranges through the real handler.
+    expect(() => getFinancialDisclosureTool.output.parse(result)).not.toThrow();
+    expect(result.investments?.[0]?.value_range).toBe('$250,001 - $500,000');
+    expect(result.investments?.[0]?.income_range).toBe('$1 - $1,000');
+    expect(result.debts?.[0]?.value_range).toBe('$250,001 - $500,000');
+    expect(result.person_id).toBe(3045);
+  });
+});
+
 // ── fetchWithTimeout non-2xx interception (production error path) ─────────────
 // In production fetchWithTimeout THROWS an McpError on non-2xx (with data.statusCode,
 // no data.reason, leaking the URL) before the manual status checks run. These tests

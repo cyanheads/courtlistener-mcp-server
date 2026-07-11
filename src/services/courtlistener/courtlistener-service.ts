@@ -35,6 +35,7 @@ import type {
   PersonPosition,
   PersonSearchResult,
 } from './types.js';
+import { idFromUri } from './uri.js';
 
 const REQUEST_TIMEOUT_MS = 30_000;
 
@@ -56,8 +57,8 @@ function extractCursor(nextUrl: string | null): string | null {
  */
 function toDocketId(docket: number | string): number | null {
   if (typeof docket === 'number') return docket;
-  const match = String(docket).match(/\/dockets\/(\d+)\//);
-  if (match?.[1]) return parseInt(match[1], 10);
+  const fromUri = idFromUri(docket, 'dockets');
+  if (fromUri !== null) return fromUri;
   const n = Number(docket);
   return Number.isFinite(n) ? n : null;
 }
@@ -87,6 +88,7 @@ const RECOVERY_HINTS = {
     'Verify the docket ID via courtlistener_search_dockets. Parties data requires RECAP coverage for the docket.',
   person: 'Verify the person ID via courtlistener_search_judges.',
   audio: 'Verify the audio ID via courtlistener_search_oral_arguments.',
+  disclosure: 'Verify the disclosure ID via courtlistener_search_financial_disclosures.',
 } as const;
 
 /** Map a request path to the recovery hint for its resource type. */
@@ -96,6 +98,7 @@ function recoveryHintForPath(path: string): string | undefined {
   if (path.includes('/dockets/')) return RECOVERY_HINTS.docket;
   if (path.includes('/people/')) return RECOVERY_HINTS.person;
   if (path.includes('/audio/')) return RECOVERY_HINTS.audio;
+  if (path.includes('/financial-disclosures/')) return RECOVERY_HINTS.disclosure;
   return;
 }
 
@@ -144,7 +147,7 @@ export class CourtListenerService {
     return {
       Authorization: `Token ${this.token}`,
       Accept: 'application/json',
-      'User-Agent': 'courtlistener-mcp-server/0.3.1',
+      'User-Agent': 'courtlistener-mcp-server/0.4.0',
     };
   }
 
@@ -607,8 +610,8 @@ export class CourtListenerService {
     const citedIds = cluster.sub_opinions
       .flatMap((op) =>
         (op.opinions_cited ?? []).flatMap((uri) => {
-          const match = String(uri).match(/\/opinions\/(\d+)\//);
-          return match?.[1] ? [parseInt(match[1], 10)] : [];
+          const id = idFromUri(String(uri), 'opinions');
+          return id !== null ? [id] : [];
         }),
       )
       .filter((id, i, arr) => arr.indexOf(id) === i);
@@ -718,6 +721,23 @@ export class CourtListenerService {
       results: data.results,
       nextCursor: extractCursor(data.next),
     };
+  }
+
+  /**
+   * Fetch a single financial disclosure by ID. The detail endpoint returns the
+   * same shape as the list endpoint, with every line-item category inlined as an
+   * array — a single upstream call yields the full itemization.
+   */
+  async getFinancialDisclosure(id: number, ctx: Context): Promise<FinancialDisclosure> {
+    const data = await this.get<FinancialDisclosure>(`/financial-disclosures/${id}/`, {}, ctx);
+    if (!data?.id) {
+      throw notFound(`Financial disclosure ${id} not found.`, {
+        reason: 'not_found',
+        disclosureId: id,
+        recovery: { hint: RECOVERY_HINTS.disclosure },
+      });
+    }
+    return data;
   }
 
   // ── Parties ───────────────────────────────────────────────────────────────

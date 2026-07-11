@@ -259,30 +259,126 @@ export interface FinancialGift {
 }
 
 /**
- * Judicial financial disclosure from /financial-disclosures/.
- * Line-item categories (investments, debts, positions, etc.) arrive inline as
- * arrays — investments can run to hundreds of coded entries per filing, so the
- * tool surfaces category counts plus the linked PDF rather than the raw rows.
+ * Line-item category shapes from /financial-disclosures/{id}/. Each category
+ * arrives inline as an array of these rows. Only the fields the detail tool
+ * surfaces are declared; extraction metadata (resource_uri, timestamps,
+ * back-references) is omitted. Coded columns (income/value/method) carry
+ * single-letter AO form codes decoded to dollar ranges in the tool layer.
+ */
+
+/** An investment holding (Part VII). Coded income/value/method columns. */
+export interface Investment {
+  /** Name of the holding (e.g. "Citibank, N.A. Accounts"). */
+  description: string;
+  /** End-of-period gross-value code (J–P4); '' if none. */
+  gross_value_code: string;
+  /** Valuation-method code (Q–W); '' if none. */
+  gross_value_method: string;
+  id: number;
+  /** Income-amount code during the reporting period (A–H2); '' if none. */
+  income_during_reporting_period_code: string;
+  /** Income type (e.g. "Interest", "Dividend", "Rent"); '' if none. */
+  income_during_reporting_period_type: string;
+  redacted: boolean;
+  /** Transaction date as filed (e.g. "03/10/2022"); '' if none. */
+  transaction_date_raw: string;
+  /** Transaction during the period (e.g. "Buy", "Sold"); '' if none. */
+  transaction_during_reporting_period: string;
+  /** Transaction gain code (A–H2); '' if none. */
+  transaction_gain_code: string;
+  /** Identity of the transaction partner; '' if none. */
+  transaction_partner: string;
+  /** Transaction value code (J–P4); '' if none. */
+  transaction_value_code: string;
+}
+
+/** A debt or liability (Part VII). */
+export interface Debt {
+  creditor_name: string;
+  description: string;
+  id: number;
+  redacted: boolean;
+  /** Gross-value code for the debt (J–P4); '' if none. */
+  value_code: string;
+}
+
+/** An outside position held by the filer (Part I). */
+export interface DisclosurePosition {
+  id: number;
+  organization_name: string;
+  /** Position title (e.g. "Governing Director"). */
+  position: string;
+  redacted: boolean;
+}
+
+/** A travel reimbursement (Part IV). */
+export interface Reimbursement {
+  /** Dates as filed (e.g. "April 3-5, 2022"). */
+  date_raw: string;
+  id: number;
+  /** Items reimbursed (e.g. "Transportation, Lodging and Meals"). */
+  items_paid_or_provided: string;
+  location: string;
+  purpose: string;
+  redacted: boolean;
+  source: string;
+}
+
+/** Non-investment income of the filer (Part II). */
+export interface NonInvestmentIncome {
+  /** Date as filed (e.g. "3/10/2022"). */
+  date_raw: string;
+  id: number;
+  /** Amount as filed — usually a dollar string (e.g. "$10,116.00"). */
+  income_amount: string;
+  redacted: boolean;
+  /** Source and type of the income. */
+  source_type: string;
+}
+
+/** Income of the filer's spouse (Part III). */
+export interface SpouseIncome {
+  date_raw: string;
+  id: number;
+  redacted: boolean;
+  /** Source and type of the spousal income. */
+  source_type: string;
+}
+
+/** A continuing agreement or arrangement (Part VIII). */
+export interface Agreement {
+  date_raw: string;
+  id: number;
+  /** Parties to and terms of the agreement. */
+  parties_and_terms: string;
+  redacted: boolean;
+}
+
+/**
+ * Judicial financial disclosure from /financial-disclosures/{id}/ (and the list
+ * endpoint). Line-item categories arrive inline as arrays — investments can run
+ * to hundreds of coded entries per filing, so the search tool surfaces counts
+ * while courtlistener_get_financial_disclosure returns the itemized rows.
  */
 export interface FinancialDisclosure {
-  agreements: unknown[];
-  debts: unknown[];
+  agreements: Agreement[];
+  debts: Debt[];
   /** URL to the source disclosure PDF on CourtListener; null if unavailable. */
   filepath: string | null;
   gifts: FinancialGift[];
   has_been_extracted: boolean;
   id: number;
-  investments: unknown[];
+  investments: Investment[];
   is_amended: boolean;
-  non_investment_incomes: unknown[];
+  non_investment_incomes: NonInvestmentIncome[];
   page_count: number | null;
   /** Resource URI for the filer — extract the person id and chain to get_judge. */
   person: string;
-  positions: unknown[];
-  reimbursements: unknown[];
+  positions: DisclosurePosition[];
+  reimbursements: Reimbursement[];
   /** Report-type code (-1 unknown, 0 nomination, 1 initial, 2 annual, 3 final). */
   report_type: number;
-  spouse_incomes: unknown[];
+  spouse_incomes: SpouseIncome[];
   year: number;
 }
 

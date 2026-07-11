@@ -1,6 +1,6 @@
 # courtlistener-mcp-server - Directory Structure
 
-Generated on: 2026-07-10 19:49:20
+Generated on: 2026-07-11 00:05:53
 
 ```text
 courtlistener-mcp-server/
@@ -144,6 +144,7 @@ courtlistener-mcp-server/
 │   │       └── definitions/
 │   │           ├── get-citations.tool.ts
 │   │           ├── get-docket.tool.ts
+│   │           ├── get-financial-disclosure.tool.ts
 │   │           ├── get-judge.tool.ts
 │   │           ├── get-opinion.tool.ts
 │   │           ├── get-oral-argument.tool.ts
@@ -160,7 +161,8 @@ courtlistener-mcp-server/
 │   │       ├── court-names-data.ts
 │   │       ├── court-names.ts
 │   │       ├── courtlistener-service.ts
-│   │       └── types.ts
+│   │       ├── types.ts
+│   │       └── uri.ts
 │   └── index.ts
 ├── tests/
 │   ├── prompts/
@@ -170,10 +172,12 @@ courtlistener-mcp-server/
 │   ├── service/
 │   │   ├── court-names.test.ts
 │   │   ├── courtlistener-service.retry.test.ts
-│   │   └── courtlistener-service.test.ts
+│   │   ├── courtlistener-service.test.ts
+│   │   └── uri.test.ts
 │   ├── tools/
 │   │   ├── get-citations.tool.test.ts
 │   │   ├── get-docket.tool.test.ts
+│   │   ├── get-financial-disclosure.tool.test.ts
 │   │   ├── get-judge.tool.test.ts
 │   │   ├── get-opinion.tool.test.ts
 │   │   ├── get-oral-argument.tool.test.ts
@@ -199,6 +203,7 @@ courtlistener-mcp-server/
 ├── CLAUDE.md
 ├── devcheck.config.json
 ├── Dockerfile
+├── LICENSE
 ├── manifest.json
 ├── package.json
 ├── README.md

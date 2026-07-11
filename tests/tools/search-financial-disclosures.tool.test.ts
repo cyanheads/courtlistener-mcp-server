@@ -28,10 +28,15 @@ const baseDisclosure: FinancialDisclosure = {
   has_been_extracted: true,
   is_amended: false,
   filepath: 'https://storage.courtlistener.com/disclosures/2022/1609.pdf',
-  investments: Array.from({ length: 50 }, () => ({})),
+  // The search tool reads only `.length` for these count-only categories, so the
+  // element shape is irrelevant here — cast placeholder arrays to the row types.
+  investments: Array.from(
+    { length: 50 },
+    () => ({}),
+  ) as unknown as FinancialDisclosure['investments'],
   gifts: [{ description: 'Lodging at conference', source: 'Bar Association', value: '$1,000.00' }],
   debts: [],
-  positions: Array.from({ length: 8 }, () => ({})),
+  positions: Array.from({ length: 8 }, () => ({})) as unknown as FinancialDisclosure['positions'],
   reimbursements: [],
   agreements: [],
   non_investment_incomes: [],
