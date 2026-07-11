@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.4.0](changelog/0.4.x/0.4.0.md) — 2026-07-10
+
+Adds courtlistener_get_financial_disclosure for itemized financial-disclosure line items (investments, debts, positions, income, gifts) with coded AO values decoded to dollar ranges; ships the previously-missing Apache-2.0 LICENSE file.
+
 ## [0.3.1](changelog/0.3.x/0.3.1.md) — 2026-07-10
 
 get_docket exposes retrievable docket-entry pagination via a new entries_page input and next_cursor continuation; get_citations and search_financial_disclosures page_size descriptions now document CourtListener's 20-result minimum.
