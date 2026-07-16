@@ -652,8 +652,8 @@ cursor: z.string().optional()
 - Boolean: `AND`, `OR`, `NOT`
 
 ### Pagination
-- Cursor-based (opaque string in `next` URL), not page-number
-- Do NOT use `page=N` — cursor pagination is required for consistent results
+- `/search/`-backed tools (opinions, dockets, judges, oral arguments, citation network) are cursor-based (opaque string in `next` URL): do NOT use `page=N` — cursor pagination is required for consistent results
+- The non-`/search/` list endpoints are page-number paginated by upstream design and expose a 1-indexed `page` input: `/docket-entries/` (`courtlistener_get_docket`), `/parties/` (`courtlistener_get_parties`), and `/courts/` (`courtlistener_lookup_courts`). Each caps the page at ~20 rows regardless of `page_size` and returns the next page number as `next_cursor`
 
 ### Rate limit throttles (free tier)
 | Window | Limit |

@@ -165,4 +165,53 @@ describe('searchFinancialDisclosuresTool', () => {
     const desc = searchFinancialDisclosuresTool.input.shape.page_size.description ?? '';
     expect(desc).toMatch(/minimum of 20/i);
   });
+
+  it('flags an empty year-filtered page as page-local when more pages exist (#36)', async () => {
+    // The page carries a filing, but for a different year — the local year filter zeroes it.
+    const otherYear = { ...baseDisclosure, id: 34999, year: 2019 };
+    mockSvc.searchFinancialDisclosures = vi
+      .fn()
+      .mockResolvedValue({ total: null, results: [otherYear], nextCursor: 'cD05MDY=' });
+    const ctx = createMockContext();
+    const input = searchFinancialDisclosuresTool.input.parse({ judge_id: 3045, year: 2010 });
+    const result = await searchFinancialDisclosuresTool.handler(input, ctx);
+
+    expect(result.results).toHaveLength(0);
+    // the continuation survives on the returned object
+    expect(result.next_cursor).toBe('cD05MDY=');
+    const enrichment = getEnrichment(ctx);
+    // Pre-fix this was the generic "not all judges have disclosures" notice with no cursor.
+    expect(enrichment.notice).toContain('more pages exist');
+    expect(enrichment.notice).toContain('cursor=cD05MDY=');
+  });
+
+  it('keeps the generic recovery notice when the page is genuinely empty (#36)', async () => {
+    mockSvc.searchFinancialDisclosures = vi
+      .fn()
+      .mockResolvedValue({ total: null, results: [], nextCursor: null });
+    const ctx = createMockContext();
+    const input = searchFinancialDisclosuresTool.input.parse({ judge_id: 99999, year: 2010 });
+    await searchFinancialDisclosuresTool.handler(input, ctx);
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.notice).toContain('No financial disclosures found');
+    expect(enrichment.notice).not.toContain('more pages exist');
+  });
+
+  it('renders next_cursor on an empty filtered page instead of returning early (#36)', () => {
+    const output = searchFinancialDisclosuresTool.output.parse({
+      results: [],
+      next_cursor: 'cD05MDY=',
+    });
+    const blocks = searchFinancialDisclosuresTool.format!(output);
+    const text = (blocks[0] as { text: string }).text;
+    // Pre-fix, format() early-returned on empty results and dropped the cursor from content[].
+    expect(text).toContain('Next page cursor');
+    expect(text).toContain('cD05MDY=');
+  });
+
+  it('documents the year filter as page-local in describe and description (#36)', () => {
+    const desc = searchFinancialDisclosuresTool.input.shape.year.description ?? '';
+    expect(desc).toMatch(/fetched page only/i);
+    expect(searchFinancialDisclosuresTool.description).toMatch(/fetched page only/i);
+  });
 });

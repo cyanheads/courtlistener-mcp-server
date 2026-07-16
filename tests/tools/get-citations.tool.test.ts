@@ -242,4 +242,20 @@ describe('getCitationsTool', () => {
     const text = (blocks[0] as { text: string }).text;
     expect(text).toContain('No citations');
   });
+
+  it('renders next_cursor on an empty page instead of returning early (#36)', () => {
+    const output = getCitationsTool.output.parse({
+      source_cluster_id: 100,
+      source_case_name: 'Test',
+      direction: 'cited_by',
+      results: [],
+      next_cursor: '4',
+    });
+    const blocks = getCitationsTool.format!(output);
+    const text = (blocks[0] as { text: string }).text;
+    expect(text).toContain('No citations');
+    // Pre-fix, the empty branch early-returned before the continuation could render.
+    expect(text).toContain('Next page cursor');
+    expect(text).toContain('4');
+  });
 });

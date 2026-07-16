@@ -49,9 +49,25 @@ export const lookupCourtsTool = tool('courtlistener_lookup_courts', {
       .describe(
         'Filter to courts with active opinion scraping. Useful when planning search queries — courts without scrapers have sparse coverage.',
       ),
+    page: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .default(1)
+      .describe(
+        'Page number (1-indexed). CourtListener caps /courts/ at ~20 rows per page regardless of size, so the full list (~472 courts) spans ~24 pages — pass the next_cursor from a previous response here to page through them.',
+      ),
   }),
 
   output: z.object({
+    page: z.number().describe('Current page number (1-indexed).'),
+    next_cursor: z
+      .string()
+      .nullable()
+      .describe(
+        'Next page number to pass as the `page` argument (this list is page-paginated at ~20 rows/page); null when this is the last page.',
+      ),
     courts: z
       .array(
         z
@@ -106,6 +122,7 @@ export const lookupCourtsTool = tool('courtlistener_lookup_courts', {
         jurisdiction: input.jurisdiction,
         in_use: input.in_use,
         has_opinion_scraper: input.has_opinion_scraper,
+        page: input.page,
       },
       ctx,
     );
@@ -133,27 +150,33 @@ export const lookupCourtsTool = tool('courtlistener_lookup_courts', {
       );
     }
 
-    return { courts };
+    return { page: input.page, next_cursor: data.next_cursor, courts };
   },
 
   format: (result) => {
-    const lines: string[] = [`## CourtListener Courts`];
+    const lines: string[] = [
+      `## CourtListener Courts`,
+      `**Page:** ${result.page} | **Next cursor:** ${result.next_cursor ?? 'none'}`,
+    ];
 
     if (result.courts.length === 0) {
       lines.push('\n> No courts matched the filters.');
-      return [{ type: 'text', text: lines.join('\n') }];
+    } else {
+      lines.push(
+        '\n| ID | Full Name | Short Name | Citation | Jurisdiction | Opinion Scraper | OA Scraper |',
+      );
+      lines.push(
+        '|:---|:---------|:----------|:---------|:-------------|:---------------|:----------|',
+      );
+      for (const c of result.courts) {
+        lines.push(
+          `| \`${c.id}\` | ${c.full_name} | ${c.short_name} | ${c.citation_string} | ${c.jurisdiction} | ${c.has_opinion_scraper ? 'Yes' : 'No'} | ${c.has_oral_argument_scraper ? 'Yes' : 'No'} |`,
+        );
+      }
     }
 
-    lines.push(
-      '\n| ID | Full Name | Short Name | Citation | Jurisdiction | Opinion Scraper | OA Scraper |',
-    );
-    lines.push(
-      '|:---|:---------|:----------|:---------|:-------------|:---------------|:----------|',
-    );
-    for (const c of result.courts) {
-      lines.push(
-        `| \`${c.id}\` | ${c.full_name} | ${c.short_name} | ${c.citation_string} | ${c.jurisdiction} | ${c.has_opinion_scraper ? 'Yes' : 'No'} | ${c.has_oral_argument_scraper ? 'Yes' : 'No'} |`,
-      );
+    if (result.next_cursor) {
+      lines.push(`\n*More courts available — pass page=${result.next_cursor} to continue.*`);
     }
 
     return [{ type: 'text', text: lines.join('\n') }];

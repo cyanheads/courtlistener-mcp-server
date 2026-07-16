@@ -20,7 +20,7 @@ const REPORT_TYPE_LABELS: Record<number, string> = {
 export const searchFinancialDisclosuresTool = tool('courtlistener_search_financial_disclosures', {
   title: 'Search Financial Disclosures',
   description:
-    "Search federal judicial financial disclosure filings — the annual reports judges file on investments, gifts, debts, outside positions, and income. Filter by judge (person ID from courtlistener_search_judges) and/or filing year. Returns per-filing metadata, category counts, itemized gifts, and a link to the source PDF. Line-item investments (often hundreds per filing, with coded values) are summarized as counts; the linked PDF carries the full itemization. Use this for judicial-ethics and recusal research after identifying a judge's person ID.",
+    "Search federal judicial financial disclosure filings — the annual reports judges file on investments, gifts, debts, outside positions, and income. Filter by judge (person ID from courtlistener_search_judges) and/or filing year; the year filter is applied to the fetched page only (CourtListener has no server-side year filter), so page through with cursor to reach a judge's filings for a year that fall on later pages. Returns per-filing metadata, category counts, itemized gifts, and a link to the source PDF. Line-item investments (often hundreds per filing, with coded values) are summarized as counts; the linked PDF carries the full itemization. Use this for judicial-ethics and recusal research after identifying a judge's person ID.",
   annotations: { readOnlyHint: true, openWorldHint: true, idempotentHint: false },
 
   input: z.object({
@@ -36,7 +36,7 @@ export const searchFinancialDisclosuresTool = tool('courtlistener_search_financi
       .int()
       .optional()
       .describe(
-        'Filing year to filter by (e.g., 2022). Filters the fetched filings — pair with judge_id for complete per-judge results. Omit to return all available years.',
+        'Filing year to filter by (e.g., 2022). Applied client-side to the fetched page only — CourtListener rejects a server-side year param, so filings for this year on later pages are not included. When a page has no match for the year but more pages remain, next_cursor is returned; pass it as cursor to check the next page. Omit to return all years on the page.',
       ),
     page_size: z
       .number()
@@ -197,13 +197,21 @@ export const searchFinancialDisclosuresTool = tool('courtlistener_search_financi
     // The list endpoint reports count as a URL unless ?count=on — only enrich when a real total is known.
     if (data.total !== null) ctx.enrich.total(data.total);
     if (results.length === 0) {
-      const filters: string[] = [];
-      if (input.judge_id !== undefined) filters.push(`judge_id=${input.judge_id}`);
-      if (input.year !== undefined) filters.push(`year=${input.year}`);
-      const filterHint = filters.length > 0 ? ` for filters: ${filters.join(', ')}` : '';
-      ctx.enrich.notice(
-        `No financial disclosures found${filterHint}. Verify the judge_id via courtlistener_search_judges, or widen the year filter — not all judges have disclosures on file.`,
-      );
+      if (input.year !== undefined && data.nextCursor !== null) {
+        // The page-local year filter zeroed this page, but more pages exist — distinguish
+        // "no match on this page" from "no filings at all" so the agent knows to continue.
+        ctx.enrich.notice(
+          `No disclosures for year=${input.year} on this page, but more pages exist. The year filter applies only to the fetched page — pass cursor=${data.nextCursor} to check the next page.`,
+        );
+      } else {
+        const filters: string[] = [];
+        if (input.judge_id !== undefined) filters.push(`judge_id=${input.judge_id}`);
+        if (input.year !== undefined) filters.push(`year=${input.year}`);
+        const filterHint = filters.length > 0 ? ` for filters: ${filters.join(', ')}` : '';
+        ctx.enrich.notice(
+          `No financial disclosures found${filterHint}. Verify the judge_id via courtlistener_search_judges, or widen the year filter — not all judges have disclosures on file.`,
+        );
+      }
     }
 
     return { results, next_cursor: data.nextCursor };
@@ -214,32 +222,33 @@ export const searchFinancialDisclosuresTool = tool('courtlistener_search_financi
 
     if (result.results.length === 0) {
       lines.push('\n> No financial disclosure filings matched the filters.');
-      return [{ type: 'text', text: lines.join('\n') }];
-    }
-
-    for (const d of result.results) {
-      const c = d.counts;
-      lines.push(`\n### ${d.report_type} disclosure — ${d.year}`);
-      lines.push(
-        `**Disclosure ID:** ${d.disclosure_id} | **Person ID:** ${d.person_id ?? 'Unknown'} | **Pages:** ${d.page_count ?? 'N/A'}`,
-      );
-      lines.push(
-        `**Extracted:** ${d.has_been_extracted ? 'yes' : 'no'} | **Amended:** ${d.is_amended ? 'yes' : 'no'}`,
-      );
-      lines.push(
-        `**Counts:** ${c.investments} investments, ${c.gifts} gifts, ${c.debts} debts, ${c.positions} positions, ${c.reimbursements} reimbursements, ${c.agreements} agreements, ${c.non_investment_incomes} non-investment incomes, ${c.spouse_incomes} spouse incomes`,
-      );
-      if (d.gifts.length > 0) {
-        lines.push('**Gifts:**');
-        for (const g of d.gifts) {
-          const val = g.value ? ` — ${g.value}` : '';
-          const src = g.source ? ` (from ${g.source})` : '';
-          lines.push(`  - ${g.description}${src}${val}`);
+    } else {
+      for (const d of result.results) {
+        const c = d.counts;
+        lines.push(`\n### ${d.report_type} disclosure — ${d.year}`);
+        lines.push(
+          `**Disclosure ID:** ${d.disclosure_id} | **Person ID:** ${d.person_id ?? 'Unknown'} | **Pages:** ${d.page_count ?? 'N/A'}`,
+        );
+        lines.push(
+          `**Extracted:** ${d.has_been_extracted ? 'yes' : 'no'} | **Amended:** ${d.is_amended ? 'yes' : 'no'}`,
+        );
+        lines.push(
+          `**Counts:** ${c.investments} investments, ${c.gifts} gifts, ${c.debts} debts, ${c.positions} positions, ${c.reimbursements} reimbursements, ${c.agreements} agreements, ${c.non_investment_incomes} non-investment incomes, ${c.spouse_incomes} spouse incomes`,
+        );
+        if (d.gifts.length > 0) {
+          lines.push('**Gifts:**');
+          for (const g of d.gifts) {
+            const val = g.value ? ` — ${g.value}` : '';
+            const src = g.source ? ` (from ${g.source})` : '';
+            lines.push(`  - ${g.description}${src}${val}`);
+          }
         }
+        if (d.pdf_url) lines.push(`**Source PDF:** ${d.pdf_url}`);
       }
-      if (d.pdf_url) lines.push(`**Source PDF:** ${d.pdf_url}`);
     }
 
+    // Render outside the results branch so an empty page (e.g. the local year filter zeroed
+    // an otherwise-non-empty page) still surfaces the continuation cursor on content[].
     if (result.next_cursor) {
       lines.push(`\n**Next page cursor:** \`${result.next_cursor}\``);
     }

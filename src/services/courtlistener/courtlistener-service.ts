@@ -504,18 +504,28 @@ export class CourtListenerService {
       jurisdiction?: string | undefined;
       in_use?: boolean | undefined;
       has_opinion_scraper?: boolean | undefined;
+      page?: number | undefined;
     },
     ctx: Context,
-  ): Promise<{ total: number; courts: Court[] }> {
+  ): Promise<{ total: number; courts: Court[]; next_cursor: string | null }> {
+    const page = params.page ?? 1;
     const query: Record<string, string | number | boolean | undefined> = {
       jurisdiction: params.jurisdiction,
       in_use: params.in_use,
       has_opinion_scraper: params.has_opinion_scraper,
+      page,
       page_size: 500,
     };
 
     const data = await this.get<CourtListenerPage<Court>>('/courts/', query, ctx);
-    return { total: data.count, courts: data.results };
+    // /courts/ is page-paginated (?page=N): upstream caps each page at ~20 rows regardless of
+    // page_size, and `next` is a `...&page=N` URL with no cursor token — signal the next page by
+    // number when upstream reports more, mirroring getDocket()/getParties().
+    return {
+      total: data.count,
+      courts: data.results,
+      next_cursor: data.next ? String(page + 1) : null,
+    };
   }
 
   // ── Oral Arguments ────────────────────────────────────────────────────────

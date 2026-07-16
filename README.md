@@ -153,6 +153,7 @@ List courts with optional jurisdiction and scraper filters.
 - `in_use: true` (default) restricts to courts currently scraped by CourtListener
 - `has_opinion_scraper` filter useful for planning opinion searches — courts without scrapers have sparse coverage
 - Returns `id` (the `court_id` string for use in all search and filter parameters), citation string (e.g., "9th Cir."), and jurisdiction label
+- Page-number paginated: CourtListener caps `/courts/` at ~20 rows per page, so the full list (~472 courts) spans ~24 pages — pass the response's `next_cursor` back as `page` to continue
 
 ---
 
@@ -181,6 +182,7 @@ Fetch the full detail record for a single oral argument by audio ID.
 Search federal judicial financial disclosure filings for ethics and recusal research.
 
 - Filter by `judge_id` (a `person_id` from `courtlistener_search_judges`) and/or filing `year`
+- The `year` filter is applied to the fetched page only — CourtListener has no server-side year filter, so filings for that year on later pages are not included; page through with `cursor` (the response returns `next_cursor` even when the current page has no year match)
 - Returns per-filing category counts (investments, gifts, debts, positions, reimbursements, income), itemized gifts, and a link to the source PDF
 - Line-item investments — often hundreds per filing, with coded values — are summarized as counts; the linked PDF carries the full itemization
 
@@ -210,7 +212,7 @@ CourtListener-specific:
 
 - Complete CourtListener REST API v4 integration — opinions, dockets, judges, courts, oral arguments, citation network
 - Rate-limit-aware client: 429 responses classified by window (minute / hour / day) with actionable error messages; retry with Retry-After respect
-- Cursor-based pagination throughout — consistent results across all paginated endpoints
+- Pagination across every list endpoint — cursor-based on the `/search/`-backed tools, page-number on the courts / parties / docket-entry lists — with continuation surfaced on every response
 - RECAP coverage note surfaced on every docket response — sets expectations on partial PACER mirror completeness
 - Tight upstream-call budget — most tools make 1–2 calls; opinion detail and citation traversal make up to 3 (resolving the linked docket or source cluster), keeping the free tier (125 req/day) usable for multi-step research
 

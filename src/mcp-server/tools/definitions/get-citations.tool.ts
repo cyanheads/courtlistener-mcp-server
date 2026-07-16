@@ -214,19 +214,19 @@ export const getCitationsTool = tool('courtlistener_get_citations', {
 
     if (result.results.length === 0) {
       lines.push('\n> No citations found in this direction for the given filters.');
-      return [{ type: 'text', text: lines.join('\n') }];
+    } else {
+      for (const r of result.results) {
+        lines.push(`\n### ${r.case_name}`);
+        lines.push(
+          `**Cluster ID:** ${r.cluster_id} | **Court:** ${r.court} (${r.court_id}) | **Filed:** ${r.date_filed}`,
+        );
+        lines.push(`**Authority weight (cited by):** ${r.cite_count}`);
+        if (r.citations.length > 0) lines.push(`**Citations:** ${r.citations.join(', ')}`);
+        if (r.snippet) lines.push(`*${r.snippet}*`);
+      }
     }
 
-    for (const r of result.results) {
-      lines.push(`\n### ${r.case_name}`);
-      lines.push(
-        `**Cluster ID:** ${r.cluster_id} | **Court:** ${r.court} (${r.court_id}) | **Filed:** ${r.date_filed}`,
-      );
-      lines.push(`**Authority weight (cited by):** ${r.cite_count}`);
-      if (r.citations.length > 0) lines.push(`**Citations:** ${r.citations.join(', ')}`);
-      if (r.snippet) lines.push(`*${r.snippet}*`);
-    }
-
+    // Render outside the results branch so an empty page still surfaces the continuation cursor.
     if (result.next_cursor) {
       lines.push(`\n**Next page cursor:** \`${result.next_cursor}\``);
     }
