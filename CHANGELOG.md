@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.4.3](changelog/0.4.x/0.4.3.md) — 2026-07-16
+
+courtlistener_get_oral_argument rejects an unknown `sections` name before fetching the oral-argument record, instead of fetching first and rejecting after.
+
 ## [0.4.2](changelog/0.4.x/0.4.2.md) — 2026-07-16
 
 courtlistener_lookup_courts pages through all ~472 courts instead of returning only the first 20; courtlistener_search_financial_disclosures and courtlistener_get_citations no longer drop next_cursor from content[] on an empty page.
