@@ -151,6 +151,47 @@ describe('getOralArgumentTool', () => {
     });
   });
 
+  // #37 — selectSections silently drops names matching no key, so an unknown
+  // section previously returned kind:'full' carrying only the alwaysKeep fields.
+  describe('unknown section names (#37)', () => {
+    it('rejects a sections name that is not a field of the record', async () => {
+      mockSvc.getOralArgument = vi.fn().mockResolvedValue(baseAudio);
+      const ctx = createMockContext({ errors: getOralArgumentTool.errors });
+      const input = getOralArgumentTool.input.parse({ id: 105162, sections: ['not_a_section'] });
+
+      const err = await getOralArgumentTool.handler(input, ctx).catch((e) => e);
+      expect(err).toMatchObject({ data: { reason: 'unknown_section' } });
+      expect(err.message).toContain('not_a_section');
+      // the valid vocabulary is listed back to the caller
+      expect(err.message).toContain('transcript');
+    });
+
+    it('rejects a partially-unknown sections list rather than silently dropping it', async () => {
+      mockSvc.getOralArgument = vi.fn().mockResolvedValue(baseAudio);
+      const ctx = createMockContext({ errors: getOralArgumentTool.errors });
+      const input = getOralArgumentTool.input.parse({
+        id: 105162,
+        sections: ['transcript', 'nope'],
+      });
+
+      const err = await getOralArgumentTool.handler(input, ctx).catch((e) => e);
+      expect(err).toMatchObject({ data: { reason: 'unknown_section' } });
+      expect(err.message).toContain('nope');
+    });
+
+    it('still accepts every real record field as a section name', async () => {
+      mockSvc.getOralArgument = vi.fn().mockResolvedValue(baseAudio);
+      const ctx = createMockContext({ errors: getOralArgumentTool.errors });
+      const input = getOralArgumentTool.input.parse({
+        id: 105162,
+        sections: ['transcript', 'panel_ids', 'download_url'],
+      });
+      const result = await getOralArgumentTool.handler(input, ctx);
+      expect(result.kind).toBe('full');
+      expect(result.panel_ids).toEqual([42, 43]);
+    });
+  });
+
   it('formats output with duration, panel, and transcript', () => {
     const output = getOralArgumentTool.output.parse({
       kind: 'full',
@@ -175,6 +216,8 @@ describe('getOralArgumentTool', () => {
     expect(text).toContain('42');
     // transcript rendered
     expect(text).toContain('Good morning, your honors.');
+    // #38 — the kind discriminator must reach content[], not just structuredContent
+    expect(text).toContain('**Response mode:** full');
   });
 
   it('format renders the full transcript without truncation (full arm)', () => {
@@ -213,5 +256,8 @@ describe('getOralArgumentTool', () => {
     expect(text).toContain('transcript');
     expect(text).toContain('sections available');
     expect(text).toContain('Re-call with sections');
+    // #38 — a pure outline drops every record field, so the mode line is the only
+    // signal that the payload is an outline; it must still reach content[].
+    expect(text).toContain('**Response mode:** outline');
   });
 });

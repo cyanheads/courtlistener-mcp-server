@@ -232,6 +232,44 @@ describe('getOpinionTool', () => {
       expect(result.case_name).toBe('Roe v. Wade');
       expect(() => getOpinionTool.output.parse(result)).not.toThrow();
     });
+
+    // #37 — an unmatched section name previously filtered to an empty list and
+    // returned kind:'full' with no opinions and no notice that nothing matched.
+    it('rejects a sections name matching no opinion variant', async () => {
+      mockSvc.getOpinionCluster = vi.fn().mockResolvedValue(overflowCluster);
+      const ctx = createMockContext({ errors: getOpinionTool.errors });
+      const input = getOpinionTool.input.parse({ cluster_id: 100, sections: ['not_a_section'] });
+
+      const err = await getOpinionTool.handler(input, ctx).catch((e) => e);
+      expect(err).toMatchObject({ data: { reason: 'unknown_section' } });
+      expect(err.message).toContain('not_a_section');
+      // the valid names for this cluster are listed back to the caller
+      expect(err.message).toContain('opinion_111');
+      expect(err.message).toContain('opinion_222');
+    });
+
+    it('rejects a partially-unknown sections list rather than silently dropping it', async () => {
+      mockSvc.getOpinionCluster = vi.fn().mockResolvedValue(overflowCluster);
+      const ctx = createMockContext({ errors: getOpinionTool.errors });
+      const input = getOpinionTool.input.parse({
+        cluster_id: 100,
+        sections: ['opinion_111', 'opinion_999'],
+      });
+
+      const err = await getOpinionTool.handler(input, ctx).catch((e) => e);
+      expect(err).toMatchObject({ data: { reason: 'unknown_section' } });
+      expect(err.message).toContain('opinion_999');
+    });
+
+    it('reports honestly when the cluster has no opinion variants at all', async () => {
+      mockSvc.getOpinionCluster = vi.fn().mockResolvedValue({ ...baseCluster, sub_opinions: [] });
+      const ctx = createMockContext({ errors: getOpinionTool.errors });
+      const input = getOpinionTool.input.parse({ cluster_id: 100, sections: ['opinion_1'] });
+
+      const err = await getOpinionTool.handler(input, ctx).catch((e) => e);
+      expect(err).toMatchObject({ data: { reason: 'unknown_section' } });
+      expect(err.message).toContain('no opinion variants');
+    });
   });
 
   it('formats output including html_text and case_name_full', () => {
@@ -273,6 +311,8 @@ describe('getOpinionTool', () => {
     expect(text).toContain('Roe v. Wade (Full Title)');
     // html_text must be rendered when plain_text is empty
     expect(text).toContain('HTML opinion text here');
+    // #38 — the kind discriminator must reach content[], not just structuredContent
+    expect(text).toContain('**Response mode:** full');
   });
 
   it('format renders plain_text when available', () => {
@@ -416,5 +456,7 @@ describe('getOpinionTool', () => {
     expect(text).toContain('opinion_9425157');
     expect(text).toContain('sections available');
     expect(text).toContain('Re-call with sections');
+    // #38 — the outline arm must label its mode too
+    expect(text).toContain('**Response mode:** outline');
   });
 });

@@ -33,6 +33,10 @@ const OralArgumentDetail = z.object({
     .describe('Speech-to-text transcript; empty string if transcription has not completed.'),
 });
 
+/** The only valid `sections` names: `selectSections` projects on the record's own
+ *  top-level keys, so derive them from the schema rather than restating the list. */
+const SECTION_NAMES = Object.keys(OralArgumentDetail.shape);
+
 export const getOralArgumentTool = tool('courtlistener_get_oral_argument', {
   title: 'Get Oral Argument',
   description:
@@ -91,6 +95,13 @@ export const getOralArgumentTool = tool('courtlistener_get_oral_argument', {
       retryable: true,
       recovery: 'Wait for the Retry-After period. Free tier: 5 req/min, 50/hr, 125/day.',
     },
+    {
+      reason: 'unknown_section',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'A requested sections name is not a field of the oral argument record.',
+      recovery:
+        'Pass a section name the outline listed, such as transcript, or omit sections entirely.',
+    },
   ],
 
   async handler(input, ctx) {
@@ -132,7 +143,16 @@ export const getOralArgumentTool = tool('courtlistener_get_oral_argument', {
     });
 
     // Selection re-call: return only the requested sections plus identity fields.
+    // selectSections silently drops names that match no key, which would return a
+    // `full` response carrying nothing the caller asked for — reject them instead.
     if (input.sections?.length) {
+      const unknown = input.sections.filter((name) => !SECTION_NAMES.includes(name));
+      if (unknown.length > 0) {
+        throw ctx.fail(
+          'unknown_section',
+          `Unknown sections value: ${unknown.join(', ')}. Valid sections: ${SECTION_NAMES.join(', ')}.`,
+        );
+      }
       return {
         ...selectSections(detail, input.sections, {
           alwaysKeep: ['oral_argument_id', 'case_name'],
@@ -165,11 +185,17 @@ export const getOralArgumentTool = tool('courtlistener_get_oral_argument', {
         })
       : [];
 
+    // `kind` is required in every response, so it renders on both paths — a pure
+    // outline drops every record field and would otherwise show no discriminator.
+    const modeLine = `**Response mode:** ${result.kind}`;
+
     // Full arm — keyed on oral_argument_id (always kept). Each field is guarded
     // because a section-scoped re-call returns a partial record.
-    if (result.oral_argument_id === undefined) return outlineBlocks;
+    if (result.oral_argument_id === undefined) {
+      return [{ type: 'text', text: modeLine }, ...outlineBlocks];
+    }
 
-    const lines: string[] = [`## ${result.case_name ?? ''}`];
+    const lines: string[] = [`## ${result.case_name ?? ''}`, modeLine];
 
     const meta: string[] = [`**Audio ID:** ${result.oral_argument_id}`];
     if (result.docket_id !== undefined) meta.push(`**Docket ID:** ${result.docket_id}`);

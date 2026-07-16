@@ -122,6 +122,13 @@ export const getOpinionTool = tool('courtlistener_get_opinion', {
       retryable: true,
       recovery: 'Wait for the Retry-After period. Free tier: 5 req/min, 50/hr, 125/day.',
     },
+    {
+      reason: 'unknown_section',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'A requested sections name matches no opinion variant in this cluster.',
+      recovery:
+        'Re-call without sections to list the retrievable opinion_<id> names, then request one of those.',
+    },
   ],
 
   async handler(input, ctx) {
@@ -202,7 +209,22 @@ export const getOpinionTool = tool('courtlistener_get_opinion', {
     };
 
     // Selection re-call: return only the requested opinion variants, keyed by section id.
+    // Valid names are generated per cluster (opinion_<id>) from the variants this
+    // cluster actually has, so they can't be a static input enum — reject unmatched
+    // names here rather than silently returning a full response with nothing in it.
     if (input.sections?.length) {
+      const available = opinions.map((op) => `opinion_${op.id}`);
+      const unknown = input.sections.filter((name) => !available.includes(name));
+      if (unknown.length > 0) {
+        const known =
+          available.length > 0
+            ? `Retrievable variants for cluster ${input.cluster_id}: ${available.join(', ')}.`
+            : `Cluster ${input.cluster_id} has no opinion variants.`;
+        throw ctx.fail(
+          'unknown_section',
+          `Unknown sections value: ${unknown.join(', ')}. ${known}`,
+        );
+      }
       const wanted = new Set(input.sections);
       const selected = opinions.filter((op) => wanted.has(`opinion_${op.id}`));
       return { ...clusterMeta, opinions: selected, kind: 'full' as const };
@@ -242,10 +264,13 @@ export const getOpinionTool = tool('courtlistener_get_opinion', {
 
   format: (result) => {
     // Cheap cluster metadata — always present, so this header renders in every mode.
+    // `kind` is rendered unconditionally: it's required in every response, so keying
+    // it off an arm would hide the discriminator from content[]-only clients.
     const lines: string[] = [
       `## ${result.case_name}`,
       `**Cluster ID:** ${result.cluster_id} | **Court:** ${result.court} (${result.court_id}) | **Filed:** ${result.date_filed}`,
       `**Docket:** ${result.docket_number} (ID: ${result.docket_id}) | **Status:** ${result.precedential_status} | **Cited by:** ${result.cite_count}`,
+      `**Response mode:** ${result.kind}`,
     ];
 
     if (result.case_name_full && result.case_name_full !== result.case_name) {
