@@ -6,6 +6,7 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getCourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
+import { findInvalidDates, ISO_DATE_HINT } from '@/services/courtlistener/dates.js';
 
 export const searchOralArgumentsTool = tool('courtlistener_search_oral_arguments', {
   title: 'Search Oral Arguments',
@@ -16,7 +17,7 @@ export const searchOralArgumentsTool = tool('courtlistener_search_oral_arguments
   input: z.object({
     q: z
       .string()
-      .min(1)
+      .trim()
       .describe(
         'Query terms matched against case name and transcribed argument text (where available).',
       ),
@@ -104,10 +105,43 @@ export const searchOralArgumentsTool = tool('courtlistener_search_oral_arguments
       retryable: true,
       recovery: 'Wait for the Retry-After period. Free tier: 5 req/min, 50/hr, 125/day.',
     },
+    {
+      reason: 'empty_query',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'q is empty or whitespace-only after trimming — no request is sent.',
+      recovery: 'Supply search terms in q — a case name or words spoken during the argument.',
+    },
+    {
+      reason: 'invalid_date',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'argued_after or argued_before is not a valid ISO 8601 calendar date.',
+      recovery: 'Pass each date filter as a real YYYY-MM-DD calendar date, for example 2020-01-01.',
+    },
   ],
 
   async handler(input, ctx) {
     ctx.log.info('courtlistener_search_oral_arguments', { q: input.q, court: input.court });
+
+    // Guard before the service call: both rejections would otherwise spend one of
+    // the free tier's 125 daily requests on input that cannot return useful data.
+    if (!input.q) {
+      throw ctx.fail(
+        'empty_query',
+        'The q parameter is empty or whitespace-only. Supply search terms — e.g. q: "qualified immunity".',
+      );
+    }
+
+    const invalidDates = findInvalidDates({
+      argued_after: input.argued_after,
+      argued_before: input.argued_before,
+    });
+    if (invalidDates.length > 0) {
+      throw ctx.fail(
+        'invalid_date',
+        `Invalid date filter: ${invalidDates.join(', ')}. ${ISO_DATE_HINT}`,
+      );
+    }
+
     const svc = getCourtListenerService();
 
     const data = await svc.searchOralArguments(

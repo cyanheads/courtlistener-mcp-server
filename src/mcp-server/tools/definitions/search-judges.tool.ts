@@ -14,7 +14,7 @@ export const searchJudgesTool = tool('courtlistener_search_judges', {
   annotations: { readOnlyHint: true, openWorldHint: true, idempotentHint: false },
 
   input: z.object({
-    q: z.string().min(1).describe('Search query — judge name, court, city, or relevant keywords.'),
+    q: z.string().trim().describe('Search query — judge name, court, city, or relevant keywords.'),
     appointer: z
       .string()
       .optional()
@@ -113,10 +113,26 @@ export const searchJudgesTool = tool('courtlistener_search_judges', {
       retryable: true,
       recovery: 'Wait for the Retry-After period. Free tier: 5 req/min, 50/hr, 125/day.',
     },
+    {
+      reason: 'empty_query',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'q is empty or whitespace-only after trimming — no request is sent.',
+      recovery: 'Supply search terms in q — a judge name, court, or city to match against.',
+    },
   ],
 
   async handler(input, ctx) {
     ctx.log.info('courtlistener_search_judges', { q: input.q });
+
+    // Guard before the service call: a blank query would otherwise spend one of the
+    // free tier's 125 daily requests and return unrelated records.
+    if (!input.q) {
+      throw ctx.fail(
+        'empty_query',
+        'The q parameter is empty or whitespace-only. Supply search terms — e.g. q: "Sotomayor".',
+      );
+    }
+
     const svc = getCourtListenerService();
 
     const data = await svc.searchJudges(

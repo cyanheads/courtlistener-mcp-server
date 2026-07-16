@@ -6,6 +6,7 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getCourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
+import { findInvalidDates, ISO_DATE_HINT } from '@/services/courtlistener/dates.js';
 
 export const searchOpinionsTool = tool('courtlistener_search_opinions', {
   title: 'Search Court Opinions',
@@ -16,7 +17,7 @@ export const searchOpinionsTool = tool('courtlistener_search_opinions', {
   input: z.object({
     q: z
       .string()
-      .min(1)
+      .trim()
       .describe(
         'Full-text query. Supports field syntax (caseName:"roe v wade", court_id:scotus, judge:"Alito") and boolean operators (AND, OR, NOT). Use plain English for semantic-style queries or legal citations.',
       ),
@@ -143,10 +144,44 @@ export const searchOpinionsTool = tool('courtlistener_search_opinions', {
       when: 'Query uses invalid field syntax or unsupported operators.',
       recovery: 'Simplify the query, remove field-syntax prefixes, and retry with plain text.',
     },
+    {
+      reason: 'empty_query',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'q is empty or whitespace-only after trimming — no request is sent.',
+      recovery:
+        'Supply search terms in q — a case name, legal concept, or CourtListener field expression.',
+    },
+    {
+      reason: 'invalid_date',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'filed_after or filed_before is not a valid ISO 8601 calendar date.',
+      recovery: 'Pass each date filter as a real YYYY-MM-DD calendar date, for example 2020-01-01.',
+    },
   ],
 
   async handler(input, ctx) {
     ctx.log.info('courtlistener_search_opinions', { q: input.q, court: input.court });
+
+    // Guard before the service call: both rejections would otherwise spend one of
+    // the free tier's 125 daily requests on input that cannot return useful data.
+    if (!input.q) {
+      throw ctx.fail(
+        'empty_query',
+        'The q parameter is empty or whitespace-only. Supply search terms — e.g. q: "qualified immunity" or q: caseName:"roe v wade".',
+      );
+    }
+
+    const invalidDates = findInvalidDates({
+      filed_after: input.filed_after,
+      filed_before: input.filed_before,
+    });
+    if (invalidDates.length > 0) {
+      throw ctx.fail(
+        'invalid_date',
+        `Invalid date filter: ${invalidDates.join(', ')}. ${ISO_DATE_HINT}`,
+      );
+    }
+
     const svc = getCourtListenerService();
 
     const data = await svc.searchOpinions(

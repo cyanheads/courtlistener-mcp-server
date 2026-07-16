@@ -85,6 +85,72 @@ describe('searchOralArgumentsTool', () => {
     await expect(searchOralArgumentsTool.handler(input, ctx)).rejects.toThrow();
   });
 
+  // #39 — a whitespace-only q previously reached CourtListener and spent one of
+  // the 125 daily requests on unrelated recordings.
+  describe('empty query (#39)', () => {
+    it('trims q to empty and rejects without calling the service', async () => {
+      mockSvc.searchOralArguments = vi.fn();
+      const ctx = createMockContext({ errors: searchOralArgumentsTool.errors });
+      const input = searchOralArgumentsTool.input.parse({ q: '   ' });
+      expect(input.q).toBe('');
+
+      const err = await searchOralArgumentsTool.handler(input, ctx).catch((e) => e);
+      expect(err).toMatchObject({ data: { reason: 'empty_query' } });
+      expect(err.message).toContain('q');
+      expect(mockSvc.searchOralArguments).not.toHaveBeenCalled();
+    });
+
+    it('trims incidental padding from an otherwise-valid q', async () => {
+      mockSvc.searchOralArguments = vi.fn().mockResolvedValue(baseAudioResult);
+      const ctx = createMockContext();
+      const input = searchOralArgumentsTool.input.parse({ q: '  qualified immunity  ' });
+      await searchOralArgumentsTool.handler(input, ctx);
+      expect(mockSvc.searchOralArguments).toHaveBeenCalledWith(
+        expect.objectContaining({ q: 'qualified immunity' }),
+        ctx,
+      );
+    });
+  });
+
+  // #40 — argued_after/argued_before share the /search/ date exposure.
+  describe('invalid date filters (#40)', () => {
+    for (const bad of ['banana', '2020-13-45', '2020-02-31']) {
+      it(`rejects argued_after="${bad}" without calling the service`, async () => {
+        mockSvc.searchOralArguments = vi.fn();
+        const ctx = createMockContext({ errors: searchOralArgumentsTool.errors });
+        const input = searchOralArgumentsTool.input.parse({ q: 'test', argued_after: bad });
+
+        const err = await searchOralArgumentsTool.handler(input, ctx).catch((e) => e);
+        expect(err).toMatchObject({ data: { reason: 'invalid_date' } });
+        expect(err.message).toContain('argued_after');
+        expect(err.message).toContain('YYYY-MM-DD');
+        expect(mockSvc.searchOralArguments).not.toHaveBeenCalled();
+      });
+    }
+
+    it('rejects a malformed argued_before without calling the service', async () => {
+      mockSvc.searchOralArguments = vi.fn();
+      const ctx = createMockContext({ errors: searchOralArgumentsTool.errors });
+      const input = searchOralArgumentsTool.input.parse({ q: 'test', argued_before: '2021-02-29' });
+
+      const err = await searchOralArgumentsTool.handler(input, ctx).catch((e) => e);
+      expect(err).toMatchObject({ data: { reason: 'invalid_date' } });
+      expect(err.message).toContain('argued_before');
+      expect(mockSvc.searchOralArguments).not.toHaveBeenCalled();
+    });
+
+    it('lets valid calendar dates through to the service', async () => {
+      mockSvc.searchOralArguments = vi.fn().mockResolvedValue(baseAudioResult);
+      const ctx = createMockContext({ errors: searchOralArgumentsTool.errors });
+      const input = searchOralArgumentsTool.input.parse({ q: 'test', argued_after: '2020-02-29' });
+      await searchOralArgumentsTool.handler(input, ctx);
+      expect(mockSvc.searchOralArguments).toHaveBeenCalledWith(
+        expect.objectContaining({ argued_after: '2020-02-29' }),
+        ctx,
+      );
+    });
+  });
+
   it('formats output with duration_seconds and local_path', () => {
     const output = searchOralArgumentsTool.output.parse({
       results: [

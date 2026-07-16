@@ -131,6 +131,33 @@ describe('searchJudgesTool', () => {
     await expect(searchJudgesTool.handler(input, ctx)).rejects.toThrow();
   });
 
+  // #39 — a whitespace-only q previously reached CourtListener and spent one of
+  // the 125 daily requests on unrelated judge records.
+  describe('empty query (#39)', () => {
+    it('trims q to empty and rejects without calling the service', async () => {
+      mockSvc.searchJudges = vi.fn();
+      const ctx = createMockContext({ errors: searchJudgesTool.errors });
+      const input = searchJudgesTool.input.parse({ q: '   ' });
+      expect(input.q).toBe('');
+
+      const err = await searchJudgesTool.handler(input, ctx).catch((e) => e);
+      expect(err).toMatchObject({ data: { reason: 'empty_query' } });
+      expect(err.message).toContain('q');
+      expect(mockSvc.searchJudges).not.toHaveBeenCalled();
+    });
+
+    it('trims incidental padding from an otherwise-valid q', async () => {
+      mockSvc.searchJudges = vi.fn().mockResolvedValue(basePersonResult);
+      const ctx = createMockContext();
+      const input = searchJudgesTool.input.parse({ q: '  Sotomayor  ' });
+      await searchJudgesTool.handler(input, ctx);
+      expect(mockSvc.searchJudges).toHaveBeenCalledWith(
+        expect.objectContaining({ q: 'Sotomayor' }),
+        ctx,
+      );
+    });
+  });
+
   it('formats output including current_position.court_id', () => {
     const output = searchJudgesTool.output.parse({
       results: [

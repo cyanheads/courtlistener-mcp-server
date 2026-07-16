@@ -127,6 +127,72 @@ describe('searchDocketsTool', () => {
     await expect(searchDocketsTool.handler(input, ctx)).rejects.toThrow();
   });
 
+  // #39 — a whitespace-only q previously reached CourtListener and returned
+  // unrelated dockets while spending one of the 125 daily requests.
+  describe('empty query (#39)', () => {
+    it('trims q to empty and rejects without calling the service', async () => {
+      mockSvc.searchDockets = vi.fn();
+      const ctx = createMockContext({ errors: searchDocketsTool.errors });
+      const input = searchDocketsTool.input.parse({ q: '   ' });
+      expect(input.q).toBe('');
+
+      const err = await searchDocketsTool.handler(input, ctx).catch((e) => e);
+      expect(err).toMatchObject({ data: { reason: 'empty_query' } });
+      expect(err.message).toContain('q');
+      expect(mockSvc.searchDockets).not.toHaveBeenCalled();
+    });
+
+    it('trims incidental padding from an otherwise-valid q', async () => {
+      mockSvc.searchDockets = vi.fn().mockResolvedValue(baseDocketResult);
+      const ctx = createMockContext();
+      const input = searchDocketsTool.input.parse({ q: '  Apple Inc  ' });
+      await searchDocketsTool.handler(input, ctx);
+      expect(mockSvc.searchDockets).toHaveBeenCalledWith(
+        expect.objectContaining({ q: 'Apple Inc' }),
+        ctx,
+      );
+    });
+  });
+
+  // #40 — malformed dates reached the /search/ endpoint and returned an opaque 400.
+  describe('invalid date filters (#40)', () => {
+    for (const bad of ['banana', '2020-13-45', '2020-02-31']) {
+      it(`rejects filed_after="${bad}" without calling the service`, async () => {
+        mockSvc.searchDockets = vi.fn();
+        const ctx = createMockContext({ errors: searchDocketsTool.errors });
+        const input = searchDocketsTool.input.parse({ q: 'patent', filed_after: bad });
+
+        const err = await searchDocketsTool.handler(input, ctx).catch((e) => e);
+        expect(err).toMatchObject({ data: { reason: 'invalid_date' } });
+        expect(err.message).toContain('filed_after');
+        expect(err.message).toContain('YYYY-MM-DD');
+        expect(mockSvc.searchDockets).not.toHaveBeenCalled();
+      });
+    }
+
+    it('rejects a malformed filed_before without calling the service', async () => {
+      mockSvc.searchDockets = vi.fn();
+      const ctx = createMockContext({ errors: searchDocketsTool.errors });
+      const input = searchDocketsTool.input.parse({ q: 'patent', filed_before: '2021-02-29' });
+
+      const err = await searchDocketsTool.handler(input, ctx).catch((e) => e);
+      expect(err).toMatchObject({ data: { reason: 'invalid_date' } });
+      expect(err.message).toContain('filed_before');
+      expect(mockSvc.searchDockets).not.toHaveBeenCalled();
+    });
+
+    it('lets valid calendar dates through to the service', async () => {
+      mockSvc.searchDockets = vi.fn().mockResolvedValue(baseDocketResult);
+      const ctx = createMockContext({ errors: searchDocketsTool.errors });
+      const input = searchDocketsTool.input.parse({ q: 'patent', filed_after: '2020-02-29' });
+      await searchDocketsTool.handler(input, ctx);
+      expect(mockSvc.searchDockets).toHaveBeenCalledWith(
+        expect.objectContaining({ filed_after: '2020-02-29' }),
+        ctx,
+      );
+    });
+  });
+
   it('formats output with all required fields', () => {
     const output = searchDocketsTool.output.parse({
       results: [

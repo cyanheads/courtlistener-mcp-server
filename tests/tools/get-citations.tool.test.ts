@@ -145,6 +145,52 @@ describe('getCitationsTool', () => {
     await expect(getCitationsTool.handler(input, ctx)).rejects.toThrow();
   });
 
+  // #40 — filed_after here hits the same /search/ endpoint and the same opaque 400
+  // as the search tools, even though the issue's "Affected names" list omitted it.
+  describe('invalid date filter (#40)', () => {
+    for (const bad of ['banana', '2020-13-45', '2020-02-31']) {
+      it(`rejects filed_after="${bad}" without calling the service`, async () => {
+        mockSvc.getCitedBy = vi.fn();
+        mockSvc.getCiting = vi.fn();
+        const ctx = createMockContext({ errors: getCitationsTool.errors });
+        const input = getCitationsTool.input.parse({ cluster_id: 100, filed_after: bad });
+
+        const err = await getCitationsTool.handler(input, ctx).catch((e) => e);
+        expect(err).toMatchObject({ data: { reason: 'invalid_date' } });
+        expect(err.message).toContain('filed_after');
+        expect(err.message).toContain('YYYY-MM-DD');
+        expect(mockSvc.getCitedBy).not.toHaveBeenCalled();
+        expect(mockSvc.getCiting).not.toHaveBeenCalled();
+      });
+    }
+
+    it('rejects a malformed filed_after on the citing direction too', async () => {
+      mockSvc.getCiting = vi.fn();
+      const ctx = createMockContext({ errors: getCitationsTool.errors });
+      const input = getCitationsTool.input.parse({
+        cluster_id: 100,
+        direction: 'citing',
+        filed_after: '2021-02-29',
+      });
+
+      await expect(getCitationsTool.handler(input, ctx)).rejects.toMatchObject({
+        data: { reason: 'invalid_date' },
+      });
+      expect(mockSvc.getCiting).not.toHaveBeenCalled();
+    });
+
+    it('lets a valid calendar date through to the service', async () => {
+      mockSvc.getCitedBy = vi.fn().mockResolvedValue({ total: 0, results: [], nextCursor: null });
+      const ctx = createMockContext({ errors: getCitationsTool.errors });
+      const input = getCitationsTool.input.parse({ cluster_id: 100, filed_after: '2020-02-29' });
+      await getCitationsTool.handler(input, ctx);
+      expect(mockSvc.getCitedBy).toHaveBeenCalledWith(
+        expect.objectContaining({ filed_after: '2020-02-29' }),
+        ctx,
+      );
+    });
+  });
+
   it('page_size defaults to 20 and scopes the 20-result floor to cited_by (#33)', () => {
     // default aligns with CourtListener's 20-result floor (mirrors #7)
     expect(getCitationsTool.input.parse({ cluster_id: 100 }).page_size).toBe(20);

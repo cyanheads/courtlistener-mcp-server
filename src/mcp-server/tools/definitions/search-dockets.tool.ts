@@ -6,6 +6,7 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getCourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
+import { findInvalidDates, ISO_DATE_HINT } from '@/services/courtlistener/dates.js';
 
 const COVERAGE_NOTE =
   'RECAP coverage is partial. Documents with is_available=false require a PACER account or CourtListener RECAP filing — fetching their PDFs is not exposed by this server.';
@@ -19,7 +20,7 @@ export const searchDocketsTool = tool('courtlistener_search_dockets', {
   input: z.object({
     q: z
       .string()
-      .min(1)
+      .trim()
       .describe(
         'Query terms matched against case name, docket number, party names, and attorney names. Example: "Apple Inc patent infringement".',
       ),
@@ -132,10 +133,44 @@ export const searchDocketsTool = tool('courtlistener_search_dockets', {
       retryable: true,
       recovery: 'Wait for the Retry-After period. Free tier: 5 req/min, 50/hr, 125/day.',
     },
+    {
+      reason: 'empty_query',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'q is empty or whitespace-only after trimming — no request is sent.',
+      recovery:
+        'Supply search terms in q — a case name, party name, docket number, or attorney name.',
+    },
+    {
+      reason: 'invalid_date',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'filed_after or filed_before is not a valid ISO 8601 calendar date.',
+      recovery: 'Pass each date filter as a real YYYY-MM-DD calendar date, for example 2020-01-01.',
+    },
   ],
 
   async handler(input, ctx) {
     ctx.log.info('courtlistener_search_dockets', { q: input.q, court: input.court });
+
+    // Guard before the service call: both rejections would otherwise spend one of
+    // the free tier's 125 daily requests on input that cannot return useful data.
+    if (!input.q) {
+      throw ctx.fail(
+        'empty_query',
+        'The q parameter is empty or whitespace-only. Supply search terms — e.g. q: "Apple Inc patent infringement".',
+      );
+    }
+
+    const invalidDates = findInvalidDates({
+      filed_after: input.filed_after,
+      filed_before: input.filed_before,
+    });
+    if (invalidDates.length > 0) {
+      throw ctx.fail(
+        'invalid_date',
+        `Invalid date filter: ${invalidDates.join(', ')}. ${ISO_DATE_HINT}`,
+      );
+    }
+
     const svc = getCourtListenerService();
 
     const data = await svc.searchDockets(

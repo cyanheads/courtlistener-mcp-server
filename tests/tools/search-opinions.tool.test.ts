@@ -115,6 +115,92 @@ describe('searchOpinionsTool', () => {
     await expect(searchOpinionsTool.handler(input, ctx)).rejects.toThrow();
   });
 
+  // #39 — a whitespace-only q previously reached CourtListener, spent one of the
+  // 125 daily requests, and came back with 20 unrelated recent opinions.
+  describe('empty query (#39)', () => {
+    it('trims q to empty and rejects without calling the service', async () => {
+      mockSvc.searchOpinions = vi.fn();
+      const ctx = createMockContext({ errors: searchOpinionsTool.errors });
+      const input = searchOpinionsTool.input.parse({ q: '   ' });
+      expect(input.q).toBe('');
+
+      const err = await searchOpinionsTool.handler(input, ctx).catch((e) => e);
+      expect(err).toMatchObject({ data: { reason: 'empty_query' } });
+      expect(err.message).toContain('q');
+      expect(mockSvc.searchOpinions).not.toHaveBeenCalled();
+    });
+
+    it('rejects an empty q without calling the service', async () => {
+      mockSvc.searchOpinions = vi.fn();
+      const ctx = createMockContext({ errors: searchOpinionsTool.errors });
+      const input = searchOpinionsTool.input.parse({ q: '' });
+      await expect(searchOpinionsTool.handler(input, ctx)).rejects.toMatchObject({
+        data: { reason: 'empty_query' },
+      });
+      expect(mockSvc.searchOpinions).not.toHaveBeenCalled();
+    });
+
+    it('trims incidental padding from an otherwise-valid q', async () => {
+      mockSvc.searchOpinions = vi.fn().mockResolvedValue(baseResult);
+      const ctx = createMockContext();
+      const input = searchOpinionsTool.input.parse({ q: '  qualified immunity  ' });
+      await searchOpinionsTool.handler(input, ctx);
+      expect(mockSvc.searchOpinions).toHaveBeenCalledWith(
+        expect.objectContaining({ q: 'qualified immunity' }),
+        ctx,
+      );
+    });
+  });
+
+  // #40 — malformed dates reached the /search/ endpoint and returned an opaque
+  // 400 ("The date entered has an invalid format.") with no usable content[].
+  describe('invalid date filters (#40)', () => {
+    // '2020-13-45' and '2020-02-31' satisfy /^\d{4}-\d{2}-\d{2}$/ but are not
+    // calendar dates — CourtListener rejects them exactly like 'banana'.
+    for (const bad of ['banana', '2020-13-45', '2020-02-31', '01-01-2020']) {
+      it(`rejects filed_after="${bad}" without calling the service`, async () => {
+        mockSvc.searchOpinions = vi.fn();
+        const ctx = createMockContext({ errors: searchOpinionsTool.errors });
+        const input = searchOpinionsTool.input.parse({ q: 'qualified immunity', filed_after: bad });
+
+        const err = await searchOpinionsTool.handler(input, ctx).catch((e) => e);
+        expect(err).toMatchObject({ data: { reason: 'invalid_date' } });
+        // The message is the surface both content[] and structuredContent.error
+        // carry, so the field name and accepted format must live in it.
+        expect(err.message).toContain('filed_after');
+        expect(err.message).toContain(bad);
+        expect(err.message).toContain('YYYY-MM-DD');
+        expect(mockSvc.searchOpinions).not.toHaveBeenCalled();
+      });
+    }
+
+    it('rejects a malformed filed_before without calling the service', async () => {
+      mockSvc.searchOpinions = vi.fn();
+      const ctx = createMockContext({ errors: searchOpinionsTool.errors });
+      const input = searchOpinionsTool.input.parse({ q: 'test', filed_before: '2021-02-29' });
+
+      const err = await searchOpinionsTool.handler(input, ctx).catch((e) => e);
+      expect(err).toMatchObject({ data: { reason: 'invalid_date' } });
+      expect(err.message).toContain('filed_before');
+      expect(mockSvc.searchOpinions).not.toHaveBeenCalled();
+    });
+
+    it('lets valid calendar dates through to the service', async () => {
+      mockSvc.searchOpinions = vi.fn().mockResolvedValue(baseResult);
+      const ctx = createMockContext({ errors: searchOpinionsTool.errors });
+      const input = searchOpinionsTool.input.parse({
+        q: 'test',
+        filed_after: '2020-02-29', // leap day — valid
+        filed_before: '2021-01-01',
+      });
+      await searchOpinionsTool.handler(input, ctx);
+      expect(mockSvc.searchOpinions).toHaveBeenCalledWith(
+        expect.objectContaining({ filed_after: '2020-02-29', filed_before: '2021-01-01' }),
+        ctx,
+      );
+    });
+  });
+
   it('formats output with required fields', () => {
     const output = searchOpinionsTool.output.parse({
       results: [

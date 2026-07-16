@@ -73,6 +73,37 @@ describe('lookupCitationTool', () => {
     expect(enrichment.notice).toContain('999 F.3d 1');
   });
 
+  // #39 — a whitespace-only citation previously reached the /citation-lookup/
+  // endpoint and spent one of the 125 daily requests on input that cannot resolve.
+  describe('empty citation (#39)', () => {
+    it('trims citation to empty and rejects without calling the service', async () => {
+      mockSvc.lookupCitation = vi.fn();
+      const ctx = createMockContext({ errors: lookupCitationTool.errors });
+      const input = lookupCitationTool.input.parse({ citation: '   ' });
+      expect(input.citation).toBe('');
+
+      const err = await lookupCitationTool.handler(input, ctx).catch((e) => e);
+      expect(err).toMatchObject({ data: { reason: 'empty_citation' } });
+      expect(err.message).toContain('citation');
+      expect(mockSvc.lookupCitation).not.toHaveBeenCalled();
+    });
+
+    it('trims incidental padding from an otherwise-valid citation', async () => {
+      mockSvc.lookupCitation = vi.fn().mockResolvedValue({
+        cluster_id: 100,
+        case_name: 'Roe v. Wade',
+        court: 'Supreme Court',
+        date_filed: '1973-01-22',
+        citations: ['410 U.S. 113'],
+        normalized_citation: '410 U.S. 113',
+      });
+      const ctx = createMockContext();
+      const input = lookupCitationTool.input.parse({ citation: '  410 U.S. 113  ' });
+      await lookupCitationTool.handler(input, ctx);
+      expect(mockSvc.lookupCitation).toHaveBeenCalledWith('410 U.S. 113', ctx);
+    });
+  });
+
   it('formats a found citation with cluster_id and case details', () => {
     const output = lookupCitationTool.output.parse({
       cluster_id: 100,

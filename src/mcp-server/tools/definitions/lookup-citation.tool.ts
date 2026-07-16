@@ -16,7 +16,7 @@ export const lookupCitationTool = tool('courtlistener_lookup_citation', {
   input: z.object({
     citation: z
       .string()
-      .min(1)
+      .trim()
       .describe(
         'Legal citation string to resolve (e.g., "410 U.S. 113", "347 U.S. 483", "93 S. Ct. 705"). Supports standard reporter formats.',
       ),
@@ -63,10 +63,26 @@ export const lookupCitationTool = tool('courtlistener_lookup_citation', {
       retryable: true,
       recovery: 'Wait for the Retry-After period. Free tier: 5 req/min, 50/hr, 125/day.',
     },
+    {
+      reason: 'empty_citation',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'citation is empty or whitespace-only after trimming — no request is sent.',
+      recovery: 'Supply a citation in volume-reporter-page form, for example "410 U.S. 113".',
+    },
   ],
 
   async handler(input, ctx) {
     ctx.log.info('courtlistener_lookup_citation', { citation: input.citation });
+
+    // Guard before the service call: a blank citation would otherwise spend one of
+    // the free tier's 125 daily requests and cannot resolve.
+    if (!input.citation) {
+      throw ctx.fail(
+        'empty_citation',
+        'The citation parameter is empty or whitespace-only. Supply a citation string — e.g. citation: "410 U.S. 113".',
+      );
+    }
+
     const svc = getCourtListenerService();
 
     const result = await svc.lookupCitation(input.citation, ctx);

@@ -6,6 +6,7 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getCourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
+import { findInvalidDates, ISO_DATE_HINT } from '@/services/courtlistener/dates.js';
 
 export const getCitationsTool = tool('courtlistener_get_citations', {
   title: 'Get Citation Network',
@@ -106,6 +107,12 @@ export const getCitationsTool = tool('courtlistener_get_citations', {
       recovery:
         'Wait for the Retry-After period before retrying. Free tier: 5 req/min, 50/hr, 125/day.',
     },
+    {
+      reason: 'invalid_date',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'filed_after is not a valid ISO 8601 calendar date.',
+      recovery: 'Pass filed_after as a real YYYY-MM-DD calendar date, for example 2020-01-01.',
+    },
   ],
 
   async handler(input, ctx) {
@@ -113,6 +120,17 @@ export const getCitationsTool = tool('courtlistener_get_citations', {
       cluster_id: input.cluster_id,
       direction: input.direction,
     });
+
+    // Guard before the service call: a malformed date would otherwise spend one of
+    // the free tier's 125 daily requests on a 400 from the /search/ endpoint.
+    const invalidDates = findInvalidDates({ filed_after: input.filed_after });
+    if (invalidDates.length > 0) {
+      throw ctx.fail(
+        'invalid_date',
+        `Invalid date filter: ${invalidDates.join(', ')}. ${ISO_DATE_HINT}`,
+      );
+    }
+
     const svc = getCourtListenerService();
 
     const citationParams = {
