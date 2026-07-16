@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.4.1](changelog/0.4.x/0.4.1.md) — 2026-07-15
+
+courtlistener_get_opinion/get_oral_argument reject unknown sections names and render the full/outline response mode in content[]; search and citation tools reject blank queries and malformed date filters before spending a rate-limited request.
+
 ## [0.4.0](changelog/0.4.x/0.4.0.md) — 2026-07-10
 
 Adds courtlistener_get_financial_disclosure for itemized financial-disclosure line items (investments, debts, positions, income, gifts) with coded AO values decoded to dollar ranges; ships the previously-missing Apache-2.0 LICENSE file.
