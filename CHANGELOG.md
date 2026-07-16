@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.4.2](changelog/0.4.x/0.4.2.md) — 2026-07-16
+
+courtlistener_lookup_courts pages through all ~472 courts instead of returning only the first 20; courtlistener_search_financial_disclosures and courtlistener_get_citations no longer drop next_cursor from content[] on an empty page.
+
 ## [0.4.1](changelog/0.4.x/0.4.1.md) — 2026-07-15
 
 courtlistener_get_opinion/get_oral_argument reject unknown sections names and render the full/outline response mode in content[]; search and citation tools reject blank queries and malformed date filters before spending a rate-limited request.
