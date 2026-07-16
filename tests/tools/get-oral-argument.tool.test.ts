@@ -153,7 +153,7 @@ describe('getOralArgumentTool', () => {
 
   // #37 — selectSections silently drops names matching no key, so an unknown
   // section previously returned kind:'full' carrying only the alwaysKeep fields.
-  describe('unknown section names (#37)', () => {
+  describe('unknown section names (#37, #41)', () => {
     it('rejects a sections name that is not a field of the record', async () => {
       mockSvc.getOralArgument = vi.fn().mockResolvedValue(baseAudio);
       const ctx = createMockContext({ errors: getOralArgumentTool.errors });
@@ -177,6 +177,19 @@ describe('getOralArgumentTool', () => {
       const err = await getOralArgumentTool.handler(input, ctx).catch((e) => e);
       expect(err).toMatchObject({ data: { reason: 'unknown_section' } });
       expect(err.message).toContain('nope');
+    });
+
+    // #41 — SECTION_NAMES is static, so the guard runs before the fetch: rejecting a
+    // known-bad name must cost zero upstream requests, not fetch-then-reject.
+    it('rejects an unknown section before making any upstream request', async () => {
+      mockSvc.getOralArgument = vi.fn().mockResolvedValue(baseAudio);
+      const ctx = createMockContext({ errors: getOralArgumentTool.errors });
+      const input = getOralArgumentTool.input.parse({ id: 105162, sections: ['not_a_section'] });
+
+      await expect(getOralArgumentTool.handler(input, ctx)).rejects.toMatchObject({
+        data: { reason: 'unknown_section' },
+      });
+      expect(mockSvc.getOralArgument).not.toHaveBeenCalled();
     });
 
     it('still accepts every real record field as a section name', async () => {

@@ -106,6 +106,21 @@ export const getOralArgumentTool = tool('courtlistener_get_oral_argument', {
 
   async handler(input, ctx) {
     ctx.log.info('courtlistener_get_oral_argument', { id: input.id });
+
+    // Reject unknown section names before the network call. SECTION_NAMES is fixed at
+    // module load (derived from the record schema), so a bad name never depends on the
+    // fetched record — rejecting up front spends no upstream request (cf. #39/#40).
+    // (get_opinion's equivalent can't hoist: its valid names are per-cluster.)
+    if (input.sections?.length) {
+      const unknown = input.sections.filter((name) => !SECTION_NAMES.includes(name));
+      if (unknown.length > 0) {
+        throw ctx.fail(
+          'unknown_section',
+          `Unknown sections value: ${unknown.join(', ')}. Valid sections: ${SECTION_NAMES.join(', ')}.`,
+        );
+      }
+    }
+
     const svc = getCourtListenerService();
     const audio = await svc.getOralArgument(input.id, ctx);
 
@@ -143,16 +158,9 @@ export const getOralArgumentTool = tool('courtlistener_get_oral_argument', {
     });
 
     // Selection re-call: return only the requested sections plus identity fields.
-    // selectSections silently drops names that match no key, which would return a
-    // `full` response carrying nothing the caller asked for — reject them instead.
+    // Unknown names were already rejected before the fetch, so selectSections only
+    // ever sees valid keys here.
     if (input.sections?.length) {
-      const unknown = input.sections.filter((name) => !SECTION_NAMES.includes(name));
-      if (unknown.length > 0) {
-        throw ctx.fail(
-          'unknown_section',
-          `Unknown sections value: ${unknown.join(', ')}. Valid sections: ${SECTION_NAMES.join(', ')}.`,
-        );
-      }
       return {
         ...selectSections(detail, input.sections, {
           alwaysKeep: ['oral_argument_id', 'case_name'],
