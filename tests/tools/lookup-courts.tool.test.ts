@@ -148,6 +148,106 @@ describe('lookupCourtsTool', () => {
     });
   });
 
+  // #65 — /courts/ serves a fixed 20 rows per page and ignores page_size, so listing the
+  // ~2,900 inactive courts costs ~145 requests against a published 125/day ceiling: the
+  // full set was addressable but not retrievable. The bundled snapshot answers the same
+  // filtered question with no request at all.
+  describe('offline court enumeration from the bundled snapshot (#65)', () => {
+    beforeEach(() => {
+      mockSvc.listCourts = vi
+        .fn()
+        .mockResolvedValue({ total: 3359, next_cursor: '2', courts: baseCourtsResult.courts });
+    });
+
+    it('returns every matching court id on the default bench, not just the 20 on this page', async () => {
+      const ctx = createMockContext();
+      const input = lookupCourtsTool.input.parse({});
+      const result = await lookupCourtsTool.handler(input, ctx);
+
+      // The live page is one 20-row slice; the id list is the whole active bench.
+      expect(result.courts).toHaveLength(2);
+      expect(result.all_matching_court_ids.length).toBeGreaterThan(400);
+      expect(result.all_matching_court_ids_complete).toBe(true);
+      expect(result.all_matching_court_ids).toContain('scotus');
+      expect(() => lookupCourtsTool.output.parse(result)).not.toThrow();
+    });
+
+    it('reaches the inactive bench per jurisdiction, previously unretrievable', async () => {
+      const ctx = createMockContext();
+      const input = lookupCourtsTool.input.parse({ status: 'inactive', jurisdiction: 'F' });
+      const result = await lookupCourtsTool.handler(input, ctx);
+
+      expect(result.all_matching_court_ids.length).toBeGreaterThan(100);
+      expect(result.all_matching_court_ids_complete).toBe(true);
+      // Disjoint from the active bench: an in-use court must not appear here.
+      expect(result.all_matching_court_ids).not.toContain('scotus');
+    });
+
+    it('applies the same jurisdiction and status filters the live call uses', async () => {
+      const ctx = createMockContext();
+      const input = lookupCourtsTool.input.parse({ jurisdiction: 'F', status: 'active' });
+      const result = await lookupCourtsTool.handler(input, ctx);
+
+      expect(result.all_matching_court_ids).toContain('scotus');
+      expect(result.all_matching_court_ids).toContain('ca9');
+      // A federal district court is not federal-appellate.
+      expect(result.all_matching_court_ids).not.toContain('nysd');
+      expect(result.all_matching_court_ids).toEqual([...result.all_matching_court_ids].sort());
+    });
+
+    it('applies has_opinion_scraper offline as well', async () => {
+      const withScraper = await lookupCourtsTool.handler(
+        lookupCourtsTool.input.parse({ status: 'any', has_opinion_scraper: true }),
+        createMockContext(),
+      );
+      const everything = await lookupCourtsTool.handler(
+        lookupCourtsTool.input.parse({ status: 'active' }),
+        createMockContext(),
+      );
+      expect(withScraper.all_matching_court_ids.length).toBeGreaterThan(0);
+      expect(withScraper.all_matching_court_ids.length).toBeLessThan(
+        everything.all_matching_court_ids.length,
+      );
+    });
+
+    // The whole snapshot is ~3,359 ids — ~48KB serialized, rendered a second time in
+    // content[]. Inlining it on every status:'any' call would crowd out the court records
+    // the caller asked for, and a silent prefix would read as the complete set.
+    it('withholds the id list whole when the matching set is too large to inline', async () => {
+      const ctx = createMockContext();
+      const input = lookupCourtsTool.input.parse({ status: 'any' });
+      const result = await lookupCourtsTool.handler(input, ctx);
+
+      expect(result.all_matching_court_ids).toEqual([]);
+      expect(result.all_matching_court_ids_complete).toBe(false);
+      expect(JSON.stringify(result).length).toBeLessThan(4000);
+
+      // Emptiness alone is ambiguous with "no courts match", so the notice carries the
+      // count and a narrowing filter that does fit.
+      const notice = getEnrichment(ctx).notice as string;
+      expect(notice).toContain('3359 courts match');
+      expect(notice).toContain("status='active'");
+      expect(lookupCourtsTool.format!(lookupCourtsTool.output.parse(result))[0]).toMatchObject({
+        text: expect.stringContaining('withheld'),
+      });
+    });
+
+    // `notice` is last-wins in the framework, so two conditions holding at once must
+    // compose into one string rather than one silently clobbering the other.
+    it('surfaces both the empty-page and the withheld-list notices together', async () => {
+      mockSvc.listCourts = vi
+        .fn()
+        .mockResolvedValue({ total: 3359, next_cursor: null, courts: [] });
+      const ctx = createMockContext();
+      const input = lookupCourtsTool.input.parse({ status: 'any', page: 400 });
+      await lookupCourtsTool.handler(input, ctx);
+
+      const notice = getEnrichment(ctx).notice as string;
+      expect(notice).toContain('No courts matched filters');
+      expect(notice).toContain('3359 courts match these filters');
+    });
+  });
+
   it('throws when service throws', async () => {
     mockSvc.listCourts = vi.fn().mockRejectedValue(new Error('rate limit'));
     const ctx = createMockContext();
@@ -170,6 +270,8 @@ describe('lookupCourtsTool', () => {
           has_oral_argument_scraper: true,
         },
       ],
+      all_matching_court_ids: ['ca9', 'scotus'],
+      all_matching_court_ids_complete: true,
     });
     const blocks = lookupCourtsTool.format!(output);
     const text = (blocks[0] as { text: string }).text;
@@ -195,6 +297,8 @@ describe('lookupCourtsTool', () => {
           has_oral_argument_scraper: true,
         },
       ],
+      all_matching_court_ids: ['ca9', 'scotus'],
+      all_matching_court_ids_complete: true,
     });
     const blocks = lookupCourtsTool.format!(output);
     const text = (blocks[0] as { text: string }).text;
@@ -206,7 +310,13 @@ describe('lookupCourtsTool', () => {
 
   it('renders the continuation on an empty page instead of returning early (#35)', () => {
     // The local empty-results branch must not swallow the next_cursor line.
-    const output = lookupCourtsTool.output.parse({ page: 1, next_cursor: '2', courts: [] });
+    const output = lookupCourtsTool.output.parse({
+      page: 1,
+      next_cursor: '2',
+      courts: [],
+      all_matching_court_ids: [],
+      all_matching_court_ids_complete: true,
+    });
     const blocks = lookupCourtsTool.format!(output);
     const text = (blocks[0] as { text: string }).text;
     expect(text).toContain('No courts');
@@ -215,7 +325,13 @@ describe('lookupCourtsTool', () => {
   });
 
   it('format handles empty results', () => {
-    const output = lookupCourtsTool.output.parse({ page: 1, next_cursor: null, courts: [] });
+    const output = lookupCourtsTool.output.parse({
+      page: 1,
+      next_cursor: null,
+      courts: [],
+      all_matching_court_ids: [],
+      all_matching_court_ids_complete: true,
+    });
     const blocks = lookupCourtsTool.format!(output);
     const text = (blocks[0] as { text: string }).text;
     expect(text).toContain('No courts');

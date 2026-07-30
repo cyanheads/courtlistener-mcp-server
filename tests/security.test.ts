@@ -16,6 +16,7 @@ import { searchDocketsTool } from '@/mcp-server/tools/definitions/search-dockets
 import { searchJudgesTool } from '@/mcp-server/tools/definitions/search-judges.tool.js';
 import { searchOpinionsTool } from '@/mcp-server/tools/definitions/search-opinions.tool.js';
 import { searchOralArgumentsTool } from '@/mcp-server/tools/definitions/search-oral-arguments.tool.js';
+import { COURT_FULL_NAMES } from '@/services/courtlistener/court-names-data.js';
 import type { CourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
 import * as svcModule from '@/services/courtlistener/courtlistener-service.js';
 
@@ -298,12 +299,33 @@ describe('API token must not appear in tool output or format() text', () => {
   });
 
   it('lookupCourtsTool output does not expose env var names', async () => {
-    mockSvc.listCourts = vi.fn().mockResolvedValue({ total: 0, courts: [] });
+    mockSvc.listCourts = vi.fn().mockResolvedValue({ total: 0, next_cursor: null, courts: [] });
     const ctx = createMockContext();
     const input = lookupCourtsTool.input.parse({});
     const result = await lookupCourtsTool.handler(input, ctx);
     const resultStr = JSON.stringify(result);
     expect(resultStr).not.toContain('COURTLISTENER_API_TOKEN');
+  });
+
+  // #65 — the bundled court snapshot is the one output field built from local data
+  // rather than the upstream response, so it is the one that could carry something from
+  // the generating machine if the generator ever emitted more than court records.
+  it('lookupCourtsTool offline court ids carry nothing but court identifiers', async () => {
+    mockSvc.listCourts = vi.fn().mockResolvedValue({ total: 0, next_cursor: null, courts: [] });
+    const ctx = createMockContext();
+    const input = lookupCourtsTool.input.parse({ status: 'active' });
+    const result = await lookupCourtsTool.handler(input, ctx);
+
+    expect(result.all_matching_court_ids.length).toBeGreaterThan(400);
+    const ids = JSON.stringify(result.all_matching_court_ids);
+    expect(ids).not.toContain('COURTLISTENER_API_TOKEN');
+    expect(ids).not.toContain('/Users/');
+
+    // The filtered view above is one slice of the snapshot; the shape claim covers every
+    // id in it, including the ~2,900 the response withholds by default.
+    const every = Object.keys(COURT_FULL_NAMES);
+    expect(every.length).toBeGreaterThan(3000);
+    expect(every.filter((id) => !/^[\w.-]+$/.test(id))).toEqual([]);
   });
 });
 
@@ -331,6 +353,7 @@ describe('unicode and encoding edge cases', () => {
             case_name: 'Test',
             court: 'Supreme Court of the United States',
             court_id: 'scotus',
+            court_resolution: 'resolved',
             date_filed: '2020-01-01',
             docket_id: 5,
             citations: ['410 U.S. 113'],
@@ -446,7 +469,7 @@ describe('empty result enrichment — all search tools surface a notice', () => 
 
   it('lookupCourtsTool enriches notice when empty', async () => {
     const { getEnrichment } = await import('@cyanheads/mcp-ts-core/testing');
-    mockSvc.listCourts = vi.fn().mockResolvedValue({ total: 0, courts: [] });
+    mockSvc.listCourts = vi.fn().mockResolvedValue({ total: 0, next_cursor: null, courts: [] });
     const ctx = createMockContext();
     const input = lookupCourtsTool.input.parse({ jurisdiction: 'I' });
     await lookupCourtsTool.handler(input, ctx);

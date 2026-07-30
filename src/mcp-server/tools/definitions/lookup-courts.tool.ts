@@ -5,12 +5,24 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { listSnapshotCourtIds } from '@/services/courtlistener/court-names.js';
+import { COURT_SNAPSHOT_DATE } from '@/services/courtlistener/court-names-data.js';
 import { getCourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
+
+/**
+ * Ceiling on the offline id list inlined in one response. The whole set is 3,359 courts —
+ * roughly 48KB of ids, repeated again in the `content[]` render — which would crowd out the
+ * court records the caller actually asked for. Sized at about twice the active bench (472,
+ * the default filter) so every realistic filter still returns its complete list, and the
+ * four that do not (`status:'any'` and `status:'inactive'`, alone or with `jurisdiction:'ST'`)
+ * get a count and a narrowing hint instead of a silent prefix.
+ */
+const MAX_INLINE_COURT_IDS = 1000;
 
 export const lookupCourtsTool = tool('courtlistener_lookup_courts', {
   title: 'Lookup Courts',
   description:
-    "List courts with optional filtering by jurisdiction type, active/inactive status, and scraper coverage. Primarily used to discover court IDs for use in search and filter parameters across all other courtlistener tools. Defaults to the active bench — the courts CourtListener still scrapes; pass status:'inactive' for historical courts or status:'any' for every court. Returns one page of court IDs, full names, citation strings, and scraper status: the endpoint serves a fixed 20 rows per page, so listing a whole bench costs one call per 20 courts against a rate-limited free tier — filter by jurisdiction to answer a question in one call rather than paging.",
+    "List courts with optional filtering by jurisdiction type, active/inactive status, and scraper coverage. Primarily used to discover court IDs for use in search and filter parameters across all other courtlistener tools. Defaults to the active bench — the courts CourtListener still scrapes; pass status:'inactive' for historical courts or status:'any' for every court. A bundled snapshot returns the complete list of matching court IDs without paging whenever the filtered set fits the response budget, which covers the default bench and every jurisdiction filter. Full court records — names, citation strings, scraper status — come live from CourtListener at a fixed 20 rows per page, so pull those only when a court ID alone is not enough.",
   annotations: { readOnlyHint: true, openWorldHint: true, idempotentHint: false },
 
   input: z.object({
@@ -88,7 +100,17 @@ export const lookupCourtsTool = tool('courtlistener_lookup_courts', {
           })
           .describe('Court record.'),
       )
-      .describe('Matching courts.'),
+      .describe('Matching courts on this page.'),
+    all_matching_court_ids: z
+      .array(z.string())
+      .describe(
+        `Every court id matching the same filters, from a snapshot of /courts/ bundled with this server (taken ${COURT_SNAPSHOT_DATE}) — the complete set, not just this page, and free of any request. Paging \`courts\` is only needed for the fields a court id alone does not carry (full_name, citation_string, scraper flags). Empty when more than ${MAX_INLINE_COURT_IDS} courts match, since a prefix of the set would be indistinguishable from the whole of it — check all_matching_court_ids_complete before reading emptiness as "no courts match". A court added or retired upstream since the snapshot date appears in \`courts\` but may be missing here.`,
+      ),
+    all_matching_court_ids_complete: z
+      .boolean()
+      .describe(
+        `True when all_matching_court_ids holds every matching court id. False when more than ${MAX_INLINE_COURT_IDS} courts match: the list is withheld whole rather than truncated, and the notice gives the count and how to narrow.`,
+      ),
   }),
 
   // Agent-facing context: total count and recovery hint on empty results.
@@ -145,6 +167,21 @@ export const lookupCourtsTool = tool('courtlistener_lookup_courts', {
     ctx.log.info('courtlistener_lookup_courts complete', { count: courts.length });
 
     ctx.enrich.total(data.total);
+
+    // The live page is 20 rows against a set that can run to thousands. The bundled
+    // snapshot answers "which courts match" for the same filters at no request cost,
+    // which is the only way that question is answerable at all under the free tier.
+    const snapshotFilters = {
+      jurisdiction: input.jurisdiction,
+      in_use: inUse,
+      has_opinion_scraper: input.has_opinion_scraper,
+    };
+    const matching = listSnapshotCourtIds(snapshotFilters);
+    const complete = matching.length <= MAX_INLINE_COURT_IDS;
+
+    // Two conditions can hold at once — a page past the end of a set that is itself too
+    // large to inline — and `notice` is last-wins, so they compose into one string.
+    const notices: string[] = [];
     if (courts.length === 0) {
       const filters: string[] = [`status=${input.status}`];
       if (input.jurisdiction) filters.push(`jurisdiction=${input.jurisdiction}`);
@@ -153,10 +190,28 @@ export const lookupCourtsTool = tool('courtlistener_lookup_courts', {
         input.status === 'any'
           ? 'Drop the remaining filters to widen the search.'
           : "Set status='any' to search the active and inactive benches together, or drop the remaining filters.";
-      ctx.enrich.notice(`No courts matched filters: ${filters.join(', ')}. ${widen}`);
+      notices.push(`No courts matched filters: ${filters.join(', ')}. ${widen}`);
     }
+    if (!complete) {
+      // Naming the active-bench count turns the usual over-budget case (status='any')
+      // into one concrete next call rather than a guess at which filter is small enough.
+      const activeHint =
+        inUse === undefined
+          ? ` Narrowing to status='active' matches ${listSnapshotCourtIds({ ...snapshotFilters, in_use: true }).length}.`
+          : '';
+      notices.push(
+        `${matching.length} courts match these filters, past the ${MAX_INLINE_COURT_IDS}-id ceiling for inlining the offline list, so all_matching_court_ids is empty rather than a prefix that would read as the whole set. Narrow with jurisdiction, status, or has_opinion_scraper to get the complete list in one call.${activeHint} The live \`courts\` page is unaffected.`,
+      );
+    }
+    if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
 
-    return { page: input.page, next_cursor: data.next_cursor, courts };
+    return {
+      page: input.page,
+      next_cursor: data.next_cursor,
+      courts,
+      all_matching_court_ids: complete ? matching : [],
+      all_matching_court_ids_complete: complete,
+    };
   },
 
   format: (result) => {
@@ -183,6 +238,17 @@ export const lookupCourtsTool = tool('courtlistener_lookup_courts', {
 
     if (result.next_cursor) {
       lines.push(`\n*More courts available — pass page=${result.next_cursor} to continue.*`);
+    }
+
+    if (result.all_matching_court_ids_complete) {
+      lines.push(
+        `\n**All ${result.all_matching_court_ids.length} matching court IDs** (bundled snapshot, ${COURT_SNAPSHOT_DATE} — complete, no paging needed):`,
+      );
+      lines.push(result.all_matching_court_ids.map((id) => `\`${id}\``).join(', '));
+    } else {
+      lines.push(
+        `\n**Matching court IDs withheld** — more than ${MAX_INLINE_COURT_IDS} courts match, so the bundled snapshot list is not complete enough to inline. Narrow the filters to get it.`,
+      );
     }
 
     return [{ type: 'text', text: lines.join('\n') }];

@@ -1,16 +1,18 @@
 /**
  * @fileoverview Resolves CourtListener court identifiers to human-readable
- * display names. The `/clusters/` and `/dockets/` detail endpoints return the
- * court as a resource URI rather than a name, and the linked `court_id` (e.g.
- * "scotus", "ca9", "nysd") is the stable identifier used for filtering.
- * Resolution is local against a generated snapshot of CourtListener's in-use
- * courts (no extra API call, which matters under the free-tier rate limit of
- * 5 req/min); any identifier absent from the snapshot falls back to the
- * `court_id` itself — the value CourtListener uses for downstream filtering.
+ * display names and answers "what courts exist" without a request. The
+ * `/clusters/` and `/dockets/` detail endpoints return the court as a resource
+ * URI rather than a name, and the linked `court_id` (e.g. "scotus", "ca9",
+ * "nysd") is the stable identifier used for filtering. Both operations read a
+ * generated snapshot of every CourtListener court — active and historical —
+ * because `/courts/` serves a fixed 20 rows per page and ignores `page_size`,
+ * putting a full enumeration (~168 requests) past a day's published free-tier
+ * allowance. The live `/courts/` path stays authoritative for complete court
+ * records; the snapshot covers ids, names, and the filters below.
  * @module services/courtlistener/court-names
  */
 
-import { COURT_FULL_NAMES } from './court-names-data.js';
+import { COURT_ATTRIBUTES, COURT_FULL_NAMES } from './court-names-data.js';
 
 /**
  * Resolve a court identifier to its display name.
@@ -21,4 +23,27 @@ import { COURT_FULL_NAMES } from './court-names-data.js';
 export function resolveCourtName(courtId: string | null | undefined): string {
   if (!courtId) return '';
   return COURT_FULL_NAMES[courtId] ?? courtId;
+}
+
+/**
+ * Every court id in the snapshot matching the given filters, sorted. The filters
+ * mirror `/courts/`'s own — omitting one leaves that dimension unconstrained —
+ * so the result is the complete set a paged live enumeration would return, minus
+ * whatever has changed upstream since `COURT_SNAPSHOT_DATE`.
+ */
+export function listSnapshotCourtIds(filters: {
+  jurisdiction?: string | undefined;
+  in_use?: boolean | undefined;
+  has_opinion_scraper?: boolean | undefined;
+}): string[] {
+  return Object.entries(COURT_ATTRIBUTES)
+    .filter(
+      ([, attrs]) =>
+        (filters.jurisdiction === undefined || attrs.jurisdiction === filters.jurisdiction) &&
+        (filters.in_use === undefined || attrs.in_use === filters.in_use) &&
+        (filters.has_opinion_scraper === undefined ||
+          attrs.has_opinion_scraper === filters.has_opinion_scraper),
+    )
+    .map(([id]) => id)
+    .sort();
 }
