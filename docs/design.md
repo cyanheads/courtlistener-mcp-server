@@ -11,11 +11,11 @@
 | `courtlistener_get_citations` | Retrieve the citation network for an opinion: what it cites, and what cites it | `cluster_id`, `direction`, `page_size` | `readOnlyHint`, `openWorldHint` |
 | `courtlistener_search_dockets` | Search RECAP federal court dockets with party name, attorney, court, and date filters | `q`, `court`, `filed_after`, `filed_before`, `party_name`, `page_size` | `readOnlyHint`, `openWorldHint` |
 | `courtlistener_get_docket` | Fetch docket metadata and entries for a single federal case by docket ID | `docket_id` | `readOnlyHint`, `idempotentHint` |
-| `courtlistener_get_parties` | Fetch parties and attorneys of record for a RECAP federal docket | `docket_id`, `page`, `page_size` | `readOnlyHint`, `idempotentHint` |
+| `courtlistener_get_parties` | Fetch parties and attorneys of record for a RECAP federal docket | `docket_id`, `cursor`, `page_size` | `readOnlyHint`, `idempotentHint` |
 | `courtlistener_search_judges` | Search judge/person records by name, appointing president, court, political affiliation, or demographic | `q`, `appointer`, `court`, `political_affiliation`, `page_size` | `readOnlyHint`, `openWorldHint` |
 | `courtlistener_get_judge` | Fetch biographical profile, appointment history, and education for a single judge | `person_id` | `readOnlyHint`, `idempotentHint` |
-| `courtlistener_lookup_courts` | List courts filtered by jurisdiction type and active-scraper status | `jurisdiction`, `in_use`, `has_opinion_scraper` | `readOnlyHint`, `openWorldHint` |
-| `courtlistener_lookup_citation` | Resolve a legal citation string (e.g., "410 U.S. 113") to a cluster ID and case metadata | `citation` | `readOnlyHint`, `idempotentHint` |
+| `courtlistener_lookup_courts` | List courts filtered by jurisdiction type, active/inactive status, and scraper coverage | `jurisdiction`, `status`, `has_opinion_scraper` | `readOnlyHint`, `openWorldHint` |
+| `courtlistener_lookup_citation` | Resolve legal citations (e.g., "410 U.S. 113") to cluster IDs and case metadata — one entry per citation found in the input | `citation` | `readOnlyHint`, `idempotentHint` |
 | `courtlistener_search_oral_arguments` | Search appellate oral argument audio recordings by case name, court, and date argued | `q`, `court`, `argued_after`, `argued_before`, `page_size` | `readOnlyHint`, `openWorldHint` |
 
 ---
@@ -33,7 +33,7 @@ Built on [Free Law Project's](https://free.law/) open-access infrastructure. Opi
 ## Requirements
 
 - CourtListener API token (free account at courtlistener.com) — required for all endpoints except `/courts/`; the search endpoint works unauthenticated but rate limits are tighter
-- Rate limits — **very tight on the free tier:** CourtListener publishes 5 req/min, 50 req/hr, 125 req/day, and all three windows apply simultaneously; actual limits vary by token tier, so the Retry-After returned on a 429 is the authoritative wait, not the published figure. Free Law Project membership or commercial agreement unlocks higher limits. Every tool design must respect this: most tools make 1–2 upstream calls, and the ceiling is the three that opinion detail and either citation direction spend (plus one per extra page of opinion variants on a case that filed many).
+- Rate limits — **very tight on the free tier:** CourtListener publishes 5 req/min, 50 req/hr, 125 req/day, and all three windows apply simultaneously; actual limits vary by token tier, so the Retry-After returned on a 429 is the authoritative wait, not the published figure. Free Law Project membership or commercial agreement unlocks higher limits. Every tool design must respect this: most tools make 1–2 upstream calls, opinion detail and either citation direction spend three (plus one per extra page of opinion variants on a case that filed many), and the ceiling is the five citation lookup spends when it resolves the courts of four distinct dockets. `/citation-lookup/` is additionally metered by citations submitted rather than by call, so one request over a long passage can consume several citations' worth of quota.
 - RECAP docket coverage is crowd-sourced from PACER — completeness varies by court and case. Treat docket data as "best available" not authoritative.
 - The citation network lives in the search index (`cites:(id)` query) — no dedicated citation REST endpoint is accessible unauthenticated. The authenticated `/opinions-cited/` endpoint is the higher-fidelity path with auth.
 - No write operations exposed to the tool surface (RECAP upload, alerts, tags are all excluded)
@@ -259,33 +259,52 @@ cursor: z.string().optional()
 
 ### `courtlistener_lookup_citation`
 
-Resolve a formatted legal citation string (e.g., "410 U.S. 113", "93 S. Ct. 705") to a cluster ID and case metadata. Enables workflows that start from a known citation rather than a search query.
+Resolve legal citations (e.g., "410 U.S. 113", "93 S. Ct. 705") to opinion cluster IDs and case metadata. Enables workflows that start from a known citation rather than a search query. Upstream parses the submitted text with eyecite and answers per citation found, so the output is a list, not a single record.
 
 **Input schema:**
 ```ts
-citation: z.string()
-  .describe('Legal citation string to resolve (e.g., "410 U.S. 113", "347 U.S. 483", "93 S. Ct. 705"). Supports standard reporter formats.'),
+citation: z.string().trim()
+  .describe('Text to extract citations from — normally a single citation (e.g., "410 U.S. 113", "347 U.S. 483", "93 S. Ct. 705"), but any passage works and every citation in it is resolved. Supports standard reporter formats. Up to 64,000 characters, which is CourtListener's own ceiling.'),
 ```
+
+Blank and oversized input are both rejected before the request is sent — `CitationAPIRequestSerializer.text` is a `CharField(max_length=64_000)`, so a longer passage is refused upstream after the request is already spent.
 
 **Output:**
 ```ts
 {
-  cluster_id: number | null,      // null if citation not found in database
-  case_name: string | null,
-  court: string | null,
-  date_filed: string | null,
-  citations: string[],            // all known citations for this case
-  normalized_citation: string | null,  // canonical form CourtListener uses
+  matches: Array<{
+    citation: string,                    // as upstream matched it in the text
+    normalized_citation: string | null,  // canonical form CourtListener uses
+    status: number,                      // per-citation: 200 one case, 300 several
+                                         // candidates, 400 unrecognized reporter,
+                                         // 404 no match, 429 past the citation cap
+    status_label: string,
+    error_message: string,               // upstream's explanation; '' when status is 200
+    clusters: Array<{
+      cluster_id: number | null,
+      case_name: string | null,
+      court: string | null,              // backfilled from docket_id — see note
+      court_id: string | null,
+      date_filed: string | null,
+      docket_id: number | null,
+      citations: string[],               // all known citations for this case
+      cite_count: number | null,
+      precedential_status: string | null,
+      judges: string | null,
+    }>,
+  }>,
 }
 ```
 
-**Implementation note:** Uses `POST /citation-lookup/` with `{"text": citation}` — requires auth. If unauthenticated, fall back to `GET /search/?q="<citation>"&type=o` with high precision.
+**Implementation note:** Uses `POST /citation-lookup/` with `{"text": citation}`. `IsAuthenticated` is on the viewset, so there is no unauthenticated path and no search fallback. Upstream returns `[]` only when eyecite parsed no citation at all — that is the sole `not_found` case; a citation that parses but matches nothing is an entry with `status: 404`. The embedded `OpinionClusterSerializer` has no `court` field (the court lives on the linked docket), so `court`/`court_id` are resolved from `docket_id` at one `/dockets/{id}/` request each, capped at `COURT_BACKFILL_LIMIT` distinct dockets per call; clusters past the cap keep a null court and the response notice reports how many.
 
 **Errors:**
 | Reason | Code | When | Retryable |
 |:-------|:-----|:-----|:----------|
-| `not_found` | `NotFound` | Citation not in CourtListener database | No — may not exist |
-| `rate_limited` | `ServiceUnavailable` | 429 | Yes |
+| `not_found` | `NotFound` | No citation could be parsed from the submitted text | No — reformat the citation |
+| `rate_limited` | `RateLimited` | 429 | No — honor Retry-After |
+| `empty_citation` | `ValidationError` | `citation` is empty or whitespace-only after trimming | No — supply a citation |
+| `citation_too_long` | `ValidationError` | `citation` exceeds the 64,000-character ceiling CourtListener accepts | No — trim or split the passage |
 
 ---
 
@@ -493,14 +512,18 @@ person_id: z.number().int()
 
 ### `courtlistener_lookup_courts`
 
-List courts with optional filtering by jurisdiction type and scraper status. Primarily used to discover court IDs for use in search and filter parameters.
+List courts with optional filtering by jurisdiction type, active/inactive status, and scraper coverage. Primarily used to discover court IDs for use in search and filter parameters.
 
 **Input schema:**
 ```ts
 jurisdiction: z.enum(['F', 'FD', 'FB', 'FBP', 'FS', 'C', 'I', 'T', 'ST', 'SS', 'SAG', 'SAL', 'SA', 'S', 'TT']).optional()
   .describe('Jurisdiction type. F=Federal Appellate (circuit courts, SCOTUS), FD=Federal District, FB=Federal Bankruptcy, FBP=Federal Bankruptcy Panel, FS=Federal Special (USITC, FISC, etc.), C=Circuit (historical), I=International, T=Territory, ST=State Trial, SS=State Supreme, SAG=State Attorney General, SAL=State Legislature, SA=State Appellate, S=State (other), TT=Tribal/Territory. Omit to list all.'),
-in_use: z.boolean().optional().default(true)
-  .describe('When true (default), only return courts currently scraped by CourtListener. Set to false to include historical or inactive courts.'),
+// Upstream's `in_use` is a boolean exact-match filter, so in_use=true and in_use=false
+// return disjoint sets whose sizes sum to the unfiltered total. A forwarded boolean
+// cannot express "both", which is what the tri-state exists for: 'active' → in_use=true,
+// 'inactive' → in_use=false, 'any' → the parameter is omitted.
+status: z.enum(['active', 'inactive', 'any']).optional().default('active')
+  .describe("Which bench to return. 'active' (default) returns only courts CourtListener currently scrapes; 'inactive' returns only the historical and defunct courts it no longer scrapes; 'any' returns both."),
 has_opinion_scraper: z.boolean().optional()
   .describe('Filter to courts with active opinion scraping. Useful when planning search queries — courts without scrapers have sparse coverage.'),
 ```
@@ -653,7 +676,9 @@ cursor: z.string().optional()
 
 ### Pagination
 - `/search/`-backed tools (opinions, dockets, judges, oral arguments, citation network) are cursor-based (opaque string in `next` URL): do NOT use `page=N` — cursor pagination is required for consistent results
-- The non-`/search/` list endpoints are page-number paginated by upstream design and expose a 1-indexed `page` input: `/docket-entries/` (`courtlistener_get_docket`), `/parties/` (`courtlistener_get_parties`), and `/courts/` (`courtlistener_lookup_courts`). Each caps the page at ~20 rows regardless of `page_size` and returns the next page number as `next_cursor`
+- Which paginator a non-`/search/` list endpoint gets is per-viewset, not a property of "non-search endpoints" as a class — check the viewset before assuming. `cl/api/pagination.py`'s `VersionBasedPagination` (the DRF default here) routes a v4 request to `CursorPagination` when the effective ordering key is in the viewset's `cursor_ordering_fields`, and to `PageNumberPagination` otherwise. A viewset that sets `pagination_class` explicitly opts out entirely.
+- Page-number paginated, exposing a 1-indexed `page` input: `/docket-entries/` (`courtlistener_get_docket`) and `/courts/` (`courtlistener_lookup_courts` — `CourtViewSet.pagination_class = PageNumberPagination`, the plain DRF paginator with no cursor support). Each caps the page at ~20 rows regardless of `page_size` and returns the next page number as `next_cursor`
+- Cursor paginated, exposing an opaque `cursor` input: `/parties/` (`courtlistener_get_parties`) and `/attorneys/`. Both inherit `VersionBasedPagination` and default to `CursorPagination` because their `ordering = "-id"` sits inside `cursor_ordering_fields`. A page number sent here selects nothing and re-serves the first page. The tell in a live response: these emit `count` as a *URL string* rather than an integer, which upstream only does on its cursor branch
 
 ### Rate limit throttles (published free tier; actual limits vary by token tier)
 | Window | Published limit |

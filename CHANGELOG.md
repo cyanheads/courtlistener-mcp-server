@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.6.0](changelog/0.6.x/0.6.0.md) — 2026-07-30 · ⚠️ Breaking
+
+courtlistener_lookup_courts, courtlistener_lookup_citation, and courtlistener_get_parties get breaking contract changes to reach data the old shapes couldn't; courtlistener_get_oral_argument's outline response stops dropping record metadata.
+
 ## [0.5.3](changelog/0.5.x/0.5.3.md) — 2026-07-30
 
 courtlistener_get_judge and courtlistener_get_opinion decode coded fields (position_type, termination_reason, degree, opinion type) to labels alongside the raw codes, get_judge gains date-granularity fields so year/month-only dates stop rendering as YYYY-01-01, education[].year is fixed, and blank-able fields report null instead of empty strings.
