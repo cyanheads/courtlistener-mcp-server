@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.5.1-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/courtlistener-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/courtlistener-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/courtlistener-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.2-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.5.2-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/courtlistener-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/courtlistener-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/courtlistener-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.2-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -69,7 +69,7 @@ Fetch full text and metadata for an opinion cluster.
 - A cluster groups all opinions filed in a case: majority, concurrence, dissent, per curiam
 - Returns `html_text` and `plain_text` for each opinion variant; surfaces `download_url` when local text is absent
 - Includes `cites[]` (outbound citation IDs), `cite_count`, syllabus, posture, and docket link
-- Single upstream request — safe within the tight free-tier rate limit
+- Three upstream requests — the cluster, its opinion variants, and the linked docket for court and docket number — kept within the tight free-tier rate limit
 
 ---
 
@@ -79,9 +79,10 @@ Retrieve the citation network for an opinion cluster in either direction.
 
 - `cited_by` (default): opinions that cite this one — measures precedential influence and downstream adoption
 - `citing`: opinions this one cites — reveals the authority chain the court relied on
-- Optional court and date filters; cursor-based pagination; up to 20 results per call
+- Optional court and date filters; up to 20 results per call
+- Pagination differs by direction: `cited_by` follows CourtListener's own cursor with the filters applied, so its total and its pages describe the same set; `citing` walks the cited-opinion list and filters each page as it goes, so a filtered page can come back empty with matches still ahead — the response distinguishes that from an exhausted network
 - Results include `snippet`, the matched excerpt from the related opinion — a relevance preview for the cluster, not necessarily the text surrounding the citation
-- Rate-limit note: the free tier (125 req/day) supports 1–2 hops on a single case; deep multi-hop traversal exhausts the daily budget quickly
+- Rate-limit note: three upstream requests per call in either direction; the free tier supports 1–2 hops on a single case, and deep multi-hop traversal exhausts the daily budget quickly
 
 ---
 
@@ -219,7 +220,7 @@ CourtListener-specific:
 - Rate-limit-aware client: 429 responses classified by window (minute / hour / day) with actionable error messages; retry with Retry-After respect
 - Pagination across every list endpoint — cursor-based on the `/search/`-backed tools, page-number on the courts / parties / docket-entry lists — with continuation surfaced on every response
 - RECAP coverage note surfaced on every docket response — sets expectations on partial PACER mirror completeness
-- Tight upstream-call budget — most tools make 1–2 calls; opinion detail and citation traversal make up to 3 (resolving the linked docket or source cluster), keeping the free tier (125 req/day) usable for multi-step research
+- Tight upstream-call budget — most tools make 1–2 calls; opinion detail and citation traversal make three (resolving the linked docket, or the source cluster's opinion variants), plus one per extra page of variants on a case that filed many, keeping the free tier usable for multi-step research
 
 Agent-friendly output:
 

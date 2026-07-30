@@ -6,7 +6,7 @@ CourtListener / RECAP — 9M+ full-text court opinions, oral arguments, and PACE
 
 - **Base**: `https://www.courtlistener.com/api/rest/v4/`
 - **Auth**: API token (free account)
-- **Rate limits**: Free tier — 5 requests/min, 125 requests/day. Membership ($10+/mo) unlocks higher limits.
+- **Rate limits**: CourtListener publishes free-tier limits of 5 requests/min, 50/hr, 125/day; actual limits vary by token tier, so honor the Retry-After returned on a 429 rather than the published figure. Membership ($10+/mo) unlocks higher limits.
 - **Docs**: https://www.courtlistener.com/help/api/rest/
 
 ## Key data
@@ -44,7 +44,7 @@ CourtListener / RECAP — 9M+ full-text court opinions, oral arguments, and PACE
 - **Status: Caution — rate limits require membership for hosted proxy**
 - Court opinions are government works = public domain. Bulk data carries **Public Domain Mark** (CC PDM 1.0)
 - ToS does not prohibit proxying or redistribution
-- **Bottleneck**: free API tier is 5 req/min, 125 req/day — a hosted proxy exhausts this quickly
+- **Bottleneck**: the published free-tier limits (5 req/min, 50/hr, 125/day) are tight whatever a given token actually gets — a hosted proxy exhausts them quickly
 - Free Law Project membership ($10+/mo) unlocks higher limits; commercial partnerships also available
 - Contact: https://www.courtlistener.com/contact/?issue_type=partnerships
 - Alternative: build for local-only use where each user provides their own CourtListener token
@@ -52,6 +52,6 @@ CourtListener / RECAP — 9M+ full-text court opinions, oral arguments, and PACE
 ## Notes
 
 - Previous session incorrectly said "audio only" — the primary corpus is 9M+ full-text written opinions
-- Free tier rate limits are tight (125/day) — design tools to be efficient, batch where possible
+- Free tier rate limits are tight whatever the exact per-token ceiling — design tools to be efficient, batch where possible
 - RECAP data is crowd-sourced from PACER — coverage varies by court
 - Citation network enables "trace legal precedent" workflows

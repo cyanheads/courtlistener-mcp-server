@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.5.2](changelog/0.5.x/0.5.2.md) — 2026-07-29
+
+courtlistener_get_citations \"cited_by\" now resolves the cluster's opinion IDs before querying the cites index (it previously matched nothing when the cluster and opinion IDs diverge), getOpinionCluster walks sub-opinion pagination to completion, and \"citing\" empty pages under filters are distinguished from an exhausted network.
+
 ## [0.5.1](changelog/0.5.x/0.5.1.md) — 2026-07-29
 
 courtlistener_get_parties now scopes attorneys to the requested docket and resolves their names/contact through a docket-filtered cursor walk instead of a broken batch lookup; role_code decodes correctly and the upstream Retry-After now reaches rate-limit errors.

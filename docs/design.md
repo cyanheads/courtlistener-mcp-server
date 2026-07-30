@@ -33,7 +33,7 @@ Built on [Free Law Project's](https://free.law/) open-access infrastructure. Opi
 ## Requirements
 
 - CourtListener API token (free account at courtlistener.com) — required for all endpoints except `/courts/`; the search endpoint works unauthenticated but rate limits are tighter
-- Rate limits — **very tight on the free tier:** 5 req/min, 50 req/hr, 125 req/day; all three windows apply simultaneously. Free Law Project membership or commercial agreement unlocks higher limits. Every tool design must respect this; no workflow makes more than 2–3 upstream calls per invocation.
+- Rate limits — **very tight on the free tier:** CourtListener publishes 5 req/min, 50 req/hr, 125 req/day, and all three windows apply simultaneously; actual limits vary by token tier, so the Retry-After returned on a 429 is the authoritative wait, not the published figure. Free Law Project membership or commercial agreement unlocks higher limits. Every tool design must respect this: most tools make 1–2 upstream calls, and the ceiling is the three that opinion detail and either citation direction spend (plus one per extra page of opinion variants on a case that filed many).
 - RECAP docket coverage is crowd-sourced from PACER — completeness varies by court and case. Treat docket data as "best available" not authoritative.
 - The citation network lives in the search index (`cites:(id)` query) — no dedicated citation REST endpoint is accessible unauthenticated. The authenticated `/opinions-cited/` endpoint is the higher-fidelity path with auth.
 - No write operations exposed to the tool surface (RECAP upload, alerts, tags are all excluded)
@@ -55,7 +55,7 @@ Single service, single base URL. Auth via `Authorization: Token <token>` header.
 
 | Env Var | Required | Description |
 |:--------|:---------|:------------|
-| `COURTLISTENER_API_TOKEN` | Yes | API token from courtlistener.com account settings. Free tier: 5 req/min, 50/hr, 125/day. |
+| `COURTLISTENER_API_TOKEN` | Yes | API token from courtlistener.com account settings. CourtListener's published free-tier limits are 5 req/min, 50/hr, 125/day; actual limits vary by token tier. |
 | `COURTLISTENER_BASE_URL` | No | Override API base URL (default: `https://www.courtlistener.com/api/rest/v4`) |
 
 ---
@@ -209,7 +209,7 @@ cluster_id: z.number().int()
 
 Retrieve the citation network for an opinion cluster. Supports two directions: opinions cited BY this opinion (outbound references) and opinions that CITE this opinion (inbound — measures precedential influence). This is the primary tool for tracing legal precedent chains.
 
-Note on depth: the free tier (125 req/day) supports shallow traversal — following 1–2 hops of a single important case is practical; deep multi-hop analysis across 10+ cases exhausts the daily budget quickly. Citation data shows *what* cites *what*, not *how* — whether a precedent was affirmed, distinguished, or limited requires reading the citing opinion text via `courtlistener_get_opinion`.
+Note on depth: the free tier supports shallow traversal — following 1–2 hops of a single important case is practical; deep multi-hop analysis across 10+ cases exhausts the daily budget quickly. Citation data shows *what* cites *what*, not *how* — whether a precedent was affirmed, distinguished, or limited requires reading the citing opinion text via `courtlistener_get_opinion`.
 
 **Input schema:**
 ```ts
@@ -605,14 +605,14 @@ cursor: z.string().optional()
 
 ## Design Decisions
 
-**Rate limits drive everything.** At 5 req/min and 125/day on the free tier, a single complex agent session can exhaust the daily budget. Consequences:
-- No workflow tool calls more than 2 upstream requests
+**Rate limits drive everything.** At the published free-tier windows (5 req/min, 50/hr, 125/day), a single complex agent session can exhaust the daily budget. Consequences:
+- No workflow tool spends more than three upstream requests, plus one per extra page of opinion variants a cluster needs
 - `page_size` defaults are kept low (5–10) and maximums are capped (10–20)
 - No "fetch related data" enrichment in responses that would auto-trigger extra calls
-- `courtlistener_get_citations` uses the search endpoint (1 call) rather than paginating the `/opinions-cited/` REST endpoint across multiple pages
+- `courtlistener_get_citations` uses the search endpoint rather than paginating the `/opinions-cited/` REST endpoint across multiple pages; both directions first resolve the source cluster's opinion IDs, since the `cites:` index is keyed by opinion, not cluster
 - Deep citation traversal (multi-hop: "what cites X, then what cites those 10 cases") burns through daily budget in one session. The server exposes the tool correctly but the rate-limit constraint is a free-tier reality. Free Law Project membership ($10/mo) unlocks higher limits for research use.
 
-**Citation network via search, not dedicated endpoint.** The `/opinions-cited/` and `/clusters/{id}/` REST endpoints require auth and consume daily quota. The search API's `cites:(id)` filter works unauthenticated and returns rich metadata in a single call. For `citing` direction, the opinion's inline `cites[]` array from `get_opinion` is used — zero extra calls.
+**Citation network via search, not dedicated endpoint.** The `/opinions-cited/` REST endpoint requires auth and consumes daily quota per page. The search API's `cites:(id)` filter returns rich metadata for the whole network from one search call. That search is not free-standing, though: `cites:` keys on opinion IDs, and the `citing` direction reads the cluster's inline `cites[]`, so both directions resolve the cluster's opinion variants first — three calls per invocation, not one.
 
 **No financial disclosures tool in v1.** The endpoint is public and interesting, but requires traversing a person ID → disclosure ID → investment/income sub-resources chain (3–4 calls minimum) with low structured-data density. Deferred to a future `courtlistener_get_financial_disclosure` tool.
 
@@ -626,7 +626,7 @@ cursor: z.string().optional()
 
 ## Known Limitations
 
-- **125 req/day free tier.** A session doing search + get + citations + judge lookup = 5–6 requests. Heavy users hit the daily cap within hours. Server should surface rate-limit state in error messages, distinguishing minute/hour/day throttle.
+- **A tight daily free-tier budget** (125 req/day published; varies by token tier). A session doing search + get + citations + judge lookup spends roughly 8–10 requests. Heavy users hit the daily cap within hours. Server should surface rate-limit state in error messages, distinguishing minute/hour/day throttle.
 - **RECAP docket coverage is partial.** Not all PACER documents are publicly available — those marked `is_available: false` require RECAP filing or payment via CourtListener. The tool surface cannot fix this.
 - **Opinion text may be partial or HTML.** Some opinions link to `download_url` with no local text stored. The `get_opinion` handler should surface the download URL when text is absent.
 - **Citation network is approximate.** CourtListener's citation extraction is automated — minor formatting variants can miss links. `cite_count` is directional guidance, not a definitive legal citation count.
@@ -655,9 +655,9 @@ cursor: z.string().optional()
 - `/search/`-backed tools (opinions, dockets, judges, oral arguments, citation network) are cursor-based (opaque string in `next` URL): do NOT use `page=N` — cursor pagination is required for consistent results
 - The non-`/search/` list endpoints are page-number paginated by upstream design and expose a 1-indexed `page` input: `/docket-entries/` (`courtlistener_get_docket`), `/parties/` (`courtlistener_get_parties`), and `/courts/` (`courtlistener_lookup_courts`). Each caps the page at ~20 rows regardless of `page_size` and returns the next page number as `next_cursor`
 
-### Rate limit throttles (free tier)
-| Window | Limit |
-|:-------|:------|
+### Rate limit throttles (published free tier; actual limits vary by token tier)
+| Window | Published limit |
+|:-------|:----------------|
 | Per minute | 5 requests |
 | Per hour | 50 requests |
 | Per day | 125 requests |
