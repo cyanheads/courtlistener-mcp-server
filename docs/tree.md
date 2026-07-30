@@ -1,6 +1,6 @@
 # courtlistener-mcp-server - Directory Structure
 
-Generated on: 2026-07-30 01:15:48
+Generated on: 2026-07-30 04:31:08
 
 ```text
 courtlistener-mcp-server/
@@ -160,6 +160,7 @@ courtlistener-mcp-server/
 │   │           └── search-oral-arguments.tool.ts
 │   ├── services/
 │   │   └── courtlistener/
+│   │       ├── codes.ts
 │   │       ├── court-names-data.ts
 │   │       ├── court-names.ts
 │   │       ├── courtlistener-service.ts
@@ -173,6 +174,7 @@ courtlistener-mcp-server/
 │   ├── resources/
 │   │   └── courts-reference.resource.test.ts
 │   ├── service/
+│   │   ├── codes.test.ts
 │   │   ├── court-names.test.ts
 │   │   ├── courtlistener-service.retry.test.ts
 │   │   ├── courtlistener-service.test.ts

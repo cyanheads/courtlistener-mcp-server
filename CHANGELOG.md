@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.5.3](changelog/0.5.x/0.5.3.md) — 2026-07-30
+
+courtlistener_get_judge and courtlistener_get_opinion decode coded fields (position_type, termination_reason, degree, opinion type) to labels alongside the raw codes, get_judge gains date-granularity fields so year/month-only dates stop rendering as YYYY-01-01, education[].year is fixed, and blank-able fields report null instead of empty strings.
+
 ## [0.5.2](changelog/0.5.x/0.5.2.md) — 2026-07-29
 
 courtlistener_get_citations \"cited_by\" now resolves the cluster's opinion IDs before querying the cites index (it previously matched nothing when the cluster and opinion IDs diverge), getOpinionCluster walks sub-opinion pagination to completion, and \"citing\" empty pages under filters are distinguished from an exhausted network.
