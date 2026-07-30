@@ -6,9 +6,32 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { formatOutline, OUTLINE_VARIANT, outlineOnOverflow } from '@cyanheads/mcp-ts-core/utils';
+import { expandCode } from '@/services/courtlistener/codes.js';
 import { resolveCourtName } from '@/services/courtlistener/court-names.js';
 import { getCourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
 import { idFromUri } from '@/services/courtlistener/uri.js';
+
+/**
+ * CourtListener's `o_type_index_map` (cl/search/constants.py) → the labels the search
+ * index serves, via `OpinionDocument.prepare_type`. `/opinions/` returns the stored
+ * code instead, whose numeric prefix is a sort key rather than part of the type, so
+ * this is the mapping that makes get_opinion and search_opinions agree on one opinion.
+ */
+const OPINION_TYPE_LABELS: Record<string, string> = {
+  '010combined': 'combined-opinion',
+  '015unamimous': 'unanimous-opinion',
+  '020lead': 'lead-opinion',
+  '025plurality': 'plurality-opinion',
+  '030concurrence': 'concurrence-opinion',
+  '035concurrenceinpart': 'in-part-opinion',
+  '040dissent': 'dissent',
+  '050addendum': 'addendum',
+  '060remittitur': 'remittitur',
+  '070rehearing': 'rehearing',
+  '080onthemerits': 'on-the-merits',
+  '090onmotiontostrike': 'on-motion-to-strike',
+  '100trialcourt': 'trial-court-document',
+};
 
 /** A single opinion variant within a cluster. Optional in the tool output: the
  *  full arm carries them all; on overflow they're replaced by a section outline. */
@@ -17,7 +40,14 @@ const OpinionVariant = z
     id: z.number().describe('Individual opinion ID.'),
     type: z
       .string()
-      .describe('Opinion type: "lead-opinion", "concurrence", "dissent", "combined-opinion", etc.'),
+      .describe(
+        'Raw CourtListener opinion-type code (e.g. "030concurrence"); the numeric prefix is a sort key, not part of the type. Empty when upstream recorded none.',
+      ),
+    type_label: z
+      .string()
+      .describe(
+        'Opinion type expanded to the label courtlistener_search_opinions serves for the same variant: "lead-opinion", "concurrence-opinion", "dissent", "combined-opinion", etc. An unmapped code passes through as the code itself.',
+      ),
     author_id: z
       .number()
       .nullable()
@@ -163,6 +193,7 @@ export const getOpinionTool = tool('courtlistener_get_opinion', {
     const opinions = (cluster.sub_opinions ?? []).map((op) => ({
       id: op.id,
       type: op.type ?? '',
+      type_label: expandCode(OPINION_TYPE_LABELS, op.type),
       author_id: op.author_id ?? null,
       per_curiam: op.per_curiam ?? false,
       // CourtListener spreads opinion text across source-dependent variant fields;
@@ -286,8 +317,10 @@ export const getOpinionTool = tool('courtlistener_get_opinion', {
 
     // Full arm — opinion variants. Guarded so outline mode (opinions omitted) skips it.
     for (const op of result.opinions ?? []) {
-      lines.push(`\n### Opinion (${op.type})`);
-      lines.push(`**ID:** ${op.id} | **Per Curiam:** ${op.per_curiam ? 'Yes' : 'No'}`);
+      lines.push(`\n### Opinion (${op.type_label})`);
+      lines.push(
+        `**ID:** ${op.id} | **Type code:** ${op.type} | **Per Curiam:** ${op.per_curiam ? 'Yes' : 'No'}`,
+      );
       if (op.author_id != null) lines.push(`**Author ID:** ${op.author_id}`);
       if (op.cites.length > 0) lines.push(`**Cites:** ${op.cites.join(', ')}`);
       if (op.download_url) lines.push(`**Download:** ${op.download_url}`);

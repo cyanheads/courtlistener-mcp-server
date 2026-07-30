@@ -233,12 +233,22 @@ export interface Person {
   aba_ratings: Array<{ rating: string; year_rated: number | null }>;
   date_dob: string | null;
   date_dod: string | null;
+  /**
+   * Precision CourtListener actually recorded for `date_dob`, as a strftime
+   * format string — `"%Y"`, `"%Y-%m"`, or `"%Y-%m-%d"`; `""` when unset. A
+   * year-only record is stored as `YYYY-01-01`, so the month and day of
+   * `date_dob` are placeholders unless this says `"%Y-%m-%d"`.
+   */
+  date_granularity_dob: string | null;
+  /** Precision recorded for `date_dod`; same three values as `date_granularity_dob`. */
+  date_granularity_dod: string | null;
   dob_city: string | null;
   dob_state: string | null;
   educations: Array<{
     school: { name: string };
     degree_level: string | null;
-    graduation_year: number | null;
+    /** Year the degree was awarded. Upstream's column is `degree_year`; there is no `graduation_year`. */
+    degree_year: number | null;
   }>;
   /** Integer ID for FJC cross-referencing; null if not available. */
   fjc_id: number | null;
@@ -265,12 +275,31 @@ export interface PersonPosition {
   /** Nested court object with id, full_name, short_name; null if not a judicial position. */
   court: { id: string; full_name: string; short_name: string } | null;
   date_confirmation: string | null;
+  /**
+   * Precision recorded for `date_start` — the same three strftime values as
+   * `Person.date_granularity_dob`, `""` when unset. A year-only start date is
+   * stored as `YYYY-01-01`, so the month and day are placeholders.
+   */
+  date_granularity_start: string | null;
+  /** Precision recorded for `date_termination`; same three values. */
+  date_granularity_termination: string | null;
   date_nominated: string | null;
   date_start: string | null;
   date_termination: string | null;
   how_selected: string | null;
+  /**
+   * Free-text title for a role that has no `position_type` code (e.g. "Assistant
+   * district attorney"). Upstream's own guidance is that `position_type` "may be
+   * blank if job_title is complete instead", so a non-judicial row carries its
+   * only description here; `''` on judicial rows.
+   */
+  job_title: string | null;
   nomination_process: string | null;
+  /** Employer for a non-judicial role; `''` or null when the row has a `court`. */
+  organization_name: string | null;
+  /** Coded position type (e.g. "jud"); null for non-judicial rows — see `job_title`. */
   position_type: string | null;
+  /** Coded termination reason (e.g. "other_pos"); `''` while still serving. */
   termination_reason: string | null;
 }
 

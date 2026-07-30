@@ -13,6 +13,7 @@ import {
 } from '@cyanheads/mcp-ts-core/errors';
 import type { StorageService } from '@cyanheads/mcp-ts-core/storage';
 import { fetchWithTimeout, withRetry } from '@cyanheads/mcp-ts-core/utils';
+import { expandCode } from './codes.js';
 import type {
   AttorneyDetail,
   AttorneyRelationship,
@@ -64,7 +65,7 @@ const SUB_OPINION_PAGE_LIMIT = 5;
  * reads: a "Terminated" attorney is not current counsel. Unknown codes pass through
  * as the stringified code rather than being dropped or guessed.
  */
-const ATTORNEY_ROLE_LABELS: Record<number, string> = {
+const ATTORNEY_ROLE_LABELS: Record<string, string> = {
   1: 'Attorney to be noticed',
   2: 'Lead attorney',
   3: 'Attorney in sealed group',
@@ -899,8 +900,7 @@ export class CourtListenerService {
           name: detail?.name ?? '',
           contact_raw: detail?.contact_raw ?? '',
           role_code: rel.role ?? null,
-          role:
-            rel.role == null ? 'Unrecorded' : (ATTORNEY_ROLE_LABELS[rel.role] ?? String(rel.role)),
+          role: rel.role == null ? 'Unrecorded' : expandCode(ATTORNEY_ROLE_LABELS, rel.role),
           date_action: rel.date_action ?? null,
         };
       });

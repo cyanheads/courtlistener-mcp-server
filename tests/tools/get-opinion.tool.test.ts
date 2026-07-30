@@ -41,8 +41,9 @@ const baseCluster: OpinionCluster = {
   posture: 'Appeal from district court',
   sub_opinions: [
     {
+      // /opinions/ serves the stored code; the search API serves the expanded label.
       id: 1000,
-      type: 'lead-opinion',
+      type: '020lead',
       author_id: 42,
       per_curiam: false,
       html: '<p>Opinion text</p>',
@@ -73,9 +74,81 @@ describe('getOpinionTool', () => {
     expect(result.opinions).toHaveLength(1);
     expect(result.opinions?.[0]).toMatchObject({
       id: 1000,
-      type: 'lead-opinion',
+      // the raw code is retained and the expanded label added beside it
+      type: '020lead',
+      type_label: 'lead-opinion',
       author_id: 42,
       per_curiam: false,
+    });
+  });
+
+  // #48 — /opinions/ serves the stored code ("030concurrence"); the numeric prefix is a
+  // sort key, not part of the type. The label is CourtListener's own (o_type_index_map),
+  // so get_opinion and search_opinions must agree on the value for the same variant.
+  describe('opinion type expansion (#48)', () => {
+    const mkVariant = (id: number, type: string) => ({
+      id,
+      type,
+      author_id: null,
+      per_curiam: false,
+      html: '<p>text</p>',
+      plain_text: '',
+      download_url: null,
+    });
+
+    it('expands every opinion type code and passes unknown codes through', async () => {
+      mockSvc.getOpinionCluster = vi.fn().mockResolvedValue({
+        ...baseCluster,
+        sub_opinions: [
+          mkVariant(9425158, '030concurrence'),
+          mkVariant(9425159, '040dissent'),
+          mkVariant(9425160, '035concurrenceinpart'),
+          mkVariant(9425161, '110somethingnew'),
+        ],
+      });
+      const ctx = createMockContext();
+      const input = getOpinionTool.input.parse({ cluster_id: 100 });
+      const result = await getOpinionTool.handler(input, ctx);
+
+      expect(result.opinions?.map((o) => o.type_label)).toEqual([
+        'concurrence-opinion',
+        'dissent',
+        'in-part-opinion',
+        // a code CourtListener adds later stays visible rather than rendering empty
+        '110somethingnew',
+      ]);
+      // the raw codes survive — expansion is additive, not a replacement
+      expect(result.opinions?.map((o) => o.type)).toEqual([
+        '030concurrence',
+        '040dissent',
+        '035concurrenceinpart',
+        '110somethingnew',
+      ]);
+    });
+
+    it('renders the expanded label in the section heading, with the code beside the ID', async () => {
+      mockSvc.getOpinionCluster = vi.fn().mockResolvedValue({
+        ...baseCluster,
+        sub_opinions: [mkVariant(9425158, '030concurrence')],
+      });
+      const ctx = createMockContext();
+      const input = getOpinionTool.input.parse({ cluster_id: 100 });
+      const result = await getOpinionTool.handler(input, ctx);
+      const text = (getOpinionTool.format!(result)[0] as { text: string }).text;
+
+      expect(text).toContain('### Opinion (concurrence-opinion)');
+      expect(text).not.toContain('### Opinion (030concurrence)');
+      expect(text).toContain('**Type code:** 030concurrence');
+    });
+
+    it('leaves type_label empty when upstream records no type', async () => {
+      mockSvc.getOpinionCluster = vi
+        .fn()
+        .mockResolvedValue({ ...baseCluster, sub_opinions: [mkVariant(1, '')] });
+      const ctx = createMockContext();
+      const input = getOpinionTool.input.parse({ cluster_id: 100 });
+      const result = await getOpinionTool.handler(input, ctx);
+      expect(result.opinions?.[0]?.type_label).toBe('');
     });
   });
 
@@ -292,7 +365,8 @@ describe('getOpinionTool', () => {
       opinions: [
         {
           id: 1000,
-          type: 'lead-opinion',
+          type: '020lead',
+          type_label: 'lead-opinion',
           author_id: 42,
           per_curiam: false,
           html_text: '<p>HTML opinion text here</p>',
@@ -335,7 +409,8 @@ describe('getOpinionTool', () => {
       opinions: [
         {
           id: 2000,
-          type: 'lead-opinion',
+          type: '020lead',
+          type_label: 'lead-opinion',
           author_id: null,
           per_curiam: true,
           html_text: '<p>HTML text</p>',
@@ -371,7 +446,8 @@ describe('getOpinionTool', () => {
       opinions: [
         {
           id: 3000,
-          type: 'combined-opinion',
+          type: '010combined',
+          type_label: 'combined-opinion',
           author_id: null,
           per_curiam: false,
           html_text: '',
@@ -407,7 +483,8 @@ describe('getOpinionTool', () => {
       opinions: [
         {
           id: 1000,
-          type: 'lead-opinion',
+          type: '020lead',
+          type_label: 'lead-opinion',
           author_id: 42,
           per_curiam: false,
           html_text: longText,
