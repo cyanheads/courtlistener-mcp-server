@@ -189,7 +189,8 @@ export const searchJudgesTool = tool('courtlistener_search_judges', {
     ctx.log.info('courtlistener_search_judges', { q: input.q });
 
     // Guard before the service call: a blank query would otherwise spend one of the
-    // free tier's 125 daily requests and return unrelated records.
+    // free tier's published 125 daily requests (actual limits vary by token tier) and
+    // return unrelated records.
     if (!input.q) {
       throw ctx.fail(
         'empty_query',

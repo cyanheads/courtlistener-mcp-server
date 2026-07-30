@@ -213,8 +213,9 @@ export const searchOpinionsTool = tool('courtlistener_search_opinions', {
   async handler(input, ctx) {
     ctx.log.info('courtlistener_search_opinions', { q: input.q, court: input.court });
 
-    // Guard before the service call: both rejections would otherwise spend one of
-    // the free tier's 125 daily requests on input that cannot return useful data.
+    // Guard before the service call: both rejections would otherwise spend one of the
+    // free tier's published 125 daily requests (actual limits vary by token tier) on
+    // input that cannot return useful data.
     if (!input.q) {
       throw ctx.fail(
         'empty_query',
