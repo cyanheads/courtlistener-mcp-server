@@ -18,6 +18,31 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
+/** A `positions[]` row shaped like a captured `/search/?type=p` v4 response. */
+function position(overrides: Record<string, unknown> = {}) {
+  return {
+    appointer: null,
+    court_exact: null,
+    court_full_name: null,
+    date_start: null,
+    date_termination: null,
+    // Upstream sends '' rather than null for these text columns.
+    job_title: '',
+    organization_name: null,
+    position_type: null,
+    selection_method: '',
+    termination_reason: '',
+    ...overrides,
+  };
+}
+
+/**
+ * Keys mirror a captured `/search/?type=p` v4 response: court, position type,
+ * appointer, and dates live only inside `positions[]`, never flat on the person
+ * row. Fixtures with flat fields kept the suite green while current_position was
+ * null on every real call. `political_affiliation`/`aba_rating` carry expanded
+ * labels — the codes are on the separate `*_id` keys.
+ */
 const basePersonResult = {
   total: 1,
   results: [
@@ -28,14 +53,20 @@ const basePersonResult = {
       dob: '1933-03-15',
       dob_city: 'Brooklyn',
       dob_state: 'NY',
-      political_affiliation: ['d'],
-      aba_rating: ['Highly Qualified'],
+      political_affiliation: ['Democratic'],
+      political_affiliation_id: ['d'],
+      aba_rating: ['Well Qualified'],
       school: ['Cornell University', 'Columbia Law School'],
-      court: 'Supreme Court of the United States',
-      court_id: 'scotus',
-      position_type: 'Associate Justice',
-      appointer: 'Clinton',
-      date_start: '1993-08-10',
+      positions: [
+        position({
+          court_full_name: 'Supreme Court of the United States',
+          court_exact: 'scotus',
+          position_type: 'Associate Justice',
+          appointer: 'Clinton, William Jefferson',
+          selection_method: 'Appointment (President)',
+          date_start: '1993-08-10',
+        }),
+      ],
     },
   ],
   nextCursor: null,
@@ -58,7 +89,10 @@ describe('searchJudgesTool', () => {
       court: 'Supreme Court of the United States',
       court_id: 'scotus',
       position_type: 'Associate Justice',
-      appointer: 'Clinton',
+      appointer: 'Clinton, William Jefferson',
+      selection_method: 'Appointment (President)',
+      date_start: '1993-08-10',
+      date_termination: null,
     });
 
     const enrichment = getEnrichment(ctx);
@@ -81,7 +115,7 @@ describe('searchJudgesTool', () => {
     );
   });
 
-  it('sets current_position to null when no court or position_type present', async () => {
+  it('sets current_position to null when the record carries no positions', async () => {
     mockSvc.searchJudges = vi.fn().mockResolvedValue({
       total: 1,
       results: [
@@ -95,11 +129,7 @@ describe('searchJudgesTool', () => {
           political_affiliation: [],
           aba_rating: [],
           school: [],
-          court: null,
-          court_id: null,
-          position_type: null,
-          appointer: null,
-          date_start: null,
+          positions: [],
         },
       ],
       nextCursor: null,
@@ -108,6 +138,128 @@ describe('searchJudgesTool', () => {
     const input = searchJudgesTool.input.parse({ q: 'unknown' });
     const result = await searchJudgesTool.handler(input, ctx);
     expect(result.results[0].current_position).toBeNull();
+  });
+
+  // #44 — current_position read court/position_type/appointer/date_start off the
+  // top level of the person row, where v4 has no such keys, so the guard never
+  // fired and every judge came back with current_position: null.
+  describe('positions[] selection rule (#44)', () => {
+    // Ordered as upstream returns them — not chronological, and the current
+    // position is not first.
+    const sotomayorPositions = [
+      position({
+        court_full_name: 'Court of Appeals for the Second Circuit',
+        court_exact: 'ca2',
+        position_type: 'Judge',
+        appointer: 'Clinton, William Jefferson',
+        selection_method: 'Appointment (President)',
+        date_start: '1998-10-07',
+        date_termination: '2009-08-07',
+        termination_reason: 'Appointed to Other Judgeship',
+      }),
+      position({
+        court_full_name: 'Supreme Court of the United States',
+        court_exact: 'scotus',
+        position_type: 'Judge',
+        appointer: 'Obama, Barack Hussein, II',
+        selection_method: 'Appointment (President)',
+        date_start: '2009-08-06',
+        date_termination: null,
+      }),
+      position({
+        job_title: 'Assistant district attorney',
+        organization_name: 'New York County',
+        date_start: '1979-01-01',
+        date_termination: '1984-01-01',
+      }),
+    ];
+
+    async function runWith(positions: unknown[]) {
+      mockSvc.searchJudges = vi.fn().mockResolvedValue({
+        total: 1,
+        results: [
+          {
+            id: 3045,
+            name: 'Sonia Sotomayor',
+            gender: 'Female',
+            dob: '1954-01-01',
+            dob_city: 'Bronx',
+            dob_state: 'New York',
+            political_affiliation: ['Republican', 'Democratic', 'Democratic'],
+            aba_rating: ['Qualified', 'Well Qualified'],
+            school: ['Princeton University', 'Yale University'],
+            positions,
+          },
+        ],
+        nextCursor: null,
+      });
+      const ctx = createMockContext();
+      const input = searchJudgesTool.input.parse({ q: 'Sotomayor' });
+      return searchJudgesTool.handler(input, ctx);
+    }
+
+    it('picks the un-terminated position from a multi-position history', async () => {
+      const result = await runWith(sotomayorPositions);
+
+      expect(result.results[0].current_position).toEqual({
+        court: 'Supreme Court of the United States',
+        court_id: 'scotus',
+        position_type: 'Judge',
+        job_title: null,
+        organization_name: null,
+        appointer: 'Obama, Barack Hussein, II',
+        selection_method: 'Appointment (President)',
+        date_start: '2009-08-06',
+        date_termination: null,
+        termination_reason: null,
+      });
+    });
+
+    it('falls back to the latest date_start when every position is terminated', async () => {
+      const result = await runWith(sotomayorPositions.filter((p) => p.date_termination));
+
+      expect(result.results[0].current_position).toMatchObject({
+        court_id: 'ca2',
+        date_start: '1998-10-07',
+        date_termination: '2009-08-07',
+        termination_reason: 'Appointed to Other Judgeship',
+      });
+    });
+
+    it('breaks a multiple-un-terminated tie by the latest date_start', async () => {
+      const result = await runWith([
+        position({ court_exact: 'nysd', position_type: 'Judge', date_start: '1992-08-12' }),
+        position({ court_exact: 'ca2', position_type: 'Judge', date_start: '1998-10-07' }),
+      ]);
+
+      expect(result.results[0].current_position).toMatchObject({ court_id: 'ca2' });
+    });
+
+    it('carries a non-judicial position through job_title and organization_name', async () => {
+      const result = await runWith([sotomayorPositions[2]]);
+
+      expect(result.results[0].current_position).toMatchObject({
+        court: null,
+        court_id: null,
+        position_type: null,
+        job_title: 'Assistant district attorney',
+        organization_name: 'New York County',
+      });
+    });
+
+    it('surfaces expanded affiliation and ABA labels, not codes', async () => {
+      const result = await runWith(sotomayorPositions);
+
+      expect(result.results[0].political_affiliation).toEqual([
+        'Republican',
+        'Democratic',
+        'Democratic',
+      ]);
+      expect(result.results[0].aba_rating).toEqual(['Qualified', 'Well Qualified']);
+      expect(
+        searchJudgesTool.output.shape.results.element.shape.political_affiliation.description,
+      ).toMatch(/label/i);
+    });
   });
 
   it('enriches notice on empty results', async () => {
@@ -168,15 +320,20 @@ describe('searchJudgesTool', () => {
           dob: '1933-03-15',
           dob_city: 'Brooklyn',
           dob_state: 'NY',
-          political_affiliation: ['d'],
-          aba_rating: ['WQ'],
+          political_affiliation: ['Democratic'],
+          aba_rating: ['Well Qualified'],
           schools: ['Cornell'],
           current_position: {
             court: 'Supreme Court',
             court_id: 'scotus',
             position_type: 'Justice',
+            job_title: null,
+            organization_name: null,
             appointer: 'Clinton',
+            selection_method: 'Appointment (President)',
             date_start: '1993-08-10',
+            date_termination: '2020-09-18',
+            termination_reason: 'Death',
           },
         },
       ],
@@ -188,5 +345,9 @@ describe('searchJudgesTool', () => {
     expect(text).toContain('RBG');
     // court_id must be rendered for parity
     expect(text).toContain('scotus');
+    // #44 — the position fields added with the nested-positions fix
+    expect(text).toContain('Appointment (President)');
+    expect(text).toContain('2020-09-18');
+    expect(text).toContain('Death');
   });
 });

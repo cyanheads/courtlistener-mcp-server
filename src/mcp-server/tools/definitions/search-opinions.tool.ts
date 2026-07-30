@@ -7,11 +7,12 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getCourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
 import { findInvalidDates, ISO_DATE_HINT } from '@/services/courtlistener/dates.js';
+import { toStorageUrl } from '@/services/courtlistener/uri.js';
 
 export const searchOpinionsTool = tool('courtlistener_search_opinions', {
   title: 'Search Court Opinions',
   description:
-    'Full-text search across 9M+ written US court opinions with field-level filtering. Returns opinion cluster summaries with case metadata, citations, and matched text snippets. Supports CourtListener field syntax (caseName:"roe v wade", court_id:scotus, judge:"Alito") and boolean operators (AND, OR, NOT). Use courtlistener_lookup_courts to find court IDs. Rate limit: 5 req/min, 50/hr, 125/day on the free tier.',
+    'Full-text search across 9M+ written US court opinions with field-level filtering. Returns opinion cluster summaries with case metadata, citations, matched text snippets, and the individual opinion variants filed in each case. Supports CourtListener field syntax (caseName:"roe v wade", court_id:scotus, judge:"Alito") and boolean operators (AND, OR, NOT). Use courtlistener_lookup_courts to find court IDs. Rate limit: 5 req/min, 50/hr, 125/day on the free tier.',
   annotations: { readOnlyHint: true, openWorldHint: true, idempotentHint: false },
 
   input: z.object({
@@ -105,7 +106,57 @@ export const searchOpinionsTool = tool('courtlistener_search_opinions', {
               .describe('Number of times this opinion has been cited by other opinions.'),
             judges: z.string().describe('Judge names associated with the opinion.'),
             status: z.string().describe('Publication status (Published, Unpublished, etc.).'),
-            snippet: z.string().describe('Matched text excerpt from the opinion.'),
+            snippet: z
+              .string()
+              .describe(
+                'Matched text excerpt, taken from the first entry in opinions[] that carries one; empty string when no variant has an excerpt. CourtListener does not mark which variant the search matched, so treat this as a relevance preview for the cluster, not as an excerpt attributable to a specific opinion — read opinions[] to attribute it.',
+              ),
+            opinions: z
+              .array(
+                z
+                  .object({
+                    id: z
+                      .number()
+                      .describe(
+                        'Opinion ID for this variant — identifies one opinion within the cluster (the cluster itself is cluster_id).',
+                      ),
+                    type: z
+                      .string()
+                      .describe(
+                        'Variant type as an expanded label (e.g. "combined-opinion", "lead-opinion", "dissent").',
+                      ),
+                    author_id: z
+                      .number()
+                      .nullable()
+                      .describe(
+                        'Person ID of the authoring judge — pass to courtlistener_get_judge; null when unattributed.',
+                      ),
+                    per_curiam: z
+                      .boolean()
+                      .describe('True when the opinion was issued per curiam (by the court).'),
+                    download_url: z
+                      .string()
+                      .nullable()
+                      .describe(
+                        "URL of the originating court's copy; null when none was recorded. Often plain HTTP and prone to rot — prefer local_path.",
+                      ),
+                    local_path: z
+                      .string()
+                      .nullable()
+                      .describe(
+                        'CourtListener-hosted copy of the source document (https://storage.courtlistener.com/...); null if not stored.',
+                      ),
+                    cites: z
+                      .array(z.number())
+                      .describe(
+                        'Opinion IDs this variant cites. These are opinion-level IDs, not cluster IDs — courtlistener_get_opinion and courtlistener_get_citations both take a cluster_id, so do not pass these values to them directly.',
+                      ),
+                  })
+                  .describe('One opinion variant within the cluster.'),
+              )
+              .describe(
+                'Opinion variants filed in this case (majority, concurrence, dissent, per curiam). Empty when upstream returned none.',
+              ),
           })
           .describe('Opinion cluster summary.'),
       )
@@ -198,21 +249,35 @@ export const searchOpinionsTool = tool('courtlistener_search_opinions', {
       ctx,
     );
 
-    const results = data.results.map((r) => ({
-      cluster_id: r.cluster_id,
-      case_name: r.caseName ?? '',
-      case_name_full: r.caseNameFull ?? '',
-      court: r.court ?? '',
-      court_id: r.court_id ?? '',
-      date_filed: r.dateFiled ?? '',
-      docket_number: r.docketNumber ?? '',
-      docket_id: r.docket_id ?? 0,
-      citations: r.citation ?? [],
-      cite_count: r.citeCount ?? 0,
-      judges: r.judge ?? '',
-      status: r.status ?? '',
-      snippet: r.snippet ?? '',
-    }));
+    const results = data.results.map((r) => {
+      const variants = r.opinions ?? [];
+      return {
+        cluster_id: r.cluster_id,
+        case_name: r.caseName ?? '',
+        case_name_full: r.caseNameFull ?? '',
+        court: r.court ?? '',
+        court_id: r.court_id ?? '',
+        date_filed: r.dateFiled ?? '',
+        docket_number: r.docketNumber ?? '',
+        docket_id: r.docket_id ?? 0,
+        citations: r.citation ?? [],
+        cite_count: r.citeCount ?? 0,
+        judges: r.judge ?? '',
+        status: r.status ?? '',
+        // v4 carries the matched excerpt per opinion variant, never on the cluster row.
+        // Nothing marks which variant matched, so take the first that has one.
+        snippet: variants.find((o) => o.snippet)?.snippet ?? '',
+        opinions: variants.map((o) => ({
+          id: o.id,
+          type: o.type ?? '',
+          author_id: o.author_id ?? null,
+          per_curiam: o.per_curiam ?? false,
+          download_url: o.download_url ?? null,
+          local_path: toStorageUrl(o.local_path ?? null),
+          cites: o.cites ?? [],
+        })),
+      };
+    });
 
     ctx.log.info('courtlistener_search_opinions complete', {
       total: data.total,
@@ -265,6 +330,20 @@ export const searchOpinionsTool = tool('courtlistener_search_opinions', {
       }
       if (r.judges) lines.push(`**Judges:** ${r.judges}`);
       if (r.snippet) lines.push(`*${r.snippet}*`);
+
+      if (r.opinions.length > 0) {
+        lines.push('**Opinions in this cluster:**');
+        for (const o of r.opinions) {
+          const curiam = o.per_curiam ? ' (per_curiam)' : '';
+          const author = o.author_id != null ? ` | author_id ${o.author_id}` : '';
+          lines.push(`  - Opinion ID ${o.id} — ${o.type}${curiam}${author}`);
+          if (o.local_path) lines.push(`    CourtListener copy: ${o.local_path}`);
+          if (o.download_url) lines.push(`    Court copy (download_url): ${o.download_url}`);
+          if (o.cites.length > 0) {
+            lines.push(`    Cites ${o.cites.length} opinions: ${o.cites.join(', ')}`);
+          }
+        }
+      }
     }
 
     if (result.next_cursor) {

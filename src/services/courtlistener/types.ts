@@ -11,6 +11,26 @@ export interface CourtListenerPage<T> {
   results: T[];
 }
 
+/**
+ * A single opinion variant nested inside an opinion search result. `/search/?type=o`
+ * returns one row per *cluster*, with every opinion filed in that case nested under
+ * `opinions[]` — and the matched excerpt lives here, not on the cluster row.
+ */
+export interface OpinionSearchVariant {
+  author_id: number | null;
+  /** Opinion IDs this variant cites — the same index the `cites:` query field keys on. */
+  cites: number[];
+  download_url: string | null;
+  id: number;
+  /** Relative storage path (e.g. "pdf/2017/12/06/….pdf"); null when not stored. */
+  local_path: string | null;
+  per_curiam: boolean;
+  /** Matched text excerpt for this variant; empty when the match carried none. */
+  snippet: string;
+  /** Label-expanded by the search API (e.g. "combined-opinion"); `/opinions/` serves the raw code ("010combined"). */
+  type: string;
+}
+
 /** Opinion search result item from the search API. */
 export interface OpinionSearchResult {
   caseName: string;
@@ -24,7 +44,8 @@ export interface OpinionSearchResult {
   docket_id: number;
   docketNumber: string;
   judge: string;
-  snippet: string;
+  /** Per-variant opinion rows. The matched `snippet` is on these, never on the cluster row. */
+  opinions: OpinionSearchVariant[];
   status: string;
 }
 
@@ -72,9 +93,16 @@ export interface OpinionCluster {
   syllabus: string;
 }
 
-/** Docket search result item. */
+/**
+ * Docket search result item from `/search/?type=r`. Note the response carries no
+ * document total — `recap_documents` is a small sample of matched entries, not the
+ * docket's full filing list (use courtlistener_get_docket for that).
+ */
 export interface DocketSearchResult {
   assignedTo: string | null;
+  /** Attorney names of record on this docket. */
+  attorney?: string[];
+  case_name_full?: string;
   caseName: string;
   cause: string;
   court: string;
@@ -83,17 +111,29 @@ export interface DocketSearchResult {
   dateTerminated: string | null;
   docket_id: number;
   docketNumber: string;
-  document_count?: number;
+  /** Law firm names of record on this docket. */
+  firm?: string[];
+  jurisdictionType?: string;
   juryDemand: string;
   pacer_case_id: string | null;
-  party_name?: string[];
+  /** Party names. `party_name` is the *input* filter; the response key is `party`. */
+  party?: string[];
   recap_documents?: Array<{
     id: number;
     description: string;
-    date_filed: string;
     document_number: number | null;
+    document_type?: string;
+    /** Date the parent docket entry was filed — the response has no `date_filed`. */
+    entry_date_filed?: string;
+    entry_number?: number | null;
+    /** Relative RECAP storage path; null when no copy is stored. */
+    filepath_local?: string | null;
     is_available: boolean;
+    page_count?: number | null;
   }>;
+  referredTo?: string | null;
+  /** Nature-of-suit label, usually code-prefixed (e.g. "830 Patent"); empty for non-civil dockets. */
+  suitNature?: string;
 }
 
 /** Full docket from /dockets/{id}/. */
@@ -146,21 +186,44 @@ export interface DocketEntry {
   }>;
 }
 
+/**
+ * A position row nested inside a person search result. Unlike `PersonPosition`
+ * (from `/positions/`), every coded column here arrives already label-expanded —
+ * `selection_method` is "Appointment (President)", not "a_pres" — and `appointer`
+ * is the appointing president's name, not a resource URI.
+ */
+export interface PersonSearchPosition {
+  appointer: string | null;
+  /** Court ID (e.g. "scotus"); null for non-judicial positions. */
+  court_exact: string | null;
+  court_full_name: string | null;
+  date_start: string | null;
+  /** Null while the judge still holds the position. */
+  date_termination: string | null;
+  /** Free-text title for non-judicial roles (e.g. "Assistant district attorney"); '' otherwise. */
+  job_title: string | null;
+  /** Employer for non-judicial roles; null or '' otherwise. */
+  organization_name: string | null;
+  position_type: string | null;
+  selection_method: string | null;
+  /** Expanded label (e.g. "Appointed to Other Judgeship"); '' when still serving. */
+  termination_reason: string | null;
+}
+
 /** Person/judge search result. */
 export interface PersonSearchResult {
+  /** Expanded ABA rating labels (e.g. "Well Qualified"), not the rating codes. */
   aba_rating: string[];
-  appointer: string | null;
-  court: string | null;
-  court_id: string | null;
-  date_start: string | null;
   dob: string | null;
   dob_city: string | null;
   dob_state: string | null;
   gender: string;
   id: number; // person_id
   name: string;
+  /** Expanded party labels (e.g. "Democratic"); the codes are on `political_affiliation_id`. */
   political_affiliation: string[];
-  position_type: string | null;
+  /** Every position the person has held. Court and appointment data live only here. */
+  positions: PersonSearchPosition[];
   school: string[];
 }
 

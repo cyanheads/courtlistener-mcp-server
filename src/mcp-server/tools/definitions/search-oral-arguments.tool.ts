@@ -7,11 +7,12 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getCourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
 import { findInvalidDates, ISO_DATE_HINT } from '@/services/courtlistener/dates.js';
+import { toStorageUrl } from '@/services/courtlistener/uri.js';
 
 export const searchOralArgumentsTool = tool('courtlistener_search_oral_arguments', {
   title: 'Search Oral Arguments',
   description:
-    'Search appellate oral argument audio recordings — the largest public collection of oral argument audio. Returns recording metadata with download URLs, panel judge IDs, and transcript snippets where available. Download URLs are direct MP3 links. Panel judge IDs can be passed to courtlistener_get_judge for biographical context.',
+    "Search appellate oral argument audio recordings — the largest public collection of oral argument audio. Returns recording metadata with two direct MP3 links per result (download_url at the originating court, local_path for CourtListener's durable copy), panel judge IDs, and transcript snippets where available. Panel judge IDs can be passed to courtlistener_get_judge for biographical context.",
   annotations: { readOnlyHint: true, openWorldHint: true, idempotentHint: false },
 
   input: z.object({
@@ -68,11 +69,15 @@ export const searchOralArgumentsTool = tool('courtlistener_search_oral_arguments
             download_url: z
               .string()
               .nullable()
-              .describe('Direct MP3 download URL; null if not available.'),
+              .describe(
+                "MP3 URL at the originating court; null if not recorded. Often plain HTTP and prone to rot as courts reorganize — prefer local_path, CourtListener's durable copy.",
+              ),
             local_path: z
               .string()
               .nullable()
-              .describe('Local storage path on CourtListener servers; null if not available.'),
+              .describe(
+                'CourtListener-hosted copy of the recording (https://storage.courtlistener.com/...); null if not stored.',
+              ),
             snippet: z
               .string()
               .describe('Transcript excerpt where available; empty string if no transcript.'),
@@ -168,7 +173,8 @@ export const searchOralArgumentsTool = tool('courtlistener_search_oral_arguments
       panel_ids: r.panel_ids ?? [],
       duration_seconds: r.duration ?? 0,
       download_url: r.download_url ?? null,
-      local_path: r.local_path ?? null,
+      // Upstream serves local_path as a bare relative path — resolve it to a fetchable URL.
+      local_path: toStorageUrl(r.local_path ?? null),
       snippet: r.snippet ?? '',
     }));
 
@@ -215,8 +221,8 @@ export const searchOralArgumentsTool = tool('courtlistener_search_oral_arguments
       );
       if (r.judges) lines.push(`**Judges:** ${r.judges}`);
       if (r.panel_ids.length > 0) lines.push(`**Panel IDs:** ${r.panel_ids.join(', ')}`);
-      if (r.download_url) lines.push(`**Download:** ${r.download_url}`);
-      if (r.local_path) lines.push(`**Local path:** ${r.local_path}`);
+      if (r.download_url) lines.push(`**Court copy (download_url):** ${r.download_url}`);
+      if (r.local_path) lines.push(`**CourtListener copy (local_path):** ${r.local_path}`);
       if (r.snippet) lines.push(`*${r.snippet}*`);
     }
 

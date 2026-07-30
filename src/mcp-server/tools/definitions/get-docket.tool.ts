@@ -7,12 +7,7 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { resolveCourtName } from '@/services/courtlistener/court-names.js';
 import { getCourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
-
-/** CourtListener serves `filepath_local` as a relative RECAP path; make it a directly fetchable URL. */
-function toStorageUrl(path: string | null): string | null {
-  if (!path) return null;
-  return /^https?:\/\//.test(path) ? path : `https://storage.courtlistener.com/${path}`;
-}
+import { toStorageUrl } from '@/services/courtlistener/uri.js';
 
 export const getDocketTool = tool('courtlistener_get_docket', {
   title: 'Get Docket',

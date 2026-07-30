@@ -18,6 +18,11 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
+/**
+ * `local_path` mirrors the real v4 shape — a bare relative path rooted at the
+ * storage bucket, not an absolute URL. The previous fixture's `/local/audio/case.mp3`
+ * never exercised the prefixing the tool now applies.
+ */
 const baseAudioResult = {
   total: 1,
   results: [
@@ -32,8 +37,8 @@ const baseAudioResult = {
       judge: 'Roberts, Thomas, Alito',
       panel_ids: [100, 101, 102],
       duration: 3600,
-      download_url: 'https://storage.courtlistener.com/audio/case.mp3',
-      local_path: '/local/audio/case.mp3',
+      download_url: 'http://www.supremecourt.gov/media/audio/mp3files/22-1234.mp3',
+      local_path: 'mp3/2023/10/03/oral_argument_case_cl.mp3',
       snippet: 'argument transcript excerpt',
     },
   ],
@@ -59,6 +64,56 @@ describe('searchOralArgumentsTool', () => {
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.totalCount).toBe(1);
+  });
+
+  // #53 — local_path was passed through as a bare relative path, which nothing
+  // downstream can fetch.
+  describe('local_path storage URL (#53)', () => {
+    it('resolves a bare relative path to a fetchable storage URL', async () => {
+      mockSvc.searchOralArguments = vi.fn().mockResolvedValue(baseAudioResult);
+      const ctx = createMockContext();
+      const input = searchOralArgumentsTool.input.parse({ q: 'constitutional rights' });
+      const result = await searchOralArgumentsTool.handler(input, ctx);
+
+      expect(result.results[0].local_path).toBe(
+        'https://storage.courtlistener.com/mp3/2023/10/03/oral_argument_case_cl.mp3',
+      );
+      // download_url is the court's own copy and is never rewritten.
+      expect(result.results[0].download_url).toBe(
+        'http://www.supremecourt.gov/media/audio/mp3files/22-1234.mp3',
+      );
+    });
+
+    it('passes an already-absolute local_path through unchanged', async () => {
+      mockSvc.searchOralArguments = vi.fn().mockResolvedValue({
+        ...baseAudioResult,
+        results: [
+          {
+            ...baseAudioResult.results[0],
+            local_path: 'https://storage.courtlistener.com/mp3/2023/10/03/already_absolute.mp3',
+          },
+        ],
+      });
+      const ctx = createMockContext();
+      const input = searchOralArgumentsTool.input.parse({ q: 'test' });
+      const result = await searchOralArgumentsTool.handler(input, ctx);
+
+      expect(result.results[0].local_path).toBe(
+        'https://storage.courtlistener.com/mp3/2023/10/03/already_absolute.mp3',
+      );
+    });
+
+    it('yields null when no copy is stored', async () => {
+      mockSvc.searchOralArguments = vi.fn().mockResolvedValue({
+        ...baseAudioResult,
+        results: [{ ...baseAudioResult.results[0], local_path: null }],
+      });
+      const ctx = createMockContext();
+      const input = searchOralArgumentsTool.input.parse({ q: 'test' });
+      const result = await searchOralArgumentsTool.handler(input, ctx);
+
+      expect(result.results[0].local_path).toBeNull();
+    });
   });
 
   it('passes optional filters to service', async () => {
@@ -166,7 +221,7 @@ describe('searchOralArgumentsTool', () => {
           panel_ids: [100],
           duration_seconds: 3600,
           download_url: 'https://example.com/audio.mp3',
-          local_path: '/local/audio.mp3',
+          local_path: 'https://storage.courtlistener.com/mp3/2023/10/03/case_cl.mp3',
           snippet: 'transcript excerpt',
         },
       ],
@@ -179,8 +234,8 @@ describe('searchOralArgumentsTool', () => {
     expect(text).toContain('scotus');
     // duration_seconds must appear in rendered text
     expect(text).toContain('3600');
-    // local_path must be rendered
-    expect(text).toContain('/local/audio.mp3');
+    // local_path must be rendered — as the resolved storage URL (#53)
+    expect(text).toContain('https://storage.courtlistener.com/mp3/2023/10/03/case_cl.mp3');
   });
 
   it('format handles empty results', () => {

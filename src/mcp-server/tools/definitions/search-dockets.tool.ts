@@ -7,6 +7,7 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getCourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
 import { findInvalidDates, ISO_DATE_HINT } from '@/services/courtlistener/dates.js';
+import { toStorageUrl } from '@/services/courtlistener/uri.js';
 
 const COVERAGE_NOTE =
   'RECAP coverage is partial. Documents with is_available=false require a PACER account or CourtListener RECAP filing — fetching their PDFs is not exposed by this server.';
@@ -14,7 +15,7 @@ const COVERAGE_NOTE =
 export const searchDocketsTool = tool('courtlistener_search_dockets', {
   title: 'Search Federal Court Dockets',
   description:
-    'Search RECAP federal court dockets with party name, attorney, court, and date filters. RECAP is a crowd-sourced mirror of PACER (the federal court filing system) — coverage varies by court and date. Returns docket metadata with up to 3 sample document entries per docket. Use courtlistener_lookup_courts to find court IDs.',
+    'Search RECAP federal court dockets. Query terms match case name, docket number, party, and attorney names; filters narrow by party name, court, and filing date. RECAP is a crowd-sourced mirror of PACER (the federal court filing system) — coverage varies by court and date. Returns docket metadata with the parties, attorneys, and firms of record, plus up to 3 sample document entries per docket. Use courtlistener_lookup_courts to find court IDs.',
   annotations: { readOnlyHint: true, openWorldHint: true, idempotentHint: false },
 
   input: z.object({
@@ -63,6 +64,9 @@ export const searchDocketsTool = tool('courtlistener_search_dockets', {
               .number()
               .describe('Docket ID — pass to courtlistener_get_docket for full entry list.'),
             case_name: z.string().describe('Case name.'),
+            case_name_full: z
+              .string()
+              .describe('Full case name with all parties; empty string when not recorded.'),
             court: z.string().describe('Court display name.'),
             court_id: z.string().describe('Court identifier.'),
             date_filed: z.string().describe('Date the case was filed.'),
@@ -79,21 +83,62 @@ export const searchDocketsTool = tool('courtlistener_search_dockets', {
               .string()
               .nullable()
               .describe('Assigned judge name; null if not recorded.'),
+            referred_to: z
+              .string()
+              .nullable()
+              .describe('Referred magistrate judge name; null if not recorded.'),
             cause: z.string().describe('Legal cause of action.'),
             jury_demand: z.string().describe('Jury demand status.'),
+            suit_nature: z
+              .string()
+              .describe(
+                'Nature-of-suit label, usually prefixed with its PACER code (e.g. "830 Patent"); empty string when not recorded.',
+              ),
+            jurisdiction_type: z
+              .string()
+              .describe(
+                'Basis of federal jurisdiction (e.g. "Federal Question"); empty string when not recorded.',
+              ),
             parties: z.array(z.string()).describe('Party names listed in this docket.'),
-            document_count: z.number().describe('Number of documents available in RECAP.'),
+            attorneys: z
+              .array(z.string())
+              .describe('Attorney names of record on this docket; empty when none are recorded.'),
+            firms: z
+              .array(z.string())
+              .describe('Law firm names of record on this docket; empty when none are recorded.'),
             sample_documents: z
               .array(
                 z
                   .object({
                     id: z.number().describe('Document ID.'),
                     description: z.string().describe('Document description or title.'),
-                    date_filed: z.string().describe('Date the document was filed.'),
+                    date_filed: z
+                      .string()
+                      .describe(
+                        'Date the parent docket entry was filed; empty string when not recorded.',
+                      ),
                     document_number: z
                       .number()
                       .nullable()
                       .describe('PACER document number; null if not assigned.'),
+                    entry_number: z
+                      .number()
+                      .nullable()
+                      .describe(
+                        'Docket entry number this document belongs to; null if unnumbered.',
+                      ),
+                    document_type: z
+                      .string()
+                      .describe(
+                        'Document classification (e.g. "PACER Document", "RECAP Document"); empty string when not recorded.',
+                      ),
+                    page_count: z.number().nullable().describe('Page count; null if not recorded.'),
+                    filepath_local: z
+                      .string()
+                      .nullable()
+                      .describe(
+                        'Fully-qualified RECAP storage URL (https://storage.courtlistener.com/...) for the document; null when no copy is stored.',
+                      ),
                     is_available: z
                       .boolean()
                       .describe(
@@ -102,7 +147,9 @@ export const searchDocketsTool = tool('courtlistener_search_dockets', {
                   })
                   .describe('Sample document entry.'),
               )
-              .describe('Up to 3 sample filings from this docket.'),
+              .describe(
+                "Up to 3 sample filings matched on this docket — a search excerpt, not the docket's full filing list. Call courtlistener_get_docket for every entry.",
+              ),
           })
           .describe('Docket search result.'),
       )
@@ -189,6 +236,7 @@ export const searchDocketsTool = tool('courtlistener_search_dockets', {
     const results = data.results.map((r) => ({
       docket_id: r.docket_id,
       case_name: r.caseName ?? '',
+      case_name_full: r.case_name_full ?? '',
       court: r.court ?? '',
       court_id: r.court_id ?? '',
       date_filed: r.dateFiled ?? '',
@@ -196,15 +244,23 @@ export const searchDocketsTool = tool('courtlistener_search_dockets', {
       docket_number: r.docketNumber ?? '',
       pacer_case_id: r.pacer_case_id ?? null,
       assigned_to: r.assignedTo ?? null,
+      referred_to: r.referredTo ?? null,
       cause: r.cause ?? '',
       jury_demand: r.juryDemand ?? '',
-      parties: r.party_name ?? [],
-      document_count: r.document_count ?? 0,
+      suit_nature: r.suitNature ?? '',
+      jurisdiction_type: r.jurisdictionType ?? '',
+      parties: r.party ?? [],
+      attorneys: r.attorney ?? [],
+      firms: r.firm ?? [],
       sample_documents: (r.recap_documents ?? []).slice(0, 3).map((d) => ({
         id: d.id,
         description: d.description ?? '',
-        date_filed: d.date_filed ?? '',
+        date_filed: d.entry_date_filed ?? '',
         document_number: d.document_number ?? null,
+        entry_number: d.entry_number ?? null,
+        document_type: d.document_type ?? '',
+        page_count: d.page_count ?? null,
+        filepath_local: toStorageUrl(d.filepath_local ?? null),
         is_available: d.is_available ?? false,
       })),
     }));
@@ -250,25 +306,35 @@ export const searchDocketsTool = tool('courtlistener_search_dockets', {
 
     for (const r of result.results) {
       lines.push(`\n### ${r.case_name}`);
+      if (r.case_name_full && r.case_name_full !== r.case_name) {
+        lines.push(`*${r.case_name_full}*`);
+      }
       lines.push(`**Docket ID:** ${r.docket_id} | **Court:** ${r.court} (${r.court_id})`);
       lines.push(
         `**Docket #:** ${r.docket_number} | **Filed:** ${r.date_filed}${r.date_terminated ? ` | **Terminated:** ${r.date_terminated}` : ''}`,
       );
       if (r.assigned_to) lines.push(`**Judge:** ${r.assigned_to}`);
+      if (r.referred_to) lines.push(`**Referred to:** ${r.referred_to}`);
       if (r.cause) lines.push(`**Cause:** ${r.cause}`);
+      if (r.suit_nature) lines.push(`**Nature of suit:** ${r.suit_nature}`);
+      if (r.jurisdiction_type) lines.push(`**Jurisdiction:** ${r.jurisdiction_type}`);
       if (r.jury_demand) lines.push(`**Jury demand:** ${r.jury_demand}`);
       if (r.parties.length > 0) lines.push(`**Parties:** ${r.parties.join(', ')}`);
-      lines.push(
-        `**Documents:** ${r.document_count}${r.pacer_case_id ? ` | **PACER ID:** ${r.pacer_case_id}` : ''}`,
-      );
+      if (r.attorneys.length > 0) lines.push(`**Attorneys:** ${r.attorneys.join(', ')}`);
+      if (r.firms.length > 0) lines.push(`**Firms:** ${r.firms.join(', ')}`);
+      if (r.pacer_case_id) lines.push(`**PACER ID:** ${r.pacer_case_id}`);
 
       if (r.sample_documents.length > 0) {
         lines.push('**Sample documents:**');
         for (const d of r.sample_documents) {
           const avail = d.is_available ? '[available]' : '[requires PACER]';
+          const entry = d.entry_number != null ? ` entry #${d.entry_number}` : '';
+          const pages = d.page_count != null ? `, ${d.page_count}pp` : '';
+          const type = d.document_type ? ` [${d.document_type}]` : '';
           lines.push(
-            `  - ID ${d.id} #${d.document_number ?? 'N/A'}: ${d.description} (${d.date_filed}) ${avail}`,
+            `  - ID ${d.id} #${d.document_number ?? 'N/A'}${entry}: ${d.description} (${d.date_filed})${pages}${type} ${avail}`,
           );
+          if (d.filepath_local) lines.push(`    ${d.filepath_local}`);
         }
       }
     }

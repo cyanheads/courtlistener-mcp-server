@@ -22,6 +22,11 @@ beforeEach(() => {
   mockSvc.getClusterCaseName = vi.fn().mockResolvedValue('Landmark Case');
 });
 
+/**
+ * Both directions read `/search/?type=o`, so these rows carry the same nested
+ * `opinions[]` shape as the opinion search — the matched excerpt is on the
+ * variant, never on the cluster row.
+ */
 const mockCitingResult = {
   total: 2,
   results: [
@@ -34,7 +39,18 @@ const mockCitingResult = {
       dateFiled: '2000-06-01',
       citation: ['100 F.3d 200'],
       citeCount: 50,
-      snippet: 'relevant excerpt',
+      opinions: [
+        {
+          id: 900,
+          type: 'combined-opinion',
+          author_id: null,
+          per_curiam: false,
+          download_url: null,
+          local_path: null,
+          cites: [108713],
+          snippet: 'relevant excerpt',
+        },
+      ],
     },
     {
       cluster_id: 201,
@@ -45,7 +61,18 @@ const mockCitingResult = {
       dateFiled: '2005-03-15',
       citation: ['200 F.3d 300'],
       citeCount: 30,
-      snippet: '',
+      opinions: [
+        {
+          id: 901,
+          type: 'combined-opinion',
+          author_id: null,
+          per_curiam: false,
+          download_url: null,
+          local_path: null,
+          cites: [],
+          snippet: '',
+        },
+      ],
     },
   ],
   nextCursor: null,
@@ -68,6 +95,48 @@ describe('getCitationsTool', () => {
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.totalCount).toBe(2);
+  });
+
+  // #43 — snippet was read from the top level of the cluster row, where v4 has no
+  // such key, so the citation network came back with no relevance signal at all.
+  describe('nested snippet mapping (#43)', () => {
+    it('lifts the excerpt out of the nested opinion variant', async () => {
+      mockSvc.getCitedBy = vi.fn().mockResolvedValue(mockCitingResult);
+      const ctx = createMockContext();
+      const input = getCitationsTool.input.parse({ cluster_id: 100 });
+      const result = await getCitationsTool.handler(input, ctx);
+
+      expect(result.results[0].snippet).toBe('relevant excerpt');
+      // A variant with no excerpt still yields an empty string, not undefined.
+      expect(result.results[1].snippet).toBe('');
+    });
+
+    it('applies the same mapping on the citing direction', async () => {
+      mockSvc.getCiting = vi.fn().mockResolvedValue({
+        total: 1,
+        results: [mockCitingResult.results[0]],
+        nextCursor: null,
+        sourceCaseName: 'Source Opinion',
+      });
+      const ctx = createMockContext();
+      const input = getCitationsTool.input.parse({ cluster_id: 100, direction: 'citing' });
+      const result = await getCitationsTool.handler(input, ctx);
+
+      expect(result.results[0].snippet).toBe('relevant excerpt');
+    });
+
+    it('yields an empty snippet when upstream returns no variants', async () => {
+      mockSvc.getCitedBy = vi.fn().mockResolvedValue({
+        total: 1,
+        results: [{ ...mockCitingResult.results[0], opinions: [] }],
+        nextCursor: null,
+      });
+      const ctx = createMockContext();
+      const input = getCitationsTool.input.parse({ cluster_id: 100 });
+      const result = await getCitationsTool.handler(input, ctx);
+
+      expect(result.results[0].snippet).toBe('');
+    });
   });
 
   it('falls back to the cluster-id placeholder when source-name resolution fails', async () => {

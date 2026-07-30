@@ -76,7 +76,9 @@ export const getCitationsTool = tool('courtlistener_get_citations', {
               .describe("This opinion's own citation count — its authority weight."),
             snippet: z
               .string()
-              .describe('Text excerpt showing context around the citation (where available).'),
+              .describe(
+                'Matched text excerpt from the related opinion, taken from the first opinion variant in the cluster that carries one; empty string when none does. It is a relevance preview for the cluster, not necessarily text surrounding the citation itself.',
+              ),
           })
           .describe('Related opinion in the citation network.'),
       )
@@ -174,7 +176,9 @@ export const getCitationsTool = tool('courtlistener_get_citations', {
       date_filed: r.dateFiled ?? '',
       citations: r.citation ?? [],
       cite_count: r.citeCount ?? 0,
-      snippet: r.snippet ?? '',
+      // v4 nests the matched excerpt under each opinion variant; nothing marks which
+      // one matched, so take the first that carries one (same rule as search_opinions).
+      snippet: (r.opinions ?? []).find((o) => o.snippet)?.snippet ?? '',
     }));
 
     ctx.log.info('courtlistener_get_citations complete', {

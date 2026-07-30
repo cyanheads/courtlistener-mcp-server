@@ -461,6 +461,7 @@ describe('format() — pagination cursor rendered when present', () => {
           judges: '',
           status: 'Published',
           snippet: '',
+          opinions: [],
         },
       ],
       next_cursor: 'next-page-abc',
@@ -514,7 +515,7 @@ describe('sparse upstream payload handling', () => {
           citation: undefined,
           citeCount: undefined,
           judge: undefined,
-          snippet: undefined,
+          opinions: undefined,
           status: undefined,
         },
       ],
@@ -531,6 +532,8 @@ describe('sparse upstream payload handling', () => {
       court_id: '',
       citations: [],
       cite_count: 0,
+      snippet: '',
+      opinions: [],
     });
   });
 
@@ -550,8 +553,9 @@ describe('sparse upstream payload handling', () => {
           assignedTo: undefined,
           cause: '',
           juryDemand: '',
-          party_name: undefined,
-          document_count: undefined,
+          party: undefined,
+          attorney: undefined,
+          firm: undefined,
           recap_documents: undefined,
         },
       ],
@@ -562,7 +566,8 @@ describe('sparse upstream payload handling', () => {
     const result = await searchDocketsTool.handler(input, ctx);
     expect(result.results[0].sample_documents).toHaveLength(0);
     expect(result.results[0].parties).toEqual([]);
-    expect(result.results[0].document_count).toBe(0);
+    expect(result.results[0].attorneys).toEqual([]);
+    expect(result.results[0].firms).toEqual([]);
   });
 
   it('searchOralArgumentsTool handles sparse upstream with null fields', async () => {

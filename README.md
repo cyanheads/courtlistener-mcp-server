@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.4.3-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/courtlistener-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/courtlistener-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/courtlistener-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.2-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.5.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/courtlistener-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/courtlistener-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/courtlistener-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.2-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -57,6 +57,8 @@ Search the 9M+ opinion corpus. Returns opinion cluster summaries with matched te
 - Sort by relevance score, filing date (asc/desc), or citation count
 - Cursor-based pagination; up to 20 results per call
 - Results include `cluster_id` (for `courtlistener_get_opinion`) and `docket_id` (for `courtlistener_get_docket`) for chaining
+- Each cluster carries its `opinions[]` variants — per-variant opinion ID, type, author, outbound cites, and a CourtListener-hosted `local_path` copy of the source document
+- `snippet` is the matched excerpt from the first variant that carries one; CourtListener does not mark which variant the search matched
 
 ---
 
@@ -78,7 +80,7 @@ Retrieve the citation network for an opinion cluster in either direction.
 - `cited_by` (default): opinions that cite this one — measures precedential influence and downstream adoption
 - `citing`: opinions this one cites — reveals the authority chain the court relied on
 - Optional court and date filters; cursor-based pagination; up to 20 results per call
-- Results include `snippet` showing the excerpt around the citation reference
+- Results include `snippet`, the matched excerpt from the related opinion — a relevance preview for the cluster, not necessarily the text surrounding the citation
 - Rate-limit note: the free tier (125 req/day) supports 1–2 hops on a single case; deep multi-hop traversal exhausts the daily budget quickly
 
 ---
@@ -99,7 +101,8 @@ Search RECAP federal court dockets.
 
 - Query matched against case name, docket number, party names, and attorney names
 - `party_name` filter applies in addition to (AND with) the `q` query — more precise than embedding party names in the query
-- Returns up to 3 sample document entries per docket with `is_available` status
+- Returns the docket's `parties`, `attorneys`, and `firms`, plus nature of suit, jurisdiction type, and the referred magistrate judge
+- Returns up to 3 sample document entries per docket — a search excerpt, not the full filing list — each with `is_available` status, page count, and a fully-qualified RECAP storage URL when a copy is stored
 - `coverage_note` in every response — RECAP is crowd-sourced from PACER; completeness varies by court
 
 ---
@@ -130,7 +133,8 @@ Fetch all parties and attorneys of record for a RECAP federal docket.
 Search judge and person records across the federal and state bench.
 
 - Filter by appointing president's last name, court ID, or political affiliation (`d/r/i/l/g/u`)
-- Returns `person_id` for chaining to `courtlistener_get_judge`, plus current position summary
+- Returns `person_id` for chaining to `courtlistener_get_judge`, plus a `current_position` summary — court, position type, appointer, selection method, and start date — selected as the position with no termination date, or the latest-starting one when several or none qualify
+- Political affiliations and ABA ratings come back as expanded labels ("Democratic", "Well Qualified"), not the codes the `political_affiliation` filter takes
 - Court IDs from `courtlistener_lookup_courts` can be passed directly
 
 ---
@@ -163,7 +167,7 @@ Search appellate oral argument audio recordings — the largest public collectio
 
 - Query matched against case name and transcribed argument text (where available)
 - Filters by court, argued-after, and argued-before date
-- Returns `download_url` (MP3), `duration_seconds`, `panel_ids` (chaining to `courtlistener_get_judge`), and transcript `snippet`
+- Returns two MP3 links per recording — `download_url` at the originating court, and `local_path`, CourtListener's durable hosted copy — plus `duration_seconds`, `panel_ids` (chaining to `courtlistener_get_judge`), and transcript `snippet`
 
 ---
 

@@ -18,6 +18,12 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
+/**
+ * Keys mirror a captured `/search/?type=o` v4 response: one row per cluster, with
+ * the matched excerpt on the nested `opinions[]` variants and no top-level
+ * `snippet`. The old flat-snippet fixtures kept the suite green against a shape
+ * the API never returns.
+ */
 const baseResult = {
   total: 2,
   results: [
@@ -33,7 +39,18 @@ const baseResult = {
       citation: ['410 U.S. 113'],
       citeCount: 10000,
       judge: 'Blackmun',
-      snippet: 'right of privacy',
+      opinions: [
+        {
+          id: 108713,
+          type: 'combined-opinion',
+          author_id: 1234,
+          per_curiam: false,
+          download_url: 'http://www.supremecourt.gov/opinions/roe.pdf',
+          local_path: 'pdf/1973/01/22/roe_v_wade.pdf',
+          cites: [105879, 106021],
+          snippet: 'right of privacy',
+        },
+      ],
       status: 'Published',
     },
     {
@@ -48,7 +65,18 @@ const baseResult = {
       citation: ['505 U.S. 833'],
       citeCount: 5000,
       judge: "O'Connor",
-      snippet: 'undue burden standard',
+      opinions: [
+        {
+          id: 112786,
+          type: 'lead-opinion',
+          author_id: null,
+          per_curiam: true,
+          download_url: null,
+          local_path: null,
+          cites: [108713],
+          snippet: 'undue burden standard',
+        },
+      ],
       status: 'Published',
     },
   ],
@@ -76,6 +104,77 @@ describe('searchOpinionsTool', () => {
     expect(enrichment.totalCount).toBe(2);
     expect(enrichment.effectiveQuery).toBe('abortion rights');
     expect(enrichment.notice).toBeUndefined();
+  });
+
+  // #43 — snippet was read from the top level of the cluster row, where v4 has no
+  // such key, so every result came back with an empty relevance signal.
+  describe('nested opinions[] mapping (#43)', () => {
+    it('lifts snippet out of the nested variant', async () => {
+      mockSvc.searchOpinions = vi.fn().mockResolvedValue(baseResult);
+      const ctx = createMockContext();
+      const input = searchOpinionsTool.input.parse({ q: 'abortion rights' });
+      const result = await searchOpinionsTool.handler(input, ctx);
+
+      expect(result.results[0].snippet).toBe('right of privacy');
+      expect(result.results[1].snippet).toBe('undue burden standard');
+    });
+
+    it('picks the first variant that actually carries an excerpt', async () => {
+      mockSvc.searchOpinions = vi.fn().mockResolvedValue({
+        total: 1,
+        results: [
+          {
+            ...baseResult.results[0],
+            opinions: [
+              { ...baseResult.results[0]!.opinions[0]!, id: 1, snippet: '' },
+              { ...baseResult.results[0]!.opinions[0]!, id: 2, snippet: 'dissenting excerpt' },
+            ],
+          },
+        ],
+        nextCursor: null,
+      });
+      const ctx = createMockContext();
+      const input = searchOpinionsTool.input.parse({ q: 'test' });
+      const result = await searchOpinionsTool.handler(input, ctx);
+
+      expect(result.results[0].snippet).toBe('dissenting excerpt');
+    });
+
+    it('falls back to an empty snippet when no variant has one', async () => {
+      mockSvc.searchOpinions = vi.fn().mockResolvedValue({
+        total: 1,
+        results: [{ ...baseResult.results[0], opinions: [] }],
+        nextCursor: null,
+      });
+      const ctx = createMockContext();
+      const input = searchOpinionsTool.input.parse({ q: 'test' });
+      const result = await searchOpinionsTool.handler(input, ctx);
+
+      expect(result.results[0].snippet).toBe('');
+      expect(result.results[0].opinions).toEqual([]);
+    });
+
+    it('surfaces the variants with local_path resolved to a storage URL', async () => {
+      mockSvc.searchOpinions = vi.fn().mockResolvedValue(baseResult);
+      const ctx = createMockContext();
+      const input = searchOpinionsTool.input.parse({ q: 'abortion rights' });
+      const result = await searchOpinionsTool.handler(input, ctx);
+
+      expect(result.results[0].opinions).toEqual([
+        {
+          id: 108713,
+          type: 'combined-opinion',
+          author_id: 1234,
+          per_curiam: false,
+          download_url: 'http://www.supremecourt.gov/opinions/roe.pdf',
+          local_path: 'https://storage.courtlistener.com/pdf/1973/01/22/roe_v_wade.pdf',
+          cites: [105879, 106021],
+        },
+      ]);
+      // A null local_path stays null rather than becoming a bare-host URL.
+      expect(result.results[1].opinions[0]?.local_path).toBeNull();
+      expect(result.results[1].opinions[0]?.per_curiam).toBe(true);
+    });
   });
 
   it('passes optional filters to service', async () => {
@@ -218,6 +317,17 @@ describe('searchOpinionsTool', () => {
           judges: 'Blackmun',
           status: 'Published',
           snippet: 'right of privacy',
+          opinions: [
+            {
+              id: 108713,
+              type: 'combined-opinion',
+              author_id: 1234,
+              per_curiam: false,
+              download_url: 'http://www.supremecourt.gov/opinions/roe.pdf',
+              local_path: 'https://storage.courtlistener.com/pdf/1973/01/22/roe_v_wade.pdf',
+              cites: [105879],
+            },
+          ],
         },
       ],
       next_cursor: null,
@@ -232,6 +342,12 @@ describe('searchOpinionsTool', () => {
     expect(text).toContain('Published');
     // case_name_full must be rendered for parity
     expect(text).toContain('Roe v. Wade (Full)');
+    // #43 — the nested variants must reach content[] as well as structuredContent
+    expect(text).toContain('108713');
+    expect(text).toContain('combined-opinion');
+    expect(text).toContain('https://storage.courtlistener.com/pdf/1973/01/22/roe_v_wade.pdf');
+    expect(text).toContain('105879');
+    expect(text).toContain('right of privacy');
   });
 
   it('format handles empty results', () => {
@@ -261,6 +377,7 @@ describe('searchOpinionsTool', () => {
           judges: '',
           status: 'Unpublished',
           snippet: '',
+          opinions: [],
         },
       ],
       next_cursor: null,

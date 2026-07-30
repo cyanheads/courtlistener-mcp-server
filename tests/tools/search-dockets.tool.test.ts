@@ -18,12 +18,19 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
+/**
+ * Keys mirror a captured `/search/?type=r` v4 response — `party`/`attorney`/`firm`
+ * (not `party_name`), `recap_documents[].entry_date_filed` (not `date_filed`), and
+ * no `document_count` anywhere in the payload. Fixtures written against the old
+ * type names were exactly why the suite stayed green while the fields were dead.
+ */
 const baseDocketResult = {
   total: 1,
   results: [
     {
       docket_id: 8000,
       caseName: 'Apple Inc. v. Samsung Electronics',
+      case_name_full: 'Apple Inc. v. Samsung Electronics Co., Ltd.',
       court: 'Northern District of California',
       court_id: 'cand',
       dateFiled: '2011-04-15',
@@ -31,17 +38,25 @@ const baseDocketResult = {
       docketNumber: '11-cv-01846',
       pacer_case_id: 'pacer123',
       assignedTo: 'Judge Koh',
+      referredTo: 'Judge Grewal',
       cause: 'Patent Infringement',
       juryDemand: 'Both',
-      party_name: ['Apple Inc.', 'Samsung Electronics'],
-      document_count: 1500,
+      suitNature: 'Patent',
+      jurisdictionType: 'Federal Question',
+      party: ['Apple Inc.', 'Samsung Electronics'],
+      attorney: ['Diane Cafferata Hutnyan', 'Lara Sue Garner'],
+      firm: ['Quinn Emanuel Urquhart & Sullivan LLP'],
       recap_documents: [
         {
           id: 90000,
           description: 'Complaint',
-          date_filed: '2011-04-15',
           document_number: 1,
+          document_type: 'PACER Document',
+          entry_date_filed: '2011-04-15',
+          entry_number: 1,
+          filepath_local: 'recap/gov.uscourts.cand.239768/gov.uscourts.cand.239768.1.0.pdf',
           is_available: true,
+          page_count: 38,
         },
       ],
     },
@@ -72,6 +87,111 @@ describe('searchDocketsTool', () => {
     expect(enrichment.notice).toBeUndefined();
   });
 
+  // #42 — parties, document_count, and per-document date_filed were mapped from key
+  // names the v4 RECAP search response does not use, so each was dead on every call.
+  describe('v4 response key mapping (#42)', () => {
+    it('reads parties from `party`, not the `party_name` input filter', async () => {
+      mockSvc.searchDockets = vi.fn().mockResolvedValue(baseDocketResult);
+      const ctx = createMockContext();
+      const input = searchDocketsTool.input.parse({ q: 'Apple Samsung patent' });
+      const result = await searchDocketsTool.handler(input, ctx);
+
+      expect(result.results[0].parties).toEqual(['Apple Inc.', 'Samsung Electronics']);
+      expect(result.results[0].parties).not.toEqual([]);
+    });
+
+    it('reads a sample document date from `entry_date_filed`', async () => {
+      mockSvc.searchDockets = vi.fn().mockResolvedValue(baseDocketResult);
+      const ctx = createMockContext();
+      const input = searchDocketsTool.input.parse({ q: 'Apple Samsung patent' });
+      const result = await searchDocketsTool.handler(input, ctx);
+
+      expect(result.results[0].sample_documents[0].date_filed).toBe('2011-04-15');
+    });
+
+    it('drops document_count — no v4 field backs it, and 0 read as a real total', async () => {
+      mockSvc.searchDockets = vi.fn().mockResolvedValue(baseDocketResult);
+      const ctx = createMockContext();
+      const input = searchDocketsTool.input.parse({ q: 'Apple Samsung patent' });
+      const result = await searchDocketsTool.handler(input, ctx);
+
+      expect(result.results[0]).not.toHaveProperty('document_count');
+      expect(searchDocketsTool.output.shape.results.element.shape).not.toHaveProperty(
+        'document_count',
+      );
+    });
+
+    it('surfaces attorneys, firms, and the remaining adjacent docket fields', async () => {
+      mockSvc.searchDockets = vi.fn().mockResolvedValue(baseDocketResult);
+      const ctx = createMockContext();
+      const input = searchDocketsTool.input.parse({ q: 'Apple Samsung patent' });
+      const result = await searchDocketsTool.handler(input, ctx);
+
+      expect(result.results[0]).toMatchObject({
+        attorneys: ['Diane Cafferata Hutnyan', 'Lara Sue Garner'],
+        firms: ['Quinn Emanuel Urquhart & Sullivan LLP'],
+        case_name_full: 'Apple Inc. v. Samsung Electronics Co., Ltd.',
+        suit_nature: 'Patent',
+        jurisdiction_type: 'Federal Question',
+        referred_to: 'Judge Grewal',
+      });
+      expect(result.results[0].sample_documents[0]).toMatchObject({
+        entry_number: 1,
+        page_count: 38,
+        document_type: 'PACER Document',
+      });
+    });
+
+    it('resolves a sample document filepath_local to a storage URL', async () => {
+      mockSvc.searchDockets = vi.fn().mockResolvedValue(baseDocketResult);
+      const ctx = createMockContext();
+      const input = searchDocketsTool.input.parse({ q: 'Apple Samsung patent' });
+      const result = await searchDocketsTool.handler(input, ctx);
+
+      expect(result.results[0].sample_documents[0].filepath_local).toBe(
+        'https://storage.courtlistener.com/recap/gov.uscourts.cand.239768/gov.uscourts.cand.239768.1.0.pdf',
+      );
+    });
+
+    it('tolerates a sparse docket with none of the optional fields', async () => {
+      mockSvc.searchDockets = vi.fn().mockResolvedValue({
+        total: 1,
+        results: [
+          {
+            docket_id: 8001,
+            caseName: 'Sparse Docket',
+            court: 'District Court',
+            court_id: 'dnd',
+            dateFiled: '2020-01-01',
+            dateTerminated: null,
+            docketNumber: '20-cv-1',
+            pacer_case_id: null,
+            assignedTo: null,
+            cause: '',
+            juryDemand: '',
+          },
+        ],
+        nextCursor: null,
+      });
+      const ctx = createMockContext();
+      const input = searchDocketsTool.input.parse({ q: 'sparse' });
+      const result = await searchDocketsTool.handler(input, ctx);
+
+      expect(result.results[0]).toMatchObject({
+        parties: [],
+        attorneys: [],
+        firms: [],
+        case_name_full: '',
+        suit_nature: '',
+        jurisdiction_type: '',
+        referred_to: null,
+        sample_documents: [],
+      });
+      // Schema conformance is the real assertion — a missing optional must not throw.
+      expect(() => searchDocketsTool.output.parse(result)).not.toThrow();
+    });
+  });
+
   it('passes optional filters to service', async () => {
     mockSvc.searchDockets = vi.fn().mockResolvedValue({ total: 0, results: [], nextCursor: null });
     const ctx = createMockContext();
@@ -91,9 +211,13 @@ describe('searchDocketsTool', () => {
     const manyDocs = Array.from({ length: 10 }, (_, i) => ({
       id: i + 1,
       description: `Doc ${i + 1}`,
-      date_filed: '2020-01-01',
       document_number: i + 1,
+      document_type: 'PACER Document',
+      entry_date_filed: '2020-01-01',
+      entry_number: i + 1,
+      filepath_local: null,
       is_available: true,
+      page_count: null,
     }));
     mockSvc.searchDockets = vi.fn().mockResolvedValue({
       total: 1,
@@ -199,6 +323,7 @@ describe('searchDocketsTool', () => {
         {
           docket_id: 8000,
           case_name: 'Apple v. Samsung',
+          case_name_full: 'Apple Inc. v. Samsung Electronics Co., Ltd.',
           court: 'N.D. Cal.',
           court_id: 'cand',
           date_filed: '2011-04-15',
@@ -206,16 +331,24 @@ describe('searchDocketsTool', () => {
           docket_number: '11-cv-01846',
           pacer_case_id: 'pacer123',
           assigned_to: 'Judge Koh',
+          referred_to: 'Judge Grewal',
           cause: 'Patent Infringement',
           jury_demand: 'Both',
+          suit_nature: 'Patent',
+          jurisdiction_type: 'Federal Question',
           parties: ['Apple Inc.', 'Samsung'],
-          document_count: 1500,
+          attorneys: ['Diane Cafferata Hutnyan'],
+          firms: ['Quinn Emanuel Urquhart & Sullivan LLP'],
           sample_documents: [
             {
               id: 90000,
               description: 'Complaint',
               date_filed: '2011-04-15',
               document_number: 1,
+              entry_number: 1,
+              document_type: 'PACER Document',
+              page_count: 38,
+              filepath_local: 'https://storage.courtlistener.com/recap/doc.pdf',
               is_available: true,
             },
           ],
@@ -232,5 +365,15 @@ describe('searchDocketsTool', () => {
     expect(text).toContain('Both');
     // sample_documents[].id must be rendered
     expect(text).toContain('90000');
+    // #42 — the fields that were dead or dropped must reach content[] too
+    expect(text).toContain('Diane Cafferata Hutnyan');
+    expect(text).toContain('Quinn Emanuel Urquhart & Sullivan LLP');
+    expect(text).toContain('Patent');
+    expect(text).toContain('Federal Question');
+    expect(text).toContain('Judge Grewal');
+    expect(text).toContain('https://storage.courtlistener.com/recap/doc.pdf');
+    expect(text).toContain('38pp');
+    // the fabricated "**Documents:** 0" line is gone
+    expect(text).not.toContain('**Documents:**');
   });
 });
