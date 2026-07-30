@@ -13,6 +13,7 @@
  */
 
 import { COURT_ATTRIBUTES, COURT_FULL_NAMES } from './court-names-data.js';
+import { COURT_JURISDICTION_LABELS } from './jurisdictions.js';
 
 /**
  * Resolve a court identifier to its display name.
@@ -44,6 +45,20 @@ export function listSnapshotCourtIds(filters: {
         (filters.has_opinion_scraper === undefined ||
           attrs.has_opinion_scraper === filters.has_opinion_scraper),
     )
+    .map(([id]) => id)
+    .sort();
+}
+
+/**
+ * Snapshot court ids whose stored `jurisdiction` is not one of upstream's own choices —
+ * currently a lone `"St"` and an empty string. Since a filter can only be given a value
+ * from that choice set (`/courts/` answers anything else with a 400), no jurisdiction
+ * filter reaches these courts at all. They stay reachable by id, and appear in a listing
+ * with no jurisdiction filter.
+ */
+export function listUnclassifiedCourtIds(): string[] {
+  return Object.entries(COURT_ATTRIBUTES)
+    .filter(([, attrs]) => !Object.hasOwn(COURT_JURISDICTION_LABELS, attrs.jurisdiction))
     .map(([id]) => id)
     .sort();
 }

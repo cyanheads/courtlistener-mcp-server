@@ -25,6 +25,26 @@ describe('courtsReferenceResource', () => {
     expect(result).toContain('Rate Limit');
   });
 
+  // #67 — the guide a model is told to read before building a query carried the same
+  // 15-code table as the tool input, with the same four wrong labels.
+  it("tabulates jurisdiction codes with upstream's own labels", async () => {
+    const ctx = createMockContext();
+    const params = courtsReferenceResource.params.parse({});
+    const result = await courtsReferenceResource.handler(params, ctx);
+
+    expect(result).toContain('| S | State Supreme |');
+    expect(result).toContain('| SS | State Special |');
+    expect(result).toContain('| TT | Territory Trial |');
+    expect(result).toContain('| C | Committee |');
+    // Benches the table never listed at all.
+    expect(result).toContain('| TRA | Tribal Appellate |');
+    expect(result).toContain('| MA | Military Appellate |');
+    // SAL is not one of upstream's choices, and a T filter is excluded from every
+    // /courts/ response — neither belongs in a table of values to filter with.
+    expect(result).not.toContain('| SAL |');
+    expect(result).not.toContain('| T |');
+  });
+
   it('lists available resources via list()', async () => {
     const listing = await courtsReferenceResource.list!();
     expect(listing.resources).toBeInstanceOf(Array);

@@ -5,9 +5,16 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { listSnapshotCourtIds } from '@/services/courtlistener/court-names.js';
+import {
+  listSnapshotCourtIds,
+  listUnclassifiedCourtIds,
+} from '@/services/courtlistener/court-names.js';
 import { COURT_SNAPSHOT_DATE } from '@/services/courtlistener/court-names-data.js';
 import { getCourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
+import {
+  COURT_JURISDICTION_CODES,
+  COURT_JURISDICTION_LABELS,
+} from '@/services/courtlistener/jurisdictions.js';
 
 /**
  * Ceiling on the offline id list inlined in one response. The whole set is 3,359 courts —
@@ -19,6 +26,34 @@ import { getCourtListenerService } from '@/services/courtlistener/courtlistener-
  */
 const MAX_INLINE_COURT_IDS = 1000;
 
+/** `code=Upstream Label` for every accepted jurisdiction, the key a model picks a value from. */
+const JURISDICTION_KEY = COURT_JURISDICTION_CODES.map(
+  (code) => `${code}=${COURT_JURISDICTION_LABELS[code]}`,
+).join(', ');
+
+/**
+ * Accepted codes that no court in the snapshot carries, and the courts that no code
+ * reaches. Both are read from the snapshot rather than asserted by hand, so a regenerated
+ * snapshot cannot leave the description claiming something that has stopped being true.
+ */
+const EMPTY_JURISDICTION_CODES = COURT_JURISDICTION_CODES.filter(
+  (code) => listSnapshotCourtIds({ jurisdiction: code }).length === 0,
+);
+const UNCLASSIFIED_COURT_IDS = listUnclassifiedCourtIds();
+
+const JURISDICTION_DESCRIPTION = [
+  `Jurisdiction type — CourtListener's own court classification, one code per court: ${JURISDICTION_KEY}. Omit to list all. SCOTUS and the numbered circuits are F; USITC and FISC are FS.`,
+  "Upstream's Testing code is not offered here: /courts/ excludes testing courts from every response, so a filter on it can only ever return nothing.",
+  EMPTY_JURISDICTION_CODES.length > 0
+    ? `Accepted but matching no court as of the ${COURT_SNAPSHOT_DATE} snapshot: ${EMPTY_JURISDICTION_CODES.join(', ')}.`
+    : '',
+  UNCLASSIFIED_COURT_IDS.length > 0
+    ? `Courts whose stored jurisdiction is not one of these codes (${UNCLASSIFIED_COURT_IDS.join(', ')}) are unreachable through this filter at any value — the value they store is not one the filter accepts. Pass those ids straight to the tool that needs them, or list with no jurisdiction filter.`
+    : '',
+]
+  .filter(Boolean)
+  .join(' ');
+
 export const lookupCourtsTool = tool('courtlistener_lookup_courts', {
   title: 'Lookup Courts',
   description:
@@ -26,28 +61,7 @@ export const lookupCourtsTool = tool('courtlistener_lookup_courts', {
   annotations: { readOnlyHint: true, openWorldHint: true, idempotentHint: false },
 
   input: z.object({
-    jurisdiction: z
-      .enum([
-        'F',
-        'FD',
-        'FB',
-        'FBP',
-        'FS',
-        'C',
-        'I',
-        'T',
-        'ST',
-        'SS',
-        'SAG',
-        'SAL',
-        'SA',
-        'S',
-        'TT',
-      ])
-      .optional()
-      .describe(
-        'Jurisdiction type. F=Federal Appellate (circuit courts, SCOTUS), FD=Federal District, FB=Federal Bankruptcy, FBP=Federal Bankruptcy Panel, FS=Federal Special (USITC, FISC, etc.), C=Circuit (historical), I=International, T=Territory, ST=State Trial, SS=State Supreme, SAG=State Attorney General, SAL=State Legislature, SA=State Appellate, S=State (other), TT=Tribal/Territory. Omit to list all.',
-      ),
+    jurisdiction: z.enum(COURT_JURISDICTION_CODES).optional().describe(JURISDICTION_DESCRIPTION),
     status: z
       .enum(['active', 'inactive', 'any'])
       .optional()

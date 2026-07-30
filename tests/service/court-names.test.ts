@@ -4,12 +4,17 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { listSnapshotCourtIds, resolveCourtName } from '@/services/courtlistener/court-names.js';
+import {
+  listSnapshotCourtIds,
+  listUnclassifiedCourtIds,
+  resolveCourtName,
+} from '@/services/courtlistener/court-names.js';
 import {
   COURT_ATTRIBUTES,
   COURT_FULL_NAMES,
   COURT_SNAPSHOT_DATE,
 } from '@/services/courtlistener/court-names-data.js';
+import { COURT_JURISDICTION_LABELS } from '@/services/courtlistener/jurisdictions.js';
 
 describe('resolveCourtName', () => {
   it('resolves federal appellate court ids to full names', () => {
@@ -83,5 +88,26 @@ describe('court snapshot (#65)', () => {
     const all = listSnapshotCourtIds({});
     expect(all).toHaveLength(Object.keys(COURT_FULL_NAMES).length);
     expect(all).toEqual([...all].sort());
+  });
+});
+
+// #67 — two rows store a jurisdiction that is not one of upstream's choices at all: a
+// lone "St" (which /courts/ rejects as an invalid filter value) and an empty string.
+// Covering every code in Court.JURISDICTIONS still cannot reach them.
+describe('listUnclassifiedCourtIds (#67)', () => {
+  it('names the courts whose stored jurisdiction matches no upstream choice', () => {
+    expect(listUnclassifiedCourtIds()).toEqual(['njcirctsussex', 'ohctapp1']);
+  });
+
+  it('reports courts that are in the snapshot but carry no usable jurisdiction', () => {
+    const unclassified = listUnclassifiedCourtIds();
+    for (const id of unclassified) {
+      const stored = COURT_ATTRIBUTES[id]?.jurisdiction ?? '';
+      expect(Object.hasOwn(COURT_JURISDICTION_LABELS, stored)).toBe(false);
+    }
+    // They are still in the snapshot — reachable by id, or by a listing with no filter.
+    expect(listSnapshotCourtIds({}).filter((id) => unclassified.includes(id))).toEqual(
+      unclassified,
+    );
   });
 });

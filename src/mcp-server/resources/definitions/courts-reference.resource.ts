@@ -4,30 +4,33 @@
  */
 
 import { resource, z } from '@cyanheads/mcp-ts-core';
+import {
+  COURT_JURISDICTION_CODES,
+  COURT_JURISDICTION_LABELS,
+} from '@/services/courtlistener/jurisdictions.js';
 
 const COURTS_REFERENCE_URI = 'courtlistener://reference/courts';
+
+/**
+ * Rendered from the same choice set the `jurisdiction` input validates against, so the
+ * guide a model reads before building a query cannot disagree with what the tool accepts.
+ */
+const JURISDICTION_TABLE = COURT_JURISDICTION_CODES.map(
+  (code) => `| ${code} | ${COURT_JURISDICTION_LABELS[code]} |`,
+).join('\n');
 
 const COURTS_REFERENCE_CONTENT = `# CourtListener Court Reference
 
 ## Jurisdiction Type Codes
 
+Verbatim from CourtListener's \`Court.JURISDICTIONS\`. These are the values \`courtlistener_lookup_courts\`
+accepts for \`jurisdiction\`; anything else is rejected by the API as an invalid choice rather than
+returning an empty result. Upstream's \`T\` (Testing) code is excluded — \`/courts/\` filters those
+courts out of every response, so it can only ever match nothing.
+
 | Code | Description |
 |:-----|:------------|
-| F | Federal Appellate (circuit courts, SCOTUS) |
-| FD | Federal District |
-| FB | Federal Bankruptcy |
-| FBP | Federal Bankruptcy Panel |
-| FS | Federal Special (USITC, FISC, etc.) |
-| C | Circuit (historical) |
-| I | International |
-| T | Territory |
-| ST | State Trial |
-| SS | State Supreme |
-| SAG | State Attorney General |
-| SAL | State Legislature |
-| SA | State Appellate |
-| S | State (other) |
-| TT | Tribal/Territory |
+${JURISDICTION_TABLE}
 
 ## Common Court IDs
 

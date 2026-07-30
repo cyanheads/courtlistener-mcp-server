@@ -6,6 +6,11 @@
 import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { lookupCourtsTool } from '@/mcp-server/tools/definitions/lookup-courts.tool.js';
+import {
+  listSnapshotCourtIds,
+  listUnclassifiedCourtIds,
+} from '@/services/courtlistener/court-names.js';
+import { COURT_FULL_NAMES } from '@/services/courtlistener/court-names-data.js';
 import type { CourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
 import * as svcModule from '@/services/courtlistener/courtlistener-service.js';
 
@@ -245,6 +250,97 @@ describe('lookupCourtsTool', () => {
       const notice = getEnrichment(ctx).notice as string;
       expect(notice).toContain('No courts matched filters');
       expect(notice).toContain('3359 courts match these filters');
+    });
+  });
+
+  // #67 — upstream declares `CourtFilter.jurisdiction` as a MultipleChoiceFilter over
+  // Court.JURISDICTIONS, so a value outside that set is a 400 rather than an empty result.
+  // The enum carried 15 codes against upstream's 23 — leaving the tribal, territory, and
+  // military benches unfilterable — and four of the 15 named a different court class than
+  // they select, S and SS being effectively swapped.
+  describe('jurisdiction choices mirror Court.JURISDICTIONS (#67)', () => {
+    const jurisdiction = lookupCourtsTool.input.shape.jurisdiction;
+    const codes = jurisdiction.unwrap().options;
+    const description = jurisdiction.description ?? '';
+
+    it('accepts every filterable code upstream defines', () => {
+      // Verbatim from cl/search/models.py, minus Testing.
+      expect([...codes].sort()).toEqual([
+        'C',
+        'F',
+        'FB',
+        'FBP',
+        'FD',
+        'FS',
+        'I',
+        'MA',
+        'MT',
+        'S',
+        'SA',
+        'SAG',
+        'SS',
+        'ST',
+        'TA',
+        'TRA',
+        'TRS',
+        'TRT',
+        'TRX',
+        'TS',
+        'TSP',
+        'TT',
+      ]);
+      for (const code of codes) {
+        expect(() => lookupCourtsTool.input.parse({ jurisdiction: code })).not.toThrow();
+      }
+    });
+
+    it('rejects the two values that could only ever return nothing', () => {
+      // CourtViewSet.queryset excludes testing courts from every response.
+      expect(() => lookupCourtsTool.input.parse({ jurisdiction: 'T' })).toThrow();
+      // SAL was never one of upstream's choices: /courts/?jurisdiction=SAL is a 400.
+      expect(() => lookupCourtsTool.input.parse({ jurisdiction: 'SAL' })).toThrow();
+    });
+
+    it("documents each code with upstream's own label", () => {
+      // The description is the only place a model learns what a code selects, and the
+      // swapped pair sent a caller asking for state supreme courts to the state special ones.
+      expect(description).toMatch(/\bS=State Supreme\b/);
+      expect(description).toContain('SS=State Special');
+      expect(description).toContain('TT=Territory Trial');
+      expect(description).toContain('C=Committee');
+      expect(description).not.toContain('State (other)');
+      expect(description).not.toContain('Tribal/Territory');
+      for (const code of codes) expect(description).toContain(`${code}=`);
+    });
+
+    it('reaches a bench the enum could not previously name', async () => {
+      mockSvc.listCourts = vi.fn().mockResolvedValue({ total: 11, next_cursor: null, courts: [] });
+      const ctx = createMockContext();
+      const input = lookupCourtsTool.input.parse({ jurisdiction: 'MA', status: 'any' });
+      const result = await lookupCourtsTool.handler(input, ctx);
+
+      expect(mockSvc.listCourts).toHaveBeenCalledWith(
+        expect.objectContaining({ jurisdiction: 'MA' }),
+        ctx,
+      );
+      // The 11 military appellate courts, complete and free of a request.
+      expect(result.all_matching_court_ids).toContain('acca');
+      expect(result.all_matching_court_ids).toHaveLength(11);
+      expect(result.all_matching_court_ids_complete).toBe(true);
+    });
+
+    it('partitions the whole snapshot, naming the courts left over', () => {
+      const reachable = new Set(
+        codes.flatMap((code) => listSnapshotCourtIds({ jurisdiction: code })),
+      );
+      const unreachable = listUnclassifiedCourtIds();
+
+      // Every court is reachable through some code except the two whose stored jurisdiction
+      // is not a choice at all — pre-fix the accepted codes missed another 60 besides.
+      expect(reachable.size + unreachable.length).toBe(Object.keys(COURT_FULL_NAMES).length);
+      for (const id of unreachable) expect(reachable.has(id)).toBe(false);
+      // Named in the description rather than left for a caller to infer from a short count.
+      for (const id of unreachable) expect(description).toContain(id);
     });
   });
 
