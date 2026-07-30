@@ -743,7 +743,7 @@ describe('getFinancialDisclosure', () => {
 });
 
 // ── fetchWithTimeout non-2xx interception (production error path) ─────────────
-// In production fetchWithTimeout THROWS an McpError on non-2xx (with data.statusCode,
+// In production fetchWithTimeout THROWS an McpError on non-2xx (with data.status,
 // no data.reason, leaking the URL) before the manual status checks run. These tests
 // drive that path by rejecting the underlying fetch, asserting the classifier remaps it.
 
@@ -770,7 +770,7 @@ describe('fetchWithTimeout non-2xx interception', () => {
           new McpError(
             JsonRpcErrorCode.NotFound,
             'Fetch failed for https://www.courtlistener.com/api/rest/v4/clusters/999/. Status: 404',
-            { statusCode: 404, errorSource: 'FetchHttpError' },
+            { status: 404, errorSource: 'FetchHttpError' },
           ),
         ),
     );
@@ -793,7 +793,7 @@ describe('fetchWithTimeout non-2xx interception', () => {
       'fetch',
       vi.fn().mockRejectedValue(
         new McpError(JsonRpcErrorCode.RateLimited, 'Fetch failed. Status: 429', {
-          statusCode: 429,
+          status: 429,
           errorSource: 'FetchHttpError',
         }),
       ),

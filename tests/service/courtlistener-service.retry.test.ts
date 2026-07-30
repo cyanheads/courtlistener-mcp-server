@@ -41,10 +41,10 @@ describe('429 fail-fast (#25)', () => {
 
   it('does not retry a 429 — one upstream attempt, rateLimited carries retryable:false', async () => {
     const { McpError, JsonRpcErrorCode } = await import('@cyanheads/mcp-ts-core/errors');
-    // Production fetchWithTimeout throws on non-2xx (statusCode, no machine-readable reason).
+    // Production fetchWithTimeout throws on non-2xx (status, no machine-readable reason).
     vi.mocked(fetchWithTimeout).mockRejectedValue(
       new McpError(JsonRpcErrorCode.RateLimited, 'Fetch failed. Status: 429', {
-        statusCode: 429,
+        status: 429,
         errorSource: 'FetchHttpError',
       }),
     );

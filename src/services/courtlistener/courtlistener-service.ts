@@ -114,16 +114,16 @@ function notFoundForPath(path: string) {
 
 /**
  * `fetchWithTimeout` throws an McpError on every non-2xx response BEFORE the
- * manual status checks below can run — carrying `data.statusCode` (not the
+ * manual status checks below can run — carrying `data.status` (not the
  * machine-readable `data.reason` consumers route on) and leaking the full request
  * URL in its message. Remap the not-found and rate-limit cases to domain errors
  * with a reason + recovery hint and a path-only message; pass everything else
  * (already-classified domain errors, 5xx, timeouts) through untouched.
  */
 function classifyFetchError(err: unknown, path: string): unknown {
-  const e = err as { code?: number; data?: { statusCode?: number; reason?: string } } | null;
+  const e = err as { code?: number; data?: { status?: number; reason?: string } } | null;
   if (e?.data?.reason) return err; // already a domain error carrying a reason
-  const status = e?.data?.statusCode;
+  const status = e?.data?.status;
   if (status === 404 || e?.code === JsonRpcErrorCode.NotFound) return notFoundForPath(path);
   if (status === 429 || e?.code === JsonRpcErrorCode.RateLimited) {
     // retryable: false — CourtListener's free-tier windows are per-minute/hour/day; withRetry's
@@ -147,7 +147,7 @@ export class CourtListenerService {
     return {
       Authorization: `Token ${this.token}`,
       Accept: 'application/json',
-      'User-Agent': 'courtlistener-mcp-server/0.4.3',
+      'User-Agent': 'courtlistener-mcp-server/0.5.0',
     };
   }
 
@@ -179,9 +179,12 @@ export class CourtListenerService {
           response = await fetchWithTimeout(fullUrl, REQUEST_TIMEOUT_MS, reqCtx, {
             signal: ctx.signal,
             headers: this.headers(),
+            // A 404 is a routine outcome of an agent-supplied ID, not a server fault —
+            // log it at debug. The thrown, status-mapped error is unchanged.
+            expectedStatuses: [404],
           });
         } catch (err) {
-          // fetchWithTimeout throws on non-2xx (statusCode, no reason, leaks URL) — remap it.
+          // fetchWithTimeout throws on non-2xx (status, no reason, leaks URL) — remap it.
           throw classifyFetchError(err, path);
         }
 
@@ -248,9 +251,12 @@ export class CourtListenerService {
             signal: ctx.signal,
             headers: { ...this.headers(), 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
+            // A 404 here means the citation isn't in the corpus — an expected lookup
+            // outcome, so log it at debug. The thrown error is unchanged.
+            expectedStatuses: [404],
           });
         } catch (err) {
-          // fetchWithTimeout throws on non-2xx (statusCode, no reason, leaks URL) — remap it.
+          // fetchWithTimeout throws on non-2xx (status, no reason, leaks URL) — remap it.
           throw classifyFetchError(err, path);
         }
 
