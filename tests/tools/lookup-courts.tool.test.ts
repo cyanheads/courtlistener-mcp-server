@@ -85,15 +85,67 @@ describe('lookupCourtsTool', () => {
     expect(result.next_cursor).toBe('3');
   });
 
-  it('passes jurisdiction and in_use filters to service', async () => {
-    mockSvc.listCourts = vi.fn().mockResolvedValue({ total: 0, courts: [] });
-    const ctx = createMockContext();
-    const input = lookupCourtsTool.input.parse({ jurisdiction: 'F', in_use: false });
-    await lookupCourtsTool.handler(input, ctx);
-    expect(mockSvc.listCourts).toHaveBeenCalledWith(
-      expect.objectContaining({ jurisdiction: 'F', in_use: false }),
-      ctx,
-    );
+  // #49 — upstream's `in_use` is a boolean exact-match filter, so in_use=true and
+  // in_use=false return disjoint sets (472 active + 2887 inactive = 3359 total). The
+  // old boolean input defaulted to true and had no way to omit the filter, which left
+  // the full list unreachable and made `in_use: false` *exclude* the active bench.
+  describe('status tri-state (#49)', () => {
+    beforeEach(() => {
+      mockSvc.listCourts = vi.fn().mockResolvedValue({ total: 0, next_cursor: null, courts: [] });
+    });
+
+    it("maps status='active' (the default) to in_use=true", async () => {
+      const ctx = createMockContext();
+      const input = lookupCourtsTool.input.parse({ jurisdiction: 'F' });
+      expect(input.status).toBe('active');
+      await lookupCourtsTool.handler(input, ctx);
+      expect(mockSvc.listCourts).toHaveBeenCalledWith(
+        expect.objectContaining({ jurisdiction: 'F', in_use: true }),
+        ctx,
+      );
+    });
+
+    it("maps status='inactive' to in_use=false", async () => {
+      const ctx = createMockContext();
+      const input = lookupCourtsTool.input.parse({ status: 'inactive' });
+      await lookupCourtsTool.handler(input, ctx);
+      expect(mockSvc.listCourts).toHaveBeenCalledWith(
+        expect.objectContaining({ in_use: false }),
+        ctx,
+      );
+    });
+
+    it("maps status='any' to no in_use filter, making the full court list reachable", async () => {
+      const ctx = createMockContext();
+      const input = lookupCourtsTool.input.parse({ status: 'any' });
+      await lookupCourtsTool.handler(input, ctx);
+      // The whole point of the tri-state: omitting the param is the only way upstream
+      // returns both benches. A forwarded boolean — either value — cannot express this.
+      const call = (mockSvc.listCourts as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+      expect(call.in_use).toBeUndefined();
+    });
+
+    it("names status in the empty-result notice and points at 'any' rather than in_use=false", async () => {
+      const ctx = createMockContext();
+      const input = lookupCourtsTool.input.parse({ jurisdiction: 'TT' });
+      await lookupCourtsTool.handler(input, ctx);
+
+      const notice = getEnrichment(ctx).notice as string;
+      expect(notice).toContain('status=active');
+      expect(notice).toContain("status='any'");
+      // The pre-fix hint recommended the setting that caused the bug.
+      expect(notice).not.toContain('in_use=false');
+    });
+
+    it("omits the 'any' suggestion once the caller is already searching both benches", async () => {
+      const ctx = createMockContext();
+      const input = lookupCourtsTool.input.parse({ status: 'any', jurisdiction: 'TT' });
+      await lookupCourtsTool.handler(input, ctx);
+
+      const notice = getEnrichment(ctx).notice as string;
+      expect(notice).toContain('status=any');
+      expect(notice).not.toContain("status='any'");
+    });
   });
 
   it('throws when service throws', async () => {

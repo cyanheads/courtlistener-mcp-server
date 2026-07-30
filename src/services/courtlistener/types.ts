@@ -78,7 +78,8 @@ export interface OpinionCluster {
   case_name: string;
   case_name_full: string;
   citation_count: number;
-  citations: Array<{ volume: number; reporter: string; page: string; type: number }>;
+  /** `volume` is a TextField upstream (`BaseCitation`, cl/search/models.py) — a string, not a number. */
+  citations: Array<{ volume: string; reporter: string; page: string; type: number }>;
   court: string;
   court_id?: string;
   date_filed: string;
@@ -332,14 +333,52 @@ export interface AudioSearchResult {
   snippet: string;
 }
 
-/** Citation lookup response from /citation-lookup/. */
-export interface CitationLookupResult {
+/**
+ * One opinion cluster a citation resolved to. `/citation-lookup/` embeds
+ * CourtListener's `OpinionClusterSerializer`, which is built on the OpinionCluster
+ * model — the court lives on the linked *docket*, so it is absent here and has to
+ * be resolved separately from `docket_id`.
+ */
+export interface CitationCluster {
   case_name: string | null;
+  /** All known citation strings for this case. */
   citations: string[];
+  /** Times other opinions have cited this case. */
+  cite_count: number | null;
   cluster_id: number | null;
+  /**
+   * Court display name resolved from the cluster's docket. Each resolution is its own
+   * upstream request, so it is bounded per call — null when the docket lookup was
+   * skipped past that bound, failed, or the cluster carries no docket_id.
+   */
   court: string | null;
+  /** Filterable court identifier from the same lookup; null under the same conditions as `court`. */
+  court_id: string | null;
   date_filed: string | null;
+  /** Linked docket — pass to courtlistener_get_docket. */
+  docket_id: number | null;
+  judges: string | null;
+  precedential_status: string | null;
+}
+
+/**
+ * One citation `/citation-lookup/` extracted from the submitted text, with everything
+ * it resolved to. Upstream returns one of these per citation found, each carrying its
+ * own status — a single request can mix resolved, ambiguous, and unresolved entries.
+ */
+export interface CitationMatch {
+  /** Citation text as upstream matched it in the input. */
+  citation: string;
+  /** Clusters this citation resolved to; more than one when `status` is 300. */
+  clusters: CitationCluster[];
+  /** Upstream's explanation when `status` is not 200; empty string otherwise. */
+  error_message: string;
   normalized_citation: string | null;
+  /**
+   * Per-citation resolution status: 200 one match, 300 several candidates,
+   * 400 unrecognized reporter, 404 no match, 429 past the per-request citation cap.
+   */
+  status: number;
 }
 
 /** A single gift line item embedded in a financial disclosure. */

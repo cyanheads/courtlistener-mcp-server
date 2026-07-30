@@ -281,14 +281,15 @@ describe('API token must not appear in tool output or format() text', () => {
   });
 
   it('lookupCitationTool output does not expose env var names', async () => {
-    mockSvc.lookupCitation = vi.fn().mockResolvedValue({
-      cluster_id: null,
-      case_name: null,
-      court: null,
-      date_filed: null,
-      citations: [],
-      normalized_citation: null,
-    });
+    mockSvc.lookupCitation = vi.fn().mockResolvedValue([
+      {
+        citation: '410 U.S. 113',
+        normalized_citation: null,
+        status: 404,
+        error_message: '',
+        clusters: [],
+      },
+    ]);
     const ctx = createMockContext();
     const input = lookupCitationTool.input.parse({ citation: '410 U.S. 113' });
     const result = await lookupCitationTool.handler(input, ctx);
@@ -318,19 +319,33 @@ describe('unicode and encoding edge cases', () => {
   });
 
   it('lookupCitationTool handles citation with unicode whitespace', async () => {
-    mockSvc.lookupCitation = vi.fn().mockResolvedValue({
-      cluster_id: 100,
-      case_name: 'Test',
-      court: 'SCOTUS',
-      date_filed: '2020-01-01',
-      citations: ['410 U.S. 113'],
-      normalized_citation: '410 U.S. 113',
-    });
+    mockSvc.lookupCitation = vi.fn().mockResolvedValue([
+      {
+        citation: '410 U.S. 113',
+        normalized_citation: '410 U.S. 113',
+        status: 200,
+        error_message: '',
+        clusters: [
+          {
+            cluster_id: 100,
+            case_name: 'Test',
+            court: 'Supreme Court of the United States',
+            court_id: 'scotus',
+            date_filed: '2020-01-01',
+            docket_id: 5,
+            citations: ['410 U.S. 113'],
+            cite_count: 1,
+            precedential_status: 'Published',
+            judges: '',
+          },
+        ],
+      },
+    ]);
     const ctx = createMockContext();
     // Non-breaking space in citation
     const input = lookupCitationTool.input.parse({ citation: '410 U.S. 113' });
     const result = await lookupCitationTool.handler(input, ctx);
-    expect(result.cluster_id).toBe(100);
+    expect(result.matches[0]?.clusters[0]?.cluster_id).toBe(100);
   });
 
   it('searchJudgesTool handles unicode in judge name query', async () => {

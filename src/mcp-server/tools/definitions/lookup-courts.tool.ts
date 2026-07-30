@@ -10,7 +10,7 @@ import { getCourtListenerService } from '@/services/courtlistener/courtlistener-
 export const lookupCourtsTool = tool('courtlistener_lookup_courts', {
   title: 'Lookup Courts',
   description:
-    'List courts with optional filtering by jurisdiction type and scraper status. Primarily used to discover court IDs for use in search and filter parameters across all other courtlistener tools. Returns court IDs, full names, citation strings, and scraper status.',
+    "List courts with optional filtering by jurisdiction type, active/inactive status, and scraper coverage. Primarily used to discover court IDs for use in search and filter parameters across all other courtlistener tools. Defaults to the active bench — the courts CourtListener still scrapes; pass status:'inactive' for historical courts or status:'any' for every court. Returns one page of court IDs, full names, citation strings, and scraper status: the endpoint serves a fixed 20 rows per page, so listing a whole bench costs one call per 20 courts against a rate-limited free tier — filter by jurisdiction to answer a question in one call rather than paging.",
   annotations: { readOnlyHint: true, openWorldHint: true, idempotentHint: false },
 
   input: z.object({
@@ -36,12 +36,12 @@ export const lookupCourtsTool = tool('courtlistener_lookup_courts', {
       .describe(
         'Jurisdiction type. F=Federal Appellate (circuit courts, SCOTUS), FD=Federal District, FB=Federal Bankruptcy, FBP=Federal Bankruptcy Panel, FS=Federal Special (USITC, FISC, etc.), C=Circuit (historical), I=International, T=Territory, ST=State Trial, SS=State Supreme, SAG=State Attorney General, SAL=State Legislature, SA=State Appellate, S=State (other), TT=Tribal/Territory. Omit to list all.',
       ),
-    in_use: z
-      .boolean()
+    status: z
+      .enum(['active', 'inactive', 'any'])
       .optional()
-      .default(true)
+      .default('active')
       .describe(
-        'When true (default), only return courts currently scraped by CourtListener. Set to false to include historical or inactive courts.',
+        "Which bench to return. 'active' (default) returns only courts CourtListener currently scrapes; 'inactive' returns only the historical and defunct courts it no longer scrapes; 'any' returns both. The two filtered sets are disjoint, so 'any' is the only value that reaches the whole list — but reaching all of it means paging, one call per 20 courts, and the inactive bench is several times larger than the active one. Prefer the narrowest value that answers the question, and narrow with jurisdiction rather than paging the full list.",
       ),
     has_opinion_scraper: z
       .boolean()
@@ -56,7 +56,7 @@ export const lookupCourtsTool = tool('courtlistener_lookup_courts', {
       .optional()
       .default(1)
       .describe(
-        'Page number (1-indexed). CourtListener caps /courts/ at ~20 rows per page regardless of size, so the full list (~472 courts) spans ~24 pages — pass the next_cursor from a previous response here to page through them.',
+        'Page number (1-indexed). CourtListener serves /courts/ at a fixed 20 rows per page and ignores any requested page size, so the number of pages is the enrichment totalCount divided by 20 — there is no way to pull a larger page. Pass the next_cursor from a previous response here to walk them one call at a time.',
       ),
   }),
 
@@ -66,7 +66,7 @@ export const lookupCourtsTool = tool('courtlistener_lookup_courts', {
       .string()
       .nullable()
       .describe(
-        'Next page number to pass as the `page` argument (this list is page-paginated at ~20 rows/page); null when this is the last page.',
+        'Next page number to pass as the `page` argument (this list is page-paginated at a fixed 20 rows/page); null when this is the last page — a non-null value means the courts shown are a partial view of the filtered set.',
       ),
     courts: z
       .array(
@@ -114,14 +114,18 @@ export const lookupCourtsTool = tool('courtlistener_lookup_courts', {
   async handler(input, ctx) {
     ctx.log.info('courtlistener_lookup_courts', {
       jurisdiction: input.jurisdiction,
-      in_use: input.in_use,
+      status: input.status,
     });
     const svc = getCourtListenerService();
+
+    // Upstream's `in_use` is a plain boolean exact-match filter, so 'active' and
+    // 'inactive' select disjoint halves and only omitting it returns every court.
+    const inUse = input.status === 'any' ? undefined : input.status === 'active';
 
     const data = await svc.listCourts(
       {
         jurisdiction: input.jurisdiction,
-        in_use: input.in_use,
+        in_use: inUse,
         has_opinion_scraper: input.has_opinion_scraper,
         page: input.page,
       },
@@ -142,13 +146,14 @@ export const lookupCourtsTool = tool('courtlistener_lookup_courts', {
 
     ctx.enrich.total(data.total);
     if (courts.length === 0) {
-      const filters: string[] = [];
+      const filters: string[] = [`status=${input.status}`];
       if (input.jurisdiction) filters.push(`jurisdiction=${input.jurisdiction}`);
       if (input.has_opinion_scraper) filters.push('has_opinion_scraper=true');
-      const filterHint = filters.length > 0 ? ` with filters: ${filters.join(', ')}` : '';
-      ctx.enrich.notice(
-        `No courts matched${filterHint}. Try removing filters or setting in_use=false to include inactive courts.`,
-      );
+      const widen =
+        input.status === 'any'
+          ? 'Drop the remaining filters to widen the search.'
+          : "Set status='any' to search the active and inactive benches together, or drop the remaining filters.";
+      ctx.enrich.notice(`No courts matched filters: ${filters.join(', ')}. ${widen}`);
     }
 
     return { page: input.page, next_cursor: data.next_cursor, courts };

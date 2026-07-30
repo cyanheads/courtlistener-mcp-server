@@ -23,13 +23,12 @@ export const getPartiesTool = tool('courtlistener_get_parties', {
       .describe(
         "Docket ID from a courtlistener_search_dockets or courtlistener_get_docket result's docket_id field.",
       ),
-    page: z
-      .number()
-      .int()
-      .min(1)
+    cursor: z
+      .string()
       .optional()
-      .default(1)
-      .describe('Page number (1-indexed). Use with page_size to paginate large party lists.'),
+      .describe(
+        "Pagination cursor from a previous response's next_cursor field. Omit for the first page. This is an opaque token, not a page number — CourtListener cursor-paginates this endpoint, so a numeric value selects nothing and re-serves the first page.",
+      ),
     page_size: z
       .number()
       .int()
@@ -48,14 +47,13 @@ export const getPartiesTool = tool('courtlistener_get_parties', {
       .number()
       .nullable()
       .describe(
-        'Total parties on this docket across all pages; null when upstream reports no count (a multi-page list whose total is unknown until the last page).',
+        'Total parties on this docket across all pages; null when no total is derivable — CourtListener serves the count as a URL rather than a number here, so it is only known when the first page is also the last.',
       ),
-    page: z.number().describe('Current page number.'),
     next_cursor: z
       .string()
       .nullable()
       .describe(
-        'Next page number to pass as the `page` argument (this list is page-paginated); null when this is the last page.',
+        'Opaque pagination cursor for the next page — pass it back as the `cursor` argument; null when this is the last page.',
       ),
     parties: z
       .array(
@@ -121,7 +119,7 @@ export const getPartiesTool = tool('courtlistener_get_parties', {
       .number()
       .optional()
       .describe(
-        'Total parties on this docket across all pages — present only when the API reports a numeric count (this endpoint returns it as a URL by default, so it is absent for any list spanning more than one page).',
+        'Total parties on this docket across all pages — this endpoint reports its count as a URL rather than a number, so the total is only derivable when the first page is also the last, and is absent for any list spanning more than one page.',
       ),
   },
 
@@ -146,11 +144,11 @@ export const getPartiesTool = tool('courtlistener_get_parties', {
   async handler(input, ctx) {
     ctx.log.info('courtlistener_get_parties', {
       docket_id: input.docket_id,
-      page: input.page,
+      has_cursor: input.cursor !== undefined,
       page_size: input.page_size,
     });
     const svc = getCourtListenerService();
-    const result = await svc.getParties(input.docket_id, input.page, input.page_size, ctx);
+    const result = await svc.getParties(input.docket_id, input.cursor, input.page_size, ctx);
 
     ctx.log.info('courtlistener_get_parties complete', {
       docket_id: input.docket_id,
@@ -163,7 +161,6 @@ export const getPartiesTool = tool('courtlistener_get_parties', {
     return {
       docket_id: input.docket_id,
       total_parties: result.count,
-      page: input.page,
       next_cursor: result.next_cursor,
       parties: result.parties,
     };
@@ -172,7 +169,7 @@ export const getPartiesTool = tool('courtlistener_get_parties', {
   format: (result) => {
     const lines: string[] = [
       `## Parties — Docket ${result.docket_id}`,
-      `**Total parties:** ${result.total_parties ?? 'unknown'} | **Page:** ${result.page} | **Next cursor:** ${result.next_cursor ?? 'none'}`,
+      `**Total parties:** ${result.total_parties ?? 'unknown'} | **Next cursor:** ${result.next_cursor ?? 'none'}`,
     ];
 
     if (result.parties.length === 0) {
@@ -200,7 +197,7 @@ export const getPartiesTool = tool('courtlistener_get_parties', {
     }
 
     if (result.next_cursor) {
-      lines.push(`\n*More parties available — pass page=${result.page + 1} to continue.*`);
+      lines.push(`\n*More parties available — pass cursor=${result.next_cursor} to continue.*`);
     }
 
     return [{ type: 'text', text: lines.join('\n') }];

@@ -34,7 +34,8 @@ const baseCluster: OpinionCluster = {
   docket: 'https://www.courtlistener.com/api/rest/v4/dockets/5000/',
   docket_id: 5000,
   judges: 'Blackmun',
-  citations: [{ volume: 410, reporter: 'U.S.', page: '113', type: 1 }],
+  // volume is a TextField upstream — a string, matching the raw /clusters/ payload.
+  citations: [{ volume: '410', reporter: 'U.S.', page: '113', type: 1 }],
   citation_count: 10000,
   precedential_status: 'Published',
   syllabus: 'The right of privacy extends to reproductive choices.',

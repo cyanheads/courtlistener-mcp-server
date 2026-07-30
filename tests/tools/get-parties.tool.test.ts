@@ -68,7 +68,6 @@ describe('getPartiesTool', () => {
 
     expect(result.docket_id).toBe(8000);
     expect(result.total_parties).toBe(2);
-    expect(result.page).toBe(1);
     expect(result.next_cursor).toBeNull();
     expect(result.parties).toHaveLength(2);
 
@@ -85,37 +84,65 @@ describe('getPartiesTool', () => {
     expect(result.parties[1].attorneys[0].date_action).toBe('2013-11-04');
   });
 
-  it('passes docket_id, page, and page_size to service', async () => {
-    mockSvc.getParties = vi.fn().mockResolvedValue({ count: 0, next_cursor: null, parties: [] });
-    const ctx = createMockContext();
-    const input = getPartiesTool.input.parse({ docket_id: 9999, page: 2, page_size: 5 });
-    await getPartiesTool.handler(input, ctx);
-    expect(mockSvc.getParties).toHaveBeenCalledWith(9999, 2, 5, ctx);
-  });
+  // #61 — /parties/ is cursor-paginated (PartyViewSet.ordering = "-id", which sits in its
+  // cursor_ordering_fields), so the old numeric `page` input selected nothing and every
+  // page past the first re-served page 1.
+  describe('cursor pagination (#61)', () => {
+    const CURSOR = 'cD0yMDI0LTAxLTAxKzAwJTNBMDA%3D';
 
-  it('surfaces next_cursor (a page number) when more pages exist', async () => {
-    mockSvc.getParties = vi.fn().mockResolvedValue({
-      count: 20,
-      next_cursor: '2',
-      parties: [basePlaintiff],
+    it('threads the opaque cursor to the service, not a page number', async () => {
+      mockSvc.getParties = vi.fn().mockResolvedValue({ count: 0, next_cursor: null, parties: [] });
+      const ctx = createMockContext();
+      const input = getPartiesTool.input.parse({ docket_id: 9999, cursor: CURSOR, page_size: 5 });
+      await getPartiesTool.handler(input, ctx);
+      expect(mockSvc.getParties).toHaveBeenCalledWith(9999, CURSOR, 5, ctx);
     });
-    const ctx = createMockContext();
-    const input = getPartiesTool.input.parse({ docket_id: 8000, page_size: 1 });
-    const result = await getPartiesTool.handler(input, ctx);
-    expect(result.next_cursor).toBe('2');
+
+    it('sends no cursor on a first-page call', async () => {
+      mockSvc.getParties = vi.fn().mockResolvedValue({ count: 0, next_cursor: null, parties: [] });
+      const ctx = createMockContext();
+      const input = getPartiesTool.input.parse({ docket_id: 9999 });
+      await getPartiesTool.handler(input, ctx);
+      expect(mockSvc.getParties).toHaveBeenCalledWith(9999, undefined, 10, ctx);
+    });
+
+    it('round-trips next_cursor back as cursor without reinterpreting it', async () => {
+      mockSvc.getParties = vi
+        .fn()
+        .mockResolvedValue({ count: null, next_cursor: CURSOR, parties: [basePlaintiff] });
+      const ctx = createMockContext();
+      const first = await getPartiesTool.handler(
+        getPartiesTool.input.parse({ docket_id: 8000 }),
+        ctx,
+      );
+      expect(first.next_cursor).toBe(CURSOR);
+
+      // The token the caller hands back must reach the service verbatim — the pre-fix
+      // path derived `page + 1` from it, which upstream ignores.
+      await getPartiesTool.handler(
+        getPartiesTool.input.parse({ docket_id: 8000, cursor: first.next_cursor ?? undefined }),
+        ctx,
+      );
+      expect(mockSvc.getParties).toHaveBeenLastCalledWith(8000, CURSOR, 10, ctx);
+    });
+
+    it('rejects a numeric page value, which the old input silently accepted', () => {
+      // `page` is gone; a caller passing 2 gets a validation error instead of page 1 again.
+      expect(() => getPartiesTool.input.parse({ docket_id: 8000, cursor: 2 })).toThrow();
+    });
   });
 
   it('returns null total_parties when the service cannot derive a count (multi-page)', async () => {
     mockSvc.getParties = vi.fn().mockResolvedValue({
       count: null,
-      next_cursor: '2',
+      next_cursor: 'cD0xMDA%3D',
       parties: [basePlaintiff],
     });
     const ctx = createMockContext();
     const input = getPartiesTool.input.parse({ docket_id: 8000, page_size: 1 });
     const result = await getPartiesTool.handler(input, ctx);
     expect(result.total_parties).toBeNull();
-    expect(result.next_cursor).toBe('2');
+    expect(result.next_cursor).toBe('cD0xMDA%3D');
     // The framework validates against output.extend(enrichment) — the schema advertised in
     // tools/list — so the enrichment twin of an unknown count must be optional too (#57).
     // Asserting the bare output schema here is what let the required totalCount ship.
@@ -173,7 +200,6 @@ describe('getPartiesTool', () => {
     const output = getPartiesTool.output.parse({
       docket_id: 8000,
       total_parties: 2,
-      page: 1,
       next_cursor: null,
       parties: [
         {
@@ -224,12 +250,11 @@ describe('getPartiesTool', () => {
     expect(text).toContain('1002');
   });
 
-  it('format shows next-page hint when next_cursor is set', () => {
+  it('format renders the continuation as the cursor token, not a page number (#61)', () => {
     const output = getPartiesTool.output.parse({
       docket_id: 8000,
       total_parties: 20,
-      page: 1,
-      next_cursor: 'xyz',
+      next_cursor: 'cD0xMDA%3D',
       parties: [
         {
           id: 1001,
@@ -242,14 +267,15 @@ describe('getPartiesTool', () => {
     });
     const blocks = getPartiesTool.format!(output);
     const text = (blocks[0] as { text: string }).text;
-    expect(text).toContain('page=2');
+    expect(text).toContain('cursor=cD0xMDA%3D');
+    // Pre-fix this rendered `page=2`, telling the caller to do the thing that fails.
+    expect(text).not.toContain('page=2');
   });
 
   it('format renders "unknown" when total_parties is null', () => {
     const output = getPartiesTool.output.parse({
       docket_id: 8000,
       total_parties: null,
-      page: 1,
       next_cursor: null,
       parties: [],
     });

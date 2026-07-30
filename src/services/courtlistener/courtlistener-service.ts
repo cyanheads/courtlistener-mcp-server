@@ -14,12 +14,14 @@ import {
 import type { StorageService } from '@cyanheads/mcp-ts-core/storage';
 import { fetchWithTimeout, withRetry } from '@cyanheads/mcp-ts-core/utils';
 import { expandCode } from './codes.js';
+import { resolveCourtName } from './court-names.js';
 import type {
   AttorneyDetail,
   AttorneyRelationship,
   Audio,
   AudioSearchResult,
-  CitationLookupResult,
+  CitationCluster,
+  CitationMatch,
   Court,
   CourtListenerPage,
   Docket,
@@ -58,6 +60,18 @@ const ATTORNEY_PAGE_LIMIT = 5;
  * silently. It also bounds the ID list `getCitedBy` ORs into one query string.
  */
 const SUB_OPINION_PAGE_LIMIT = 5;
+
+/**
+ * Distinct dockets resolved to a court name while normalizing a citation lookup.
+ * The embedded cluster carries no court, so each one costs its own `/dockets/{id}/`
+ * request — and one submitted text can carry many citations. CourtListener publishes
+ * a free-tier ceiling of 5 requests/minute (actual limits vary by token tier), and the
+ * lookup itself already spent one, so the walk stops here and leaves the surplus
+ * clusters' `court` null rather than spending an unbounded number of requests.
+ * Exported so the tool can name the cap on the wire: a null court is otherwise
+ * indistinguishable from one that genuinely could not be resolved.
+ */
+export const COURT_BACKFILL_LIMIT = 4;
 
 /**
  * CourtListener `Role.ATTORNEY_ROLES` codes (cl/people_db/models.py) → labels.
@@ -545,18 +559,19 @@ export class CourtListenerService {
     ctx: Context,
   ): Promise<{ total: number; courts: Court[]; next_cursor: string | null }> {
     const page = params.page ?? 1;
+    // No page_size: `CourtViewSet` pins the plain DRF `PageNumberPagination`, which declares no
+    // `page_size_query_param`, so the endpoint serves a fixed 20 rows and ignores any size asked
+    // for. Sending one implies a page size upstream will never honor.
     const query: Record<string, string | number | boolean | undefined> = {
       jurisdiction: params.jurisdiction,
       in_use: params.in_use,
       has_opinion_scraper: params.has_opinion_scraper,
       page,
-      page_size: 500,
     };
 
     const data = await this.get<CourtListenerPage<Court>>('/courts/', query, ctx);
-    // /courts/ is page-paginated (?page=N): upstream caps each page at ~20 rows regardless of
-    // page_size, and `next` is a `...&page=N` URL with no cursor token — signal the next page by
-    // number when upstream reports more, mirroring getDocket()/getParties().
+    // /courts/ is page-paginated (?page=N): `next` is a `...&page=N` URL with no cursor token —
+    // signal the next page by number when upstream reports more, mirroring getDocket().
     return {
       total: data.count,
       courts: data.results,
@@ -712,49 +727,111 @@ export class CourtListenerService {
 
   // ── Citation Lookup ───────────────────────────────────────────────────────
 
-  async lookupCitation(citation: string, ctx: Context): Promise<CitationLookupResult> {
-    // API expects a single JSON object, not an array
+  /**
+   * Resolve every citation `/citation-lookup/` finds in the submitted text. Upstream
+   * parses the text and returns one entry per citation, each with its own status and
+   * candidate clusters — so this returns the whole list rather than collapsing it to a
+   * first match. Court names are backfilled from each cluster's docket (see
+   * `COURT_BACKFILL_LIMIT`); a failed backfill leaves `court` null instead of failing
+   * the lookup, which resolved fine on its own.
+   */
+  async lookupCitation(citation: string, ctx: Context): Promise<CitationMatch[]> {
+    type RawCluster = {
+      id?: number;
+      caseName?: string;
+      case_name?: string;
+      citation_count?: number;
+      /** `Citation.volume` is a TextField upstream, so volume arrives as a string. */
+      citations?: Array<{ volume: string; reporter: string; page: string }>;
+      date_filed?: string;
+      docket_id?: number;
+      judges?: string;
+      precedential_status?: string;
+    };
+
     const result = await this.post<
       Array<{
         citation?: string;
+        clusters?: RawCluster[];
+        error_message?: string;
         normalized_citations?: string[];
-        clusters?: Array<{
-          id?: number;
-          caseName?: string;
-          case_name?: string;
-          court?: string;
-          date_filed?: string;
-          citations?: Array<{ volume: string; reporter: string; page: string }>;
-        }>;
+        status?: number;
       }>
     >('/citation-lookup/', { text: citation }, ctx);
 
+    // Upstream returns [] only when it could not parse a citation out of the text at
+    // all — distinct from a parsed citation that matched nothing, which comes back as
+    // an entry with status 404 and is a result, not a failure.
     if (!result || result.length === 0) {
-      throw notFound(`Citation "${citation}" not found in CourtListener database.`, {
-        reason: 'not_found',
-        citation,
-      });
+      throw notFound(
+        `No citation could be parsed from "${citation}". Supply a citation in volume-reporter-page form, for example "410 U.S. 113".`,
+        { reason: 'not_found', citation },
+      );
     }
 
-    // biome-ignore lint/style/noNonNullAssertion: length checked above
-    const first = result[0]!;
-    const cluster = first.clusters?.[0];
+    const docketIds = [
+      ...new Set(
+        result.flatMap((entry) =>
+          (entry.clusters ?? []).flatMap((c) => (c.docket_id ? [c.docket_id] : [])),
+        ),
+      ),
+    ];
+    const courtIdByDocket = await this.resolveCourtIdsForDockets(docketIds, ctx);
 
-    if (!cluster) {
-      throw notFound(`Citation "${citation}" not found in CourtListener database.`, {
-        reason: 'not_found',
-        citation,
+    return result.map((entry) => ({
+      citation: entry.citation ?? '',
+      clusters: (entry.clusters ?? []).map((c): CitationCluster => {
+        const courtId = c.docket_id ? (courtIdByDocket.get(c.docket_id) ?? null) : null;
+        return {
+          cluster_id: c.id ?? null,
+          case_name: c.caseName ?? c.case_name ?? null,
+          court: courtId ? resolveCourtName(courtId) : null,
+          court_id: courtId,
+          date_filed: c.date_filed ?? null,
+          docket_id: c.docket_id ?? null,
+          citations: (c.citations ?? []).map((cit) => `${cit.volume} ${cit.reporter} ${cit.page}`),
+          cite_count: c.citation_count ?? null,
+          precedential_status: c.precedential_status ?? null,
+          judges: c.judges ?? null,
+        };
+      }),
+      error_message: entry.error_message ?? '',
+      normalized_citation: entry.normalized_citations?.[0] ?? null,
+      status: entry.status ?? 0,
+    }));
+  }
+
+  /**
+   * Map docket IDs to their court identifiers, one request each, bounded by
+   * `COURT_BACKFILL_LIMIT`. A miss is non-fatal — the caller reports a null court
+   * rather than guessing one — and dockets past the bound are announced instead of
+   * silently dropping their courts.
+   */
+  private async resolveCourtIdsForDockets(
+    docketIds: number[],
+    ctx: Context,
+  ): Promise<Map<number, string>> {
+    const resolved = new Map<number, string>();
+    const wanted = docketIds.slice(0, COURT_BACKFILL_LIMIT);
+
+    await Promise.all(
+      wanted.map(async (docketId) => {
+        try {
+          const summary = await this.getDocketSummary(docketId, ctx);
+          if (summary.court_id) resolved.set(docketId, summary.court_id);
+        } catch (err) {
+          ctx.log.debug('court backfill failed', { docketId, err: String(err) });
+        }
+      }),
+    );
+
+    if (docketIds.length > wanted.length) {
+      ctx.log.warning('Court resolution bounded — clusters past the bound keep a null court', {
+        dockets: docketIds.length,
+        resolved: wanted.length,
       });
     }
-
-    return {
-      cluster_id: cluster.id ?? null,
-      case_name: cluster.caseName ?? cluster.case_name ?? null,
-      court: cluster.court ?? null,
-      date_filed: cluster.date_filed ?? null,
-      citations: (cluster.citations ?? []).map((c) => `${c.volume} ${c.reporter} ${c.page}`),
-      normalized_citation: first.normalized_citations?.[0] ?? null,
-    };
+    return resolved;
   }
 
   // ── Financial Disclosures ───────────────────────────────────────────────────
@@ -811,16 +888,20 @@ export class CourtListenerService {
 
   /**
    * Fetch parties and their attorneys for a docket. Two upstream calls for a typical docket:
-   * 1. GET /parties/?docket=<id>&page=<n>&page_size=<n>
+   * 1. GET /parties/?docket=<id>&cursor=<token> — cursor-paginated, like /attorneys/
    * 2. GET /attorneys/?docket=<id> — the docket's whole attorney roster, cursor-paginated
    *
    * Attorney names and contact details require the second call — the /parties/ response
    * embeds only attorney_id, role code, and docket_id inline. Call 2 repeats (up to
    * `ATTORNEY_PAGE_LIMIT` times) only while IDs from call 1 remain unresolved.
+   *
+   * `cursor` is an opaque continuation token, never a page number: `PartyViewSet.ordering`
+   * is `-id`, which sits in its `cursor_ordering_fields`, so v4 routes the endpoint to
+   * CursorPagination. Passing a number here selects nothing and re-serves the first page.
    */
   async getParties(
     docketId: number,
-    page: number,
+    cursor: string | undefined,
     pageSize: number,
     ctx: Context,
   ): Promise<{ count: number | null; next_cursor: string | null; parties: Party[] }> {
@@ -837,7 +918,7 @@ export class CourtListenerService {
       '/parties/',
       {
         docket: docketId,
-        page,
+        cursor,
         page_size: pageSize,
       },
       ctx,
@@ -916,20 +997,21 @@ export class CourtListenerService {
 
     // /parties/ returns `count` as a URL string unless ?count=on is passed — but count=on makes
     // the endpoint drop `results`, so we request results (no count=on) and derive the total:
-    // a numeric count when upstream gives one, else the exact row count when this is the only page.
+    // a numeric count when upstream gives one, else the exact row count when the first page is
+    // also the last (no cursor in, no continuation out).
     const rawCount: unknown = pageData.count;
     const count =
       typeof rawCount === 'number'
         ? rawCount
-        : pageData.next === null && page === 1
+        : pageData.next === null && cursor === undefined
           ? parties.length
           : null;
 
     return {
       count,
-      // /parties/ is page-paginated (?page=N), so `next` is a page URL with no cursor token —
-      // signal the next page by number when upstream reports more.
-      next_cursor: pageData.next ? String(page + 1) : null,
+      // Cursor-paginated: `next` carries an opaque `cursor=` token, so hand that token
+      // straight back — the same derivation used for /attorneys/ above.
+      next_cursor: extractCursor(pageData.next),
       parties,
     };
   }

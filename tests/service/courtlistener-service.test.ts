@@ -42,6 +42,7 @@ vi.mock('@cyanheads/mcp-ts-core/utils', async (importOriginal) => {
 
 import { getDocketTool } from '@/mcp-server/tools/definitions/get-docket.tool.js';
 import { getPartiesTool } from '@/mcp-server/tools/definitions/get-parties.tool.js';
+import { lookupCourtsTool } from '@/mcp-server/tools/definitions/lookup-courts.tool.js';
 import {
   CourtListenerService,
   type CourtListenerServiceConfig,
@@ -347,28 +348,260 @@ describe('lookupCitation POST path', () => {
     vi.unstubAllGlobals();
   });
 
-  it('returns structured result for a valid citation response', async () => {
-    mockFetchResponse({
-      body: JSON.stringify([
+  /**
+   * Stub the /citation-lookup/ POST with `entries`, and every /dockets/{id}/ GET the
+   * court backfill makes with `courtIdByDocket` ('error' makes that docket 404).
+   * Returns the docket URLs requested, so a test can assert the backfill's bound.
+   */
+  function stubCitationLookup(
+    entries: unknown[],
+    courtIdByDocket: Record<number, string> = {},
+  ): string[] {
+    const docketUrls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) => {
+        if (url.includes('/dockets/')) {
+          docketUrls.push(url);
+          const id = Number(url.match(/\/dockets\/(\d+)\//)?.[1]);
+          const courtId = courtIdByDocket[id];
+          if (courtId === 'error') {
+            return {
+              status: 404,
+              ok: false,
+              headers: new Headers(),
+              text: async () => '{"detail":"Not found."}',
+            };
+          }
+          return {
+            status: 200,
+            ok: true,
+            headers: new Headers(),
+            text: async () =>
+              JSON.stringify({ id, court_id: courtId ?? '', docket_number: '', case_name: '' }),
+          };
+        }
+        return {
+          status: 200,
+          ok: true,
+          headers: new Headers(),
+          text: async () => JSON.stringify(entries),
+        };
+      }),
+    );
+    return docketUrls;
+  }
+
+  it('returns one match per citation with the cluster metadata', async () => {
+    stubCitationLookup(
+      [
         {
           citation: '410 U.S. 113',
           normalized_citations: ['410 U.S. 113'],
+          status: 200,
+          error_message: '',
           clusters: [
             {
-              id: 100,
+              id: 108713,
               caseName: 'Roe v. Wade',
-              court: 'Supreme Court',
               date_filed: '1973-01-22',
+              docket_id: 488071,
+              citation_count: 5585,
+              precedential_status: 'Published',
+              judges: 'Blackmun, Burger, Douglas',
               citations: [{ volume: '410', reporter: 'U.S.', page: '113' }],
             },
           ],
         },
-      ]),
-    });
+      ],
+      { 488071: 'scotus' },
+    );
+
     const result = await svc.lookupCitation('410 U.S. 113', ctx);
-    expect(result.cluster_id).toBe(100);
-    expect(result.case_name).toBe('Roe v. Wade');
-    expect(result.normalized_citation).toBe('410 U.S. 113');
+    expect(result).toHaveLength(1);
+    const match = result[0]!;
+    expect(match.citation).toBe('410 U.S. 113');
+    expect(match.status).toBe(200);
+    expect(match.normalized_citation).toBe('410 U.S. 113');
+
+    const cluster = match.clusters[0]!;
+    expect(cluster.cluster_id).toBe(108713);
+    expect(cluster.case_name).toBe('Roe v. Wade');
+    expect(cluster.citations).toEqual(['410 U.S. 113']);
+    // Free metadata the previous flat shape discarded.
+    expect(cluster.docket_id).toBe(488071);
+    expect(cluster.cite_count).toBe(5585);
+    expect(cluster.precedential_status).toBe('Published');
+    expect(cluster.judges).toBe('Blackmun, Burger, Douglas');
+  });
+
+  // #50 — the embedded OpinionClusterSerializer has no `court` field at any nesting level
+  // (the court lives on the linked docket), so `cluster.court ?? null` returned null on
+  // every successful lookup. docket_id is the only route to a court.
+  it('backfills court and court_id from the cluster docket (#50)', async () => {
+    const docketUrls = stubCitationLookup(
+      [
+        {
+          citation: '410 U.S. 113',
+          normalized_citations: ['410 U.S. 113'],
+          status: 200,
+          clusters: [{ id: 108713, case_name: 'Roe v. Wade', docket_id: 488071 }],
+        },
+      ],
+      { 488071: 'scotus' },
+    );
+
+    const cluster = (await svc.lookupCitation('410 U.S. 113', ctx))[0]!.clusters[0]!;
+    expect(cluster.court_id).toBe('scotus');
+    expect(cluster.court).toBe('Supreme Court of the United States');
+    expect(docketUrls).toHaveLength(1);
+  });
+
+  it('leaves court null when the docket backfill fails, without failing the lookup (#50)', async () => {
+    stubCitationLookup(
+      [
+        {
+          citation: '410 U.S. 113',
+          normalized_citations: ['410 U.S. 113'],
+          status: 200,
+          clusters: [{ id: 108713, case_name: 'Roe v. Wade', docket_id: 488071 }],
+        },
+      ],
+      { 488071: 'error' },
+    );
+
+    const cluster = (await svc.lookupCitation('410 U.S. 113', ctx))[0]!.clusters[0]!;
+    // The citation resolved; only the court enrichment did not.
+    expect(cluster.cluster_id).toBe(108713);
+    expect(cluster.court).toBeNull();
+    expect(cluster.court_id).toBeNull();
+  });
+
+  it('leaves court null when the cluster carries no docket_id', async () => {
+    stubCitationLookup([
+      {
+        citation: '1 F.3d 1',
+        normalized_citations: ['1 F.3d 1'],
+        status: 200,
+        clusters: [{ id: 627316, case_name: 'Some Case' }],
+      },
+    ]);
+
+    const cluster = (await svc.lookupCitation('1 F.3d 1', ctx))[0]!.clusters[0]!;
+    expect(cluster.docket_id).toBeNull();
+    expect(cluster.court).toBeNull();
+  });
+
+  // #50 — upstream extracts every citation in the submitted text and returns one entry per
+  // citation; the previous read of result[0].clusters[0] discarded all but the first.
+  it('returns every extracted citation with its own status (#50)', async () => {
+    stubCitationLookup(
+      [
+        {
+          citation: '410 U.S. 113',
+          normalized_citations: ['410 U.S. 113'],
+          status: 200,
+          error_message: '',
+          clusters: [{ id: 108713, case_name: 'Roe v. Wade', docket_id: 488071 }],
+        },
+        {
+          citation: '347 U.S. 483',
+          normalized_citations: ['347 U.S. 483'],
+          status: 200,
+          error_message: '',
+          clusters: [{ id: 105221, case_name: 'Brown v. Board of Education', docket_id: 1 }],
+        },
+        {
+          citation: '999 F.3d 1',
+          normalized_citations: ['999 F.3d 1'],
+          status: 404,
+          error_message: "Citation not found: '999 F.3d 1'",
+          clusters: [],
+        },
+      ],
+      { 488071: 'scotus', 1: 'ca9' },
+    );
+
+    const result = await svc.lookupCitation(
+      'See 410 U.S. 113 and 347 U.S. 483; also 999 F.3d 1.',
+      ctx,
+    );
+    expect(result.map((m) => m.citation)).toEqual(['410 U.S. 113', '347 U.S. 483', '999 F.3d 1']);
+    expect(result.map((m) => m.status)).toEqual([200, 200, 404]);
+    expect(result[1]!.clusters[0]!.court_id).toBe('ca9');
+    // A 404 entry is a result, not a thrown error — and it carries upstream's reason.
+    expect(result[2]!.clusters).toEqual([]);
+    expect(result[2]!.error_message).toBe("Citation not found: '999 F.3d 1'");
+  });
+
+  it('returns all candidate clusters for an ambiguous (300) citation (#50)', async () => {
+    stubCitationLookup(
+      [
+        {
+          citation: '1 U.S. 1',
+          normalized_citations: ['1 U.S. 1'],
+          status: 300,
+          error_message: '',
+          clusters: [
+            { id: 1, case_name: 'First Case', docket_id: 11 },
+            { id: 2, case_name: 'Second Case', docket_id: 12 },
+          ],
+        },
+      ],
+      { 11: 'scotus', 12: 'scotus' },
+    );
+
+    const match = (await svc.lookupCitation('1 U.S. 1', ctx))[0]!;
+    expect(match.status).toBe(300);
+    expect(match.clusters.map((c) => c.cluster_id)).toEqual([1, 2]);
+  });
+
+  it('bounds the court backfill and announces the clusters it left unresolved', async () => {
+    // Six distinct dockets against a COURT_BACKFILL_LIMIT of 4 — the surplus keeps a null
+    // court rather than spending an unbounded number of requests on one call.
+    const entries = Array.from({ length: 6 }, (_, i) => ({
+      citation: `${i + 1} F.3d 1`,
+      normalized_citations: [`${i + 1} F.3d 1`],
+      status: 200,
+      clusters: [{ id: 1000 + i, case_name: `Case ${i}`, docket_id: 500 + i }],
+    }));
+    const courts = Object.fromEntries(Array.from({ length: 6 }, (_, i) => [500 + i, 'ca9']));
+    const docketUrls = stubCitationLookup(entries, courts);
+
+    const result = await svc.lookupCitation('a passage with six citations', ctx);
+    expect(docketUrls).toHaveLength(4);
+    expect(result.filter((m) => m.clusters[0]?.court_id === 'ca9')).toHaveLength(4);
+    expect(result.filter((m) => m.clusters[0]?.court === null)).toHaveLength(2);
+    expect(ctx.log.calls).toContainEqual(
+      expect.objectContaining({
+        level: 'warning',
+        data: expect.objectContaining({ dockets: 6, resolved: 4 }),
+      }),
+    );
+  });
+
+  it('makes one docket request per distinct docket across all matches', async () => {
+    const docketUrls = stubCitationLookup(
+      [
+        {
+          citation: '410 U.S. 113',
+          normalized_citations: ['410 U.S. 113'],
+          status: 200,
+          clusters: [{ id: 108713, docket_id: 488071 }],
+        },
+        {
+          citation: '93 S. Ct. 705',
+          normalized_citations: ['93 S. Ct. 705'],
+          status: 200,
+          clusters: [{ id: 108713, docket_id: 488071 }],
+        },
+      ],
+      { 488071: 'scotus' },
+    );
+
+    const result = await svc.lookupCitation('410 U.S. 113, 93 S. Ct. 705', ctx);
+    expect(docketUrls).toHaveLength(1);
+    expect(result.every((m) => m.clusters[0]?.court_id === 'scotus')).toBe(true);
   });
 
   it('throws notFound when citation response is empty array', async () => {
@@ -379,14 +612,25 @@ describe('lookupCitation POST path', () => {
     });
   });
 
-  it('throws notFound when clusters array is absent', async () => {
-    const { JsonRpcErrorCode } = await import('@cyanheads/mcp-ts-core/errors');
-    mockFetchResponse({
-      body: JSON.stringify([{ citation: '999 X.Y. 1', normalized_citations: [], clusters: [] }]),
-    });
-    await expect(svc.lookupCitation('999 X.Y. 1', ctx)).rejects.toMatchObject({
-      code: JsonRpcErrorCode.NotFound,
-    });
+  // Upstream returns [] only when it could not parse a citation out of the text at all.
+  // A citation that parses but matches nothing comes back as an entry with status 404 —
+  // a result, not a failure, which is what makes mixed multi-citation responses expressible.
+  it('returns an unresolved entry rather than throwing when clusters is empty', async () => {
+    stubCitationLookup([
+      {
+        citation: '999 X.Y. 1',
+        normalized_citations: [],
+        status: 404,
+        error_message: "Citation not found: '999 X.Y. 1'",
+        clusters: [],
+      },
+    ]);
+
+    const result = await svc.lookupCitation('999 X.Y. 1', ctx);
+    expect(result).toHaveLength(1);
+    expect(result[0]!.status).toBe(404);
+    expect(result[0]!.clusters).toEqual([]);
+    expect(result[0]!.normalized_citation).toBeNull();
   });
 
   it('does not expose token in citation-lookup 429 error', async () => {
@@ -1447,7 +1691,7 @@ describe('getParties attorney scoping, detail, and role decoding (#45 #54 #59)',
       [{ id: 106656, name: 'Sidford L Brown' }],
     );
 
-    const result = await svc.getParties(DOCKET, 1, 10, ctx);
+    const result = await svc.getParties(DOCKET, undefined, 10, ctx);
 
     expect(result.parties[0]?.attorneys.map((a) => a.attorney_id)).toEqual([106656]);
     // Detail is resolved through the docket filter — `id` is an exact lookup upstream, so a
@@ -1471,7 +1715,8 @@ describe('getParties attorney scoping, detail, and role decoding (#45 #54 #59)',
       ],
     );
 
-    const attorneys = (await svc.getParties(DOCKET, 1, 10, ctx)).parties[0]?.attorneys ?? [];
+    const attorneys =
+      (await svc.getParties(DOCKET, undefined, 10, ctx)).parties[0]?.attorneys ?? [];
 
     expect(attorneys.map((a) => a.name)).toEqual([
       'Sidford L Brown',
@@ -1488,7 +1733,7 @@ describe('getParties attorney scoping, detail, and role decoding (#45 #54 #59)',
       { attorney_id: 999001, docket_id: OTHER_DOCKET, role: 1, date_action: null },
     ]);
 
-    const result = await svc.getParties(DOCKET, 1, 10, ctx);
+    const result = await svc.getParties(DOCKET, undefined, 10, ctx);
 
     expect(result.parties[0]?.attorneys).toEqual([]);
     expect(attorneyUrls).toEqual([]);
@@ -1508,7 +1753,8 @@ describe('getParties attorney scoping, detail, and role decoding (#45 #54 #59)',
       ],
     );
 
-    const attorneys = (await svc.getParties(DOCKET, 1, 10, ctx)).parties[0]?.attorneys ?? [];
+    const attorneys =
+      (await svc.getParties(DOCKET, undefined, 10, ctx)).parties[0]?.attorneys ?? [];
 
     // 2 is "Lead attorney" — 1 is "Attorney to be noticed", the mapping the docs had backwards.
     expect(attorneys[0]).toMatchObject({ role_code: 2, role: 'Lead attorney', date_action: null });
@@ -1530,7 +1776,7 @@ describe('getParties attorney scoping, detail, and role decoding (#45 #54 #59)',
     }));
     const attorneyUrls = stubParties(attorneys, details);
 
-    const resolved = (await svc.getParties(DOCKET, 1, 10, ctx)).parties[0]?.attorneys ?? [];
+    const resolved = (await svc.getParties(DOCKET, undefined, 10, ctx)).parties[0]?.attorneys ?? [];
 
     expect(resolved).toHaveLength(250);
     expect(resolved.every((a) => a.name !== '')).toBe(true);
@@ -1548,7 +1794,7 @@ describe('getParties attorney scoping, detail, and role decoding (#45 #54 #59)',
     const details = attorneys.map((a) => ({ id: a.attorney_id, name: `Counsel ${a.attorney_id}` }));
     const attorneyUrls = stubParties(attorneys, details);
 
-    const resolved = (await svc.getParties(DOCKET, 1, 10, ctx)).parties[0]?.attorneys ?? [];
+    const resolved = (await svc.getParties(DOCKET, undefined, 10, ctx)).parties[0]?.attorneys ?? [];
 
     // The walk stops at the bound, so the tail keeps empty names — but it is announced.
     expect(attorneyUrls).toHaveLength(5);
@@ -1567,7 +1813,8 @@ describe('getParties attorney scoping, detail, and role decoding (#45 #54 #59)',
       [{ id: 106656, name: 'Sidford L Brown' }],
     );
 
-    const attorneys = (await svc.getParties(DOCKET, 1, 10, ctx)).parties[0]?.attorneys ?? [];
+    const attorneys =
+      (await svc.getParties(DOCKET, undefined, 10, ctx)).parties[0]?.attorneys ?? [];
 
     // CourtListener's Role.role is nullable; String(null) would have shipped "null" as a label.
     expect(attorneys[0]).toMatchObject({ role_code: null, role: 'Unrecorded' });
@@ -1591,6 +1838,33 @@ describe('raw upstream payloads validate through the tool output schema', () => 
 
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  // `CourtViewSet` pins the plain DRF `PageNumberPagination`, which declares no
+  // `page_size_query_param` — /courts/ serves a fixed 20 rows and ignores any size asked for.
+  // Sending one advertised a page size upstream never honored.
+  it('lookup_courts: sends no page_size, and status:any sends no in_use (#49)', async () => {
+    const urls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) => {
+        urls.push(url);
+        return {
+          status: 200,
+          ok: true,
+          headers: { get: () => null },
+          text: async () => '{"count":3359,"next":null,"previous":null,"results":[]}',
+        };
+      }),
+    );
+
+    await lookupCourtsTool.handler(lookupCourtsTool.input.parse({ status: 'any' }), ctx);
+
+    const query = new URL(urls[0] ?? '').searchParams;
+    expect(query.get('page_size')).toBeNull();
+    expect(query.get('page')).toBe('1');
+    // status:'any' omits in_use entirely — the only way upstream returns both benches.
+    expect(query.get('in_use')).toBeNull();
   });
 
   it('get_parties: URL-string count + relative party_types docket → schema-valid output (#22)', async () => {
@@ -1665,7 +1939,59 @@ describe('raw upstream payloads validate through the tool output schema', () => 
     expect(result.parties[1].role).toBe('Defendant');
   });
 
-  it('get_parties: multi-page (next set) → null total, page-number next_cursor (#22)', async () => {
+  // #61 — /parties/ is cursor-paginated: `next` carries a `cursor=` token, and upstream
+  // emits the count-as-URL form only from that same cursor branch. The old code derived
+  // `page + 1` from `next`, which upstream ignores, so page 2 re-served page 1 forever.
+  it('get_parties: multi-page → null total and the cursor token from `next` (#22, #61)', async () => {
+    const partyUrls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) => {
+        let body: string;
+        if (url.includes('/attorneys/')) {
+          body = JSON.stringify({ count: 0, next: null, previous: null, results: [] });
+        } else {
+          partyUrls.push(url);
+          body = JSON.stringify({
+            count: 'https://www.courtlistener.com/api/rest/v4/parties/?count=on',
+            next: 'https://www.courtlistener.com/api/rest/v4/parties/?cursor=cD0xMDA%3D&docket=5578727',
+            previous: null,
+            results: [{ id: 1001, name: 'Acme', extra_info: '', party_types: [], attorneys: [] }],
+          });
+        }
+        return { status: 200, ok: true, headers: { get: () => null }, text: async () => body };
+      }),
+    );
+
+    const first = await getPartiesTool.handler(
+      getPartiesTool.input.parse({ docket_id: 5578727, page_size: 1 }),
+      ctx,
+    );
+
+    expect(() => getPartiesTool.output.parse(first)).not.toThrow();
+    expect(first.total_parties).toBeNull();
+    // The opaque token, not '2'.
+    expect(first.next_cursor).toBe('cD0xMDA=');
+    // First page carried no cursor upstream.
+    expect(new URL(partyUrls[0] ?? '').searchParams.get('cursor')).toBeNull();
+
+    // Round-trip: the token reaches /parties/ as `cursor`, and no `page` param is sent.
+    await getPartiesTool.handler(
+      getPartiesTool.input.parse({
+        docket_id: 5578727,
+        page_size: 1,
+        cursor: first.next_cursor ?? undefined,
+      }),
+      ctx,
+    );
+    const followUp = new URL(partyUrls[1] ?? '');
+    expect(followUp.searchParams.get('cursor')).toBe('cD0xMDA=');
+    expect(followUp.searchParams.get('page')).toBeNull();
+  });
+
+  // The count-as-URL fallback keys off "the first page is also the last". With cursors
+  // that is `cursor === undefined && next === null`, not `page === 1`.
+  it('get_parties: no exact total on a cursor-continued page (#61)', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn().mockImplementation(async (url: string) => {
@@ -1673,20 +1999,23 @@ describe('raw upstream payloads validate through the tool output schema', () => 
           ? JSON.stringify({ count: 0, next: null, previous: null, results: [] })
           : JSON.stringify({
               count: 'https://www.courtlistener.com/api/rest/v4/parties/?count=on',
-              next: 'https://www.courtlistener.com/api/rest/v4/parties/?docket=5578727&page=2',
+              next: null,
               previous: null,
-              results: [{ id: 1001, name: 'Acme', extra_info: '', party_types: [], attorneys: [] }],
+              results: [{ id: 1002, name: 'Beta', extra_info: '', party_types: [], attorneys: [] }],
             });
         return { status: 200, ok: true, headers: { get: () => null }, text: async () => body };
       }),
     );
 
-    const input = getPartiesTool.input.parse({ docket_id: 5578727, page_size: 1 });
-    const result = await getPartiesTool.handler(input, ctx);
+    const result = await getPartiesTool.handler(
+      getPartiesTool.input.parse({ docket_id: 5578727, cursor: 'cD0xMDA=' }),
+      ctx,
+    );
 
-    expect(() => getPartiesTool.output.parse(result)).not.toThrow();
+    // Last page, but not the first — the row count is a page tail, not the docket's total,
+    // so reporting it as `total_parties` would understate the list.
     expect(result.total_parties).toBeNull();
-    expect(result.next_cursor).toBe('2');
+    expect(result.next_cursor).toBeNull();
   });
 
   it('get_docket: string document_number + URL-string count + relative filepath_local (#23 #26)', async () => {
