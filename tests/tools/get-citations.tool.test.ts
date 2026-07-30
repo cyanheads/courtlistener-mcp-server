@@ -12,14 +12,11 @@ import * as svcModule from '@/services/courtlistener/courtlistener-service.js';
 const mockSvc = {
   getCitedBy: vi.fn(),
   getCiting: vi.fn(),
-  getClusterCaseName: vi.fn(),
 } as unknown as CourtListenerService;
 
 beforeEach(() => {
   vi.spyOn(svcModule, 'getCourtListenerService').mockReturnValue(mockSvc);
   vi.clearAllMocks();
-  // cited_by resolves the source name via a lightweight cluster fetch.
-  mockSvc.getClusterCaseName = vi.fn().mockResolvedValue('Landmark Case');
 });
 
 /**
@@ -76,6 +73,7 @@ const mockCitingResult = {
     },
   ],
   nextCursor: null,
+  sourceCaseName: 'Landmark Case',
 };
 
 describe('getCitationsTool', () => {
@@ -87,7 +85,8 @@ describe('getCitationsTool', () => {
 
     expect(result.source_cluster_id).toBe(100);
     expect(result.direction).toBe('cited_by');
-    // cited_by resolves the source cluster's real case name via getClusterCaseName
+    // Both directions now thread the name out of the cluster fetch that resolves the
+    // opinion IDs — no separate name-only lookup (#58).
     expect(result.source_case_name).toBe('Landmark Case');
     expect(result.results).toHaveLength(2);
     expect(result.results[0].cluster_id).toBe(200);
@@ -139,9 +138,8 @@ describe('getCitationsTool', () => {
     });
   });
 
-  it('falls back to the cluster-id placeholder when source-name resolution fails', async () => {
-    mockSvc.getCitedBy = vi.fn().mockResolvedValue(mockCitingResult);
-    mockSvc.getClusterCaseName = vi.fn().mockRejectedValue(new Error('lookup failed'));
+  it('falls back to the cluster-id placeholder when upstream carries no case name', async () => {
+    mockSvc.getCitedBy = vi.fn().mockResolvedValue({ ...mockCitingResult, sourceCaseName: null });
     const ctx = createMockContext();
     const input = getCitationsTool.input.parse({ cluster_id: 100 });
     const result = await getCitationsTool.handler(input, ctx);
@@ -160,9 +158,7 @@ describe('getCitationsTool', () => {
     const result = await getCitationsTool.handler(input, ctx);
 
     expect(result.direction).toBe('citing');
-    // citing gets the source name free from getCiting — no extra getClusterCaseName call
     expect(result.source_case_name).toBe('Source Opinion');
-    expect(mockSvc.getClusterCaseName).not.toHaveBeenCalled();
     expect(mockSvc.getCiting).toHaveBeenCalledWith(
       expect.objectContaining({ clusterId: 100 }),
       ctx,
@@ -183,6 +179,88 @@ describe('getCitationsTool', () => {
       expect.objectContaining({ court: 'scotus', filed_after: '2010-01-01' }),
       ctx,
     );
+  });
+
+  it('passes court and filed_after filters on the citing direction too', async () => {
+    mockSvc.getCiting = vi
+      .fn()
+      .mockResolvedValue({ total: 0, results: [], nextCursor: null, sourceCaseName: 'Source' });
+    const ctx = createMockContext();
+    const input = getCitationsTool.input.parse({
+      cluster_id: 100,
+      direction: 'citing',
+      court: 'scotus',
+      filed_after: '2010-01-01',
+    });
+    await getCitationsTool.handler(input, ctx);
+    expect(mockSvc.getCiting).toHaveBeenCalledWith(
+      expect.objectContaining({ court: 'scotus', filed_after: '2010-01-01' }),
+      ctx,
+    );
+  });
+
+  // #56 — for "citing" the filters narrow each page after the cited-opinion list is
+  // sliced, so a filtered page can come back empty with pages still to walk. Reading that
+  // as "no citations" sends the caller to the opposite direction for nothing.
+  describe('empty page under filters (#56)', () => {
+    it('says more pages remain and names the cursor to continue with', async () => {
+      mockSvc.getCiting = vi.fn().mockResolvedValue({
+        total: 40,
+        results: [],
+        nextCursor: '2',
+        sourceCaseName: 'Source Opinion',
+      });
+      const ctx = createMockContext();
+      const input = getCitationsTool.input.parse({
+        cluster_id: 100,
+        direction: 'citing',
+        court: 'scotus',
+        page_size: 2,
+      });
+      const result = await getCitationsTool.handler(input, ctx);
+
+      const notice = getEnrichment(ctx).notice ?? '';
+      expect(notice).toContain('more pages remain');
+      expect(notice).toContain('cursor=2');
+      expect(notice).toContain('court="scotus"');
+      expect(notice).not.toContain('Try the opposite direction');
+      expect(result.next_cursor).toBe('2');
+      expect(getEnrichment(ctx).totalCount).toBe(40);
+    });
+
+    it('reports an exhausted filtered set as no citations found', async () => {
+      mockSvc.getCiting = vi.fn().mockResolvedValue({
+        total: 40,
+        results: [],
+        nextCursor: null,
+        sourceCaseName: 'Source Opinion',
+      });
+      const ctx = createMockContext();
+      const input = getCitationsTool.input.parse({
+        cluster_id: 100,
+        direction: 'citing',
+        court: 'scotus',
+      });
+      await getCitationsTool.handler(input, ctx);
+
+      const notice = getEnrichment(ctx).notice ?? '';
+      expect(notice).toContain('No opinions found cited by cluster 100');
+      expect(notice).toContain('Try the opposite direction');
+    });
+
+    it('keeps the plain empty-network notice on the cited_by direction', async () => {
+      mockSvc.getCitedBy = vi.fn().mockResolvedValue({
+        total: 0,
+        results: [],
+        nextCursor: null,
+        sourceCaseName: 'Landmark Case',
+      });
+      const ctx = createMockContext();
+      const input = getCitationsTool.input.parse({ cluster_id: 100, court: 'scotus' });
+      await getCitationsTool.handler(input, ctx);
+
+      expect(getEnrichment(ctx).notice).toContain('No opinions found citing cluster 100');
+    });
   });
 
   it('passes the cursor through to getCiting and surfaces the advanced next_cursor (#24)', async () => {
@@ -270,6 +348,20 @@ describe('getCitationsTool', () => {
     // (getCiting slices the cited-opinion list, so it returns fewer when the source cites less)
     expect(desc).toContain('cited_by');
     expect(desc).toContain('citing');
+    // Both directions resolve the source cluster's opinion IDs before searching, so the
+    // old "costs one request" claim understated the budget by two (#58).
+    expect(desc).toContain('three requests');
+    expect(desc).not.toMatch(/costs one request/i);
+  });
+
+  it('states the unit and filter status of totalCount for both directions (#56)', () => {
+    const desc = getCitationsTool.enrichment?.totalCount.description ?? '';
+    expect(desc).toContain('cited_by');
+    expect(desc).toContain('citing');
+    // Counts opinions on one direction and filtered clusters on the other — silence on
+    // that is what let an unfiltered opinion count read as a reachable result total.
+    expect(desc).toMatch(/before any filter/i);
+    expect(desc).toMatch(/clusters/i);
   });
 
   it('formats output with source and result details', () => {

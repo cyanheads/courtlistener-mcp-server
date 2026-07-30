@@ -59,10 +59,14 @@ const COURTS_REFERENCE_CONTENT = `# CourtListener Court Reference
 | ilnd | N.D. Ill. (Northern District of Illinois) |
 | wawd | W.D. Wash. (Western District of Washington) |
 
-## Rate Limit Reference (Free Tier)
+## Rate Limit Reference
 
-| Window | Limit |
-|:-------|:------|
+CourtListener publishes these limits for its free tier. Actual limits vary by token tier, so
+treat the figures as a planning guide rather than a measured ceiling — the authoritative number
+is the Retry-After returned on a 429.
+
+| Window | Published free-tier limit |
+|:-------|:--------------------------|
 | Per minute | 5 requests |
 | Per hour | 50 requests |
 | Per day | 125 requests |

@@ -572,9 +572,9 @@ describe('error contracts — reason and recovery hints', () => {
   });
 });
 
-// ── getDocketSummary / getClusterCaseName (#9, #18) ──────────────────────────
+// ── getDocketSummary (#9, #18) ───────────────────────────────────────────────
 
-describe('getDocketSummary and getClusterCaseName', () => {
+describe('getDocketSummary', () => {
   let svc: CourtListenerService;
   let ctx: ReturnType<typeof createMockContext>;
 
@@ -602,16 +602,6 @@ describe('getDocketSummary and getClusterCaseName', () => {
       docket_number: '70-18',
       case_name: 'Roe v. Wade',
     });
-  });
-
-  it('getClusterCaseName returns the cluster case_name', async () => {
-    mockFetchResponse({ body: JSON.stringify({ id: 100, case_name: 'Miranda v. Arizona' }) });
-    expect(await svc.getClusterCaseName(100, ctx)).toBe('Miranda v. Arizona');
-  });
-
-  it('getClusterCaseName returns null when case_name is absent', async () => {
-    mockFetchResponse({ body: JSON.stringify({ id: 100 }) });
-    expect(await svc.getClusterCaseName(100, ctx)).toBeNull();
   });
 });
 
@@ -904,6 +894,243 @@ describe('getOralArgument', () => {
   });
 });
 
+// ── getOpinionCluster sub-opinion pagination (#48) ───────────────────────────
+// /clusters/{id}/ serves sub_opinions as URI strings, so the variants come from a
+// separate cursor-paginated /opinions/ call. The bug took the first page and dropped the
+// rest, shortening the retrievable-variant outline and both citation directions' ID lists
+// with nothing on the response to say so.
+
+describe('getOpinionCluster sub-opinion pagination (#48)', () => {
+  let svc: CourtListenerService;
+  let ctx: ReturnType<typeof createMockContext>;
+
+  beforeEach(() => {
+    svc = new CourtListenerService(makeMockConfig(), makeMockStorage());
+    ctx = createMockContext();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /**
+   * Stub a cluster whose /opinions/ list holds `total` variants served `perPage` at a
+   * time over a cursor. Every variant cites one distinct opinion, so the cited-ID list
+   * behind `citing` grows with the variants reached. Returns the /opinions/ URLs called.
+   */
+  function stubCluster(total: number, perPage: number): string[] {
+    const opinionUrls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) => {
+        let body: string;
+        if (url.includes('/opinions/')) {
+          opinionUrls.push(url);
+          const offset = Number(new URL(url).searchParams.get('cursor') ?? 0);
+          const rows = Math.max(0, Math.min(perPage, total - offset));
+          body = JSON.stringify({
+            count: total,
+            next:
+              offset + perPage < total
+                ? `https://www.courtlistener.com/api/rest/v4/opinions/?cursor=${offset + perPage}`
+                : null,
+            previous: null,
+            results: Array.from({ length: rows }, (_, i) => ({
+              id: 9_000_000 + offset + i,
+              type: '020lead',
+              opinions_cited: [
+                `https://www.courtlistener.com/api/rest/v4/opinions/${500_000 + offset + i}/`,
+              ],
+            })),
+          });
+        } else if (url.includes('/search/')) {
+          body = JSON.stringify({ count: 0, next: null, previous: null, results: [] });
+        } else {
+          body = JSON.stringify({ id: 108713, case_name: 'Source Case', sub_opinions: [] });
+        }
+        return { status: 200, ok: true, headers: new Headers(), text: async () => body };
+      }),
+    );
+    return opinionUrls;
+  }
+
+  it('walks the cursor to the end instead of keeping only the first page', async () => {
+    const opinionUrls = stubCluster(35, 20);
+
+    const cluster = await svc.getOpinionCluster(108713, ctx);
+
+    expect(cluster.sub_opinions).toHaveLength(35);
+    expect(opinionUrls).toHaveLength(2);
+    // The continuation carries the cursor token off the first page's `next`.
+    expect(new URL(opinionUrls[0]).searchParams.get('cursor')).toBeNull();
+    expect(new URL(opinionUrls[1]).searchParams.get('cursor')).toBe('20');
+  });
+
+  it('costs a single call for a cluster that fits on one page', async () => {
+    const opinionUrls = stubCluster(3, 20);
+
+    const cluster = await svc.getOpinionCluster(108713, ctx);
+
+    expect(cluster.sub_opinions).toHaveLength(3);
+    expect(opinionUrls).toHaveLength(1);
+  });
+
+  it('warns instead of silently truncating when the page bound is hit', async () => {
+    const opinionUrls = stubCluster(400, 20);
+
+    const cluster = await svc.getOpinionCluster(108713, ctx);
+
+    expect(opinionUrls).toHaveLength(5);
+    expect(cluster.sub_opinions).toHaveLength(100);
+    expect(ctx.log.calls).toContainEqual(
+      expect.objectContaining({
+        level: 'warning',
+        data: expect.objectContaining({ clusterId: 108713, fetched: 100 }),
+      }),
+    );
+  });
+
+  it('feeds the citing direction every variant, not just the first page', async () => {
+    stubCluster(35, 20);
+
+    const result = await svc.getCiting({ clusterId: 108713, page_size: 100 }, ctx);
+
+    // One distinct cited opinion per variant — capped at 20 before the walk landed.
+    expect(result.total).toBe(35);
+  });
+});
+
+// ── getCitedBy queries the cites index by opinion ID (#58) ───────────────────
+// `/search/?type=o`'s `cites` field is keyed by opinion ID. Querying it with a cluster ID
+// matched only where the two coincide (common in legacy single-opinion imports), and
+// returned an empty network — indistinguishable from a genuinely uncited case — otherwise.
+
+describe('getCitedBy queries the cites index by opinion ID (#58)', () => {
+  let svc: CourtListenerService;
+  let ctx: ReturnType<typeof createMockContext>;
+
+  beforeEach(() => {
+    svc = new CourtListenerService(makeMockConfig(), makeMockStorage());
+    ctx = createMockContext();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /**
+   * Stub cluster 8588094 holding the given opinion IDs, served `perPage` at a time —
+   * the live case where the cluster ID and its opinion ID diverge. Returns the /search/
+   * URLs called, so the built `q` can be asserted.
+   */
+  function stubCluster(opinionIds: number[], perPage = 20, searchNext: string | null = null) {
+    const searchUrls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) => {
+        let body: string;
+        if (url.includes('/search/')) {
+          searchUrls.push(url);
+          body = JSON.stringify({
+            count: 339,
+            next: searchNext,
+            previous: null,
+            results: [{ cluster_id: 4242, caseName: 'Citing Case', opinions: [] }],
+          });
+        } else if (url.includes('/opinions/')) {
+          const offset = Number(new URL(url).searchParams.get('cursor') ?? 0);
+          body = JSON.stringify({
+            count: opinionIds.length,
+            next:
+              offset + perPage < opinionIds.length
+                ? `https://www.courtlistener.com/api/rest/v4/opinions/?cursor=${offset + perPage}`
+                : null,
+            previous: null,
+            results: opinionIds
+              .slice(offset, offset + perPage)
+              .map((id) => ({ id, type: '020lead' })),
+          });
+        } else {
+          body = JSON.stringify({ id: 8588094, case_name: 'Source Case', sub_opinions: [] });
+        }
+        return { status: 200, ok: true, headers: new Headers(), text: async () => body };
+      }),
+    );
+    return searchUrls;
+  }
+
+  it('queries the opinion ID, never the cluster ID', async () => {
+    const searchUrls = stubCluster([8562940]);
+
+    const result = await svc.getCitedBy({ clusterId: 8588094 }, ctx);
+
+    const q = new URL(searchUrls[0]).searchParams.get('q');
+    expect(q).toBe('cites:(8562940)');
+    expect(q).not.toContain('8588094');
+    expect(result.total).toBe(339);
+    expect(result.results).toHaveLength(1);
+  });
+
+  it('ORs every opinion variant of the cluster into one query', async () => {
+    const searchUrls = stubCluster([8562940, 8562941, 8562942]);
+
+    await svc.getCitedBy({ clusterId: 8588094 }, ctx);
+
+    expect(new URL(searchUrls[0]).searchParams.get('q')).toBe(
+      'cites:(8562940) OR cites:(8562941) OR cites:(8562942)',
+    );
+  });
+
+  it('includes variants past the first page of /opinions/ (#48)', async () => {
+    const searchUrls = stubCluster([8562940, 8562941, 8562942], 2);
+
+    await svc.getCitedBy({ clusterId: 8588094 }, ctx);
+
+    // The third variant lives on the second cursor page — dropping it would ship a
+    // confidently incomplete citation network.
+    expect(new URL(searchUrls[0]).searchParams.get('q')).toContain('cites:(8562942)');
+  });
+
+  it('returns the source case name from the same fetch that resolved the IDs', async () => {
+    stubCluster([8562940]);
+
+    const result = await svc.getCitedBy({ clusterId: 8588094 }, ctx);
+
+    // No second /clusters/ call just to name the source — three upstream calls, not four.
+    expect(result.sourceCaseName).toBe('Source Case');
+    expect(vi.mocked(fetch).mock.calls).toHaveLength(3);
+  });
+
+  it('short-circuits without a search when the cluster has no opinion variants', async () => {
+    const searchUrls = stubCluster([]);
+
+    const result = await svc.getCitedBy({ clusterId: 8588094 }, ctx);
+
+    expect(searchUrls).toEqual([]);
+    expect(result).toMatchObject({ total: 0, results: [], nextCursor: null });
+  });
+
+  it('passes filters through and keeps paging on the upstream cursor', async () => {
+    const searchUrls = stubCluster(
+      [8562940],
+      20,
+      'https://www.courtlistener.com/api/rest/v4/search/?cursor=cD0yMDI',
+    );
+
+    const result = await svc.getCitedBy(
+      { clusterId: 8588094, court: 'scotus', filed_after: '2010-01-01', cursor: 'cD0xMDA' },
+      ctx,
+    );
+
+    const params = new URL(searchUrls[0]).searchParams;
+    expect(params.get('court')).toBe('scotus');
+    expect(params.get('filed_after')).toBe('2010-01-01');
+    expect(params.get('cursor')).toBe('cD0xMDA');
+    // Upstream's own cursor drives the pages, so count, filters, and pages agree.
+    expect(result.nextCursor).toBe('cD0yMDI');
+  });
+});
+
 // ── getCiting cursor pagination (#24) ────────────────────────────────────────
 // getCiting holds the full cited-ID list in memory; the cursor is an offset into it.
 // The bug ignored the cursor and re-sliced from index 0, returning page 1 forever.
@@ -966,6 +1193,69 @@ describe('getCiting cursor pagination (#24)', () => {
     expect(q2).toContain('id:(103)');
     expect(q2).toContain('id:(104)');
     expect(q2).not.toContain('id:(101)');
+  });
+});
+
+// ── getCiting filters vs. total and cursor (#56) ─────────────────────────────
+// `citing` slices the cited-opinion list client-side and lets upstream apply the filters
+// to each page, so `total` counts unfiltered opinions while `results` are filtered
+// clusters. The units and the filter status are documented on the tool rather than
+// reconciled here; a filter-emptied page keeps its continuation cursor so the remaining
+// pages stay reachable.
+
+describe('getCiting filters vs. total and cursor (#56)', () => {
+  let svc: CourtListenerService;
+  let ctx: ReturnType<typeof createMockContext>;
+
+  beforeEach(() => {
+    svc = new CourtListenerService(makeMockConfig(), makeMockStorage());
+    ctx = createMockContext();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('sends the filters upstream while total and cursor track the unfiltered ID list', async () => {
+    const searchUrls: string[] = [];
+    const citedUris = [101, 102, 103, 104, 105].map(
+      (n) => `https://www.courtlistener.com/api/rest/v4/opinions/${n}/`,
+    );
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) => {
+        let body: string;
+        if (url.includes('/search/')) {
+          searchUrls.push(url);
+          // The court filter excludes both cited opinions on this page.
+          body = JSON.stringify({ count: 0, next: null, previous: null, results: [] });
+        } else if (url.includes('/opinions/')) {
+          body = JSON.stringify({
+            count: 1,
+            next: null,
+            previous: null,
+            results: [{ id: 9, opinions_cited: citedUris }],
+          });
+        } else {
+          body = JSON.stringify({ id: 100, case_name: 'Source Opinion', sub_opinions: [] });
+        }
+        return { status: 200, ok: true, headers: new Headers(), text: async () => body };
+      }),
+    );
+
+    const page = await svc.getCiting(
+      { clusterId: 100, page_size: 2, court: 'scotus', filed_after: '2010-01-01' },
+      ctx,
+    );
+
+    const params = new URL(searchUrls[0]).searchParams;
+    expect(params.get('court')).toBe('scotus');
+    expect(params.get('filed_after')).toBe('2010-01-01');
+    // Filtered out on this page, but three cited opinions remain to check.
+    expect(page.results).toHaveLength(0);
+    expect(page.nextCursor).toBe('2');
+    // Counts cited opinions before filtering — the semantics totalCount now states.
+    expect(page.total).toBe(5);
   });
 });
 

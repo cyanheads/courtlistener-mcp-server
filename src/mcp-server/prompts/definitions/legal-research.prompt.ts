@@ -25,7 +25,7 @@ export const legalResearchPrompt = prompt('courtlistener_research_topic', {
       .optional()
       .default('overview')
       .describe(
-        '"overview" (default): find 3–5 key cases. "deep": include citation network traversal and judge lookup. Note: deep research uses more of the 125 req/day free-tier budget.',
+        '"overview" (default): find 3–5 key cases. "deep": include citation network traversal and judge lookup. Note: deep research uses more of the free tier\'s daily budget, and each citation-network call spends three upstream requests.',
       ),
   }),
   generate: (args) => {

@@ -11,7 +11,7 @@ import { findInvalidDates, ISO_DATE_HINT } from '@/services/courtlistener/dates.
 export const getCitationsTool = tool('courtlistener_get_citations', {
   title: 'Get Citation Network',
   description:
-    'Retrieve the citation network for an opinion cluster. Supports two directions: "cited_by" (opinions that cite this one — measures precedential influence) and "citing" (opinions this one cites — reveals the authority chain relied on). This is the primary tool for tracing legal precedent chains. Note: the free tier (125 req/day) supports shallow traversal — following 1–2 hops of a single case is practical; deep multi-hop analysis burns through the daily budget quickly.',
+    'Retrieve the citation network for an opinion cluster. Supports two directions: "cited_by" (opinions that cite this one — measures precedential influence) and "citing" (opinions this one cites — reveals the authority chain relied on). This is the primary tool for tracing legal precedent chains. Note: the free tier supports shallow traversal — following 1–2 hops of a single case is practical; deep multi-hop analysis burns through the daily budget quickly.',
   annotations: { readOnlyHint: true, openWorldHint: true, idempotentHint: false },
 
   input: z.object({
@@ -47,7 +47,7 @@ export const getCitationsTool = tool('courtlistener_get_citations', {
       .optional()
       .default(20)
       .describe(
-        'Number of results to request (default 20). For direction="cited_by", CourtListener enforces a minimum of 20 results per page regardless of the value passed — you will always receive at least 20 results. direction="citing" returns at most page_size (the cited-opinion list is sliced before querying) — fewer when the opinion cites fewer than page_size distinct opinions. Each citation tool call costs one request against the rate limit — keep low for multi-hop traversal.',
+        'Number of results to request (default 20). For direction="cited_by", CourtListener enforces a minimum of 20 results per page regardless of the value passed — you will always receive at least 20 results. direction="citing" returns at most page_size (the cited-opinion list is sliced before querying) — fewer when the opinion cites fewer than page_size distinct opinions. Either direction costs three requests against the rate limit (a case with many opinion variants costs one more per extra variant page) — keep low for multi-hop traversal.',
       ),
     cursor: z
       .string()
@@ -91,16 +91,27 @@ export const getCitationsTool = tool('courtlistener_get_citations', {
 
   // Agent-facing context: total citation count and recovery hint on empty results.
   enrichment: {
-    totalCount: z.number().describe('Total citations in the requested direction.'),
+    totalCount: z
+      .number()
+      .describe(
+        'Total citations in the requested direction. For "cited_by" it counts matching clusters with the court and filed_after filters applied. For "citing" it counts the distinct opinions this case cites, before any filter — so it exceeds what the filters make reachable, and runs higher than the result rows, which are clusters (several cited opinions in one case collapse to one row).',
+      ),
     notice: z
       .string()
       .optional()
       .describe(
-        'Recovery hint when no citations are found — echoes direction and filters, suggests alternatives.',
+        'Context when no citations are returned — either that this page had no match under the filters and more pages remain, or a recovery hint echoing direction and filters.',
       ),
   },
 
   errors: [
+    {
+      reason: 'not_found',
+      code: JsonRpcErrorCode.NotFound,
+      when: 'Cluster ID does not exist in CourtListener. Both directions resolve the source cluster before searching, so a bad ID fails here rather than returning an empty network.',
+      recovery:
+        'Verify the cluster ID from courtlistener_search_opinions or courtlistener_lookup_citation.',
+    },
     {
       reason: 'rate_limited',
       code: JsonRpcErrorCode.RateLimited,
@@ -123,8 +134,8 @@ export const getCitationsTool = tool('courtlistener_get_citations', {
       direction: input.direction,
     });
 
-    // Guard before the service call: a malformed date would otherwise spend one of
-    // the free tier's 125 daily requests on a 400 from the /search/ endpoint.
+    // Guard before the service call: a malformed date would otherwise spend three of the
+    // free tier's daily requests to reach a 400 from the /search/ endpoint.
     const invalidDates = findInvalidDates({ filed_after: input.filed_after });
     if (invalidDates.length > 0) {
       throw ctx.fail(
@@ -148,25 +159,10 @@ export const getCitationsTool = tool('courtlistener_get_citations', {
         ? await svc.getCitedBy(citationParams, ctx)
         : await svc.getCiting(citationParams, ctx);
 
-    // Resolve the source cluster's real case name. "citing" gets it free (getCiting
-    // already fetched the cluster); "cited_by" needs a lightweight name-only fetch
-    // (non-fatal — falls back to the cluster-id placeholder if it fails).
-    let sourceCaseName = `(cluster ${input.cluster_id})`;
-    if ('sourceCaseName' in data && typeof data.sourceCaseName === 'string') {
-      // "citing" — getCiting already resolved the name.
-      sourceCaseName = data.sourceCaseName;
-    } else if (input.direction === 'cited_by') {
-      // "cited_by" — getCitedBy never fetched the cluster; resolve the name cheaply (non-fatal).
-      try {
-        const name = await svc.getClusterCaseName(input.cluster_id, ctx);
-        if (name) sourceCaseName = name;
-      } catch (err) {
-        ctx.log.debug('source case name resolution failed', {
-          clusterId: input.cluster_id,
-          err: String(err),
-        });
-      }
-    }
+    // Both directions fetch the source cluster to resolve opinion IDs, so the case name
+    // comes back with the results — no second lookup. Upstream leaves it empty on a few
+    // sparse clusters; the ID stands in then.
+    const sourceCaseName = data.sourceCaseName || `(cluster ${input.cluster_id})`;
 
     const results = data.results.map((r) => ({
       cluster_id: r.cluster_id,
@@ -194,9 +190,18 @@ export const getCitationsTool = tool('courtlistener_get_citations', {
       if (input.court) filters.push(`court="${input.court}"`);
       if (input.filed_after) filters.push(`filed_after=${input.filed_after}`);
       const filterHint = filters.length > 0 ? ` with filters: ${filters.join(', ')}` : '';
-      ctx.enrich.notice(
-        `No opinions found ${dirLabel} cluster ${input.cluster_id}${filterHint}. Try the opposite direction, remove filters, or verify the cluster ID.`,
-      );
+      if (input.direction === 'citing' && filters.length > 0 && data.nextCursor !== null) {
+        // "citing" pages the cited-opinion list, then filters each page upstream, so a
+        // narrow filter can zero a page while later pages still hold matches — say which
+        // it is rather than letting an exhausted-looking response stand.
+        ctx.enrich.notice(
+          `No opinions cited by cluster ${input.cluster_id} matched ${filters.join(', ')} on this page, but more pages remain. The filters narrow each page after the cited-opinion list is sliced — pass cursor=${data.nextCursor} to check the next page.`,
+        );
+      } else {
+        ctx.enrich.notice(
+          `No opinions found ${dirLabel} cluster ${input.cluster_id}${filterHint}. Try the opposite direction, remove filters, or verify the cluster ID.`,
+        );
+      }
     }
 
     return {

@@ -48,6 +48,17 @@ const REQUEST_TIMEOUT_MS = 30_000;
 const ATTORNEY_PAGE_LIMIT = 5;
 
 /**
+ * Cursor pages walked while collecting a cluster's opinion variants. `/opinions/` is
+ * cursor-paginated (`OpinionViewSet.ordering = "-id"`, with `id` among its
+ * `cursor_ordering_fields`), so a single fetch drops every variant past the first page.
+ * Whether the endpoint honors `page_size` is unconfirmed — `/attorneys/` ignores it — so
+ * the bound counts pages, not rows. A cluster carries a handful of variants in practice,
+ * so the walk normally costs one call; hitting the bound warns instead of truncating
+ * silently. It also bounds the ID list `getCitedBy` ORs into one query string.
+ */
+const SUB_OPINION_PAGE_LIMIT = 5;
+
+/**
  * CourtListener `Role.ATTORNEY_ROLES` codes (cl/people_db/models.py) → labels.
  * Codes 5–9 mark a relationship that has ended, so the label changes how an entry
  * reads: a "Terminated" attorney is not current counsel. Unknown codes pass through
@@ -354,13 +365,33 @@ export class CourtListenerService {
         recovery: { hint: RECOVERY_HINTS.cluster },
       });
     }
-    // /clusters/{id}/ returns sub_opinions as URI strings — fetch the actual opinion objects
-    const opinions = await this.get<CourtListenerPage<Opinion>>(
-      '/opinions/',
-      { cluster: clusterId, page_size: 20 },
-      ctx,
-    );
-    data.sub_opinions = opinions.results;
+    /**
+     * /clusters/{id}/ returns sub_opinions as URI strings — fetch the actual opinion
+     * objects. Walk the cursor to the end so a cluster with more variants than one page
+     * keeps its tail: the outline in courtlistener_get_opinion and the cited-ID lists
+     * behind both citation directions are all built from this list.
+     */
+    const subOpinions: Opinion[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < SUB_OPINION_PAGE_LIMIT; page++) {
+      const opinions = await this.get<CourtListenerPage<Opinion>>(
+        '/opinions/',
+        { cluster: clusterId, page_size: 20, cursor: cursor ?? undefined },
+        ctx,
+      );
+      subOpinions.push(...opinions.results);
+      cursor = extractCursor(opinions.next);
+      if (!cursor) break;
+    }
+    if (cursor) {
+      // Say so rather than presenting a truncated variant list as the whole cluster.
+      ctx.log.warning('Opinion variants remain unfetched after the page walk', {
+        clusterId,
+        fetched: subOpinions.length,
+        pagesWalked: SUB_OPINION_PAGE_LIMIT,
+      });
+    }
+    data.sub_opinions = subOpinions;
     return data;
   }
 
@@ -566,7 +597,13 @@ export class CourtListenerService {
 
   // ── Citations ─────────────────────────────────────────────────────────────
 
-  /** Get opinions that cite this cluster ("cited_by" direction). */
+  /**
+   * Get opinions that cite this cluster ("cited_by" direction). The `/search/` `cites`
+   * field is keyed by *opinion* ID, so the cluster's own ID matches nothing unless it
+   * happens to double as one of its opinion IDs — resolve the cluster's variants first
+   * and OR their IDs into one query. Paging stays on CourtListener's cursor, so the
+   * count, the filters, and the pages all describe the same set.
+   */
   async getCitedBy(
     params: {
       clusterId: number;
@@ -576,9 +613,22 @@ export class CourtListenerService {
       cursor?: string | undefined;
     },
     ctx: Context,
-  ): Promise<{ total: number; results: OpinionSearchResult[]; nextCursor: string | null }> {
+  ): Promise<{
+    total: number;
+    results: OpinionSearchResult[];
+    nextCursor: string | null;
+    sourceCaseName: string | null;
+  }> {
+    const cluster = await this.getOpinionCluster(params.clusterId, ctx);
+    const sourceCaseName = cluster.case_name ?? null;
+    const opinionIds = cluster.sub_opinions.map((op) => op.id);
+
+    if (opinionIds.length === 0) {
+      return { total: 0, results: [], nextCursor: null, sourceCaseName };
+    }
+
     const query: Record<string, string | number | boolean | undefined> = {
-      q: `cites:(${params.clusterId})`,
+      q: opinionIds.map((id) => `cites:(${id})`).join(' OR '),
       type: 'o',
       court: params.court,
       filed_after: params.filed_after,
@@ -592,16 +642,18 @@ export class CourtListenerService {
       total: data.count,
       results: data.results,
       nextCursor: extractCursor(data.next),
+      sourceCaseName,
     };
   }
 
-  /** Fetch only an opinion cluster's case name — lighter than getOpinionCluster (skips the sub-opinions fetch). */
-  async getClusterCaseName(clusterId: number, ctx: Context): Promise<string | null> {
-    const data = await this.get<{ case_name?: string }>(`/clusters/${clusterId}/`, {}, ctx);
-    return data?.case_name ?? null;
-  }
-
-  /** Get opinions cited by this cluster ("citing" direction). Fetches cluster detail to get citation IDs. */
+  /**
+   * Get opinions cited by this cluster ("citing" direction). Fetches cluster detail to get
+   * citation IDs. `total` counts the distinct cited *opinions* before any filter, while
+   * `results` are the *clusters* upstream matched under `court`/`filed_after` — several
+   * cited opinions in one case collapse to a single row. The cursor walks the cited-ID
+   * list rather than the filtered results, so a narrow filter can empty a page while pages
+   * remain; the tool distinguishes that from "no citations" on the response.
+   */
   async getCiting(
     params: {
       clusterId: number;
