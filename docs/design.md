@@ -519,8 +519,12 @@ List courts with optional filtering by jurisdiction type, active/inactive status
 
 **Input schema:**
 ```ts
-jurisdiction: z.enum(['F', 'FD', 'FB', 'FBP', 'FS', 'C', 'I', 'T', 'ST', 'SS', 'SAG', 'SAL', 'SA', 'S', 'TT']).optional()
-  .describe('Jurisdiction type. F=Federal Appellate (circuit courts, SCOTUS), FD=Federal District, FB=Federal Bankruptcy, FBP=Federal Bankruptcy Panel, FS=Federal Special (USITC, FISC, etc.), C=Circuit (historical), I=International, T=Territory, ST=State Trial, SS=State Supreme, SAG=State Attorney General, SAL=State Legislature, SA=State Appellate, S=State (other), TT=Tribal/Territory. Omit to list all.'),
+// Codes and labels mirror upstream's `Court.JURISDICTIONS` exactly (services/courtlistener/
+// jurisdictions.ts), since `CourtFilter.jurisdiction` is a choice filter: a value outside the
+// set is a 400, not an empty result. `T` (Testing) is the one choice omitted — CourtViewSet's
+// queryset excludes those courts, so filtering on it can only ever match zero rows.
+jurisdiction: z.enum(COURT_JURISDICTION_CODES).optional()
+  .describe(`Jurisdiction type — ... F=Federal Appellate, FD=Federal District, FB=Federal Bankruptcy, FBP=Federal Bankruptcy Panel, FS=Federal Special, S=State Supreme, SA=State Appellate, ST=State Trial, SS=State Special, SAG=State Attorney General, TRS=Tribal Supreme, TRA=Tribal Appellate, TRT=Tribal Trial, TRX=Tribal Special, TS=Territory Supreme, TA=Territory Appellate, TT=Territory Trial, TSP=Territory Special, MA=Military Appellate, MT=Military Trial, C=Committee, I=International. Omit to list all. ...`),
 // Upstream's `in_use` is a boolean exact-match filter, so in_use=true and in_use=false
 // return disjoint sets whose sizes sum to the unfiltered total. A forwarded boolean
 // cannot express "both", which is what the tri-state exists for: 'active' → in_use=true,

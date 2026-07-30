@@ -1,6 +1,6 @@
 # courtlistener-mcp-server - Directory Structure
 
-Generated on: 2026-07-30 07:17:36
+Generated on: 2026-07-30 07:54:51
 
 ```text
 courtlistener-mcp-server/
@@ -28,6 +28,7 @@ courtlistener-mcp-server/
 │   ├── 0.4.x/
 │   ├── 0.5.x/
 │   ├── 0.6.x/
+│   ├── 0.7.x/
 │   └── template.md
 ├── docs/
 │   ├── design.md
@@ -167,6 +168,7 @@ courtlistener-mcp-server/
 │   │       ├── court-names.ts
 │   │       ├── courtlistener-service.ts
 │   │       ├── dates.ts
+│   │       ├── jurisdictions.ts
 │   │       ├── types.ts
 │   │       └── uri.ts
 │   └── index.ts
@@ -181,6 +183,7 @@ courtlistener-mcp-server/
 │   │   ├── courtlistener-service.retry.test.ts
 │   │   ├── courtlistener-service.test.ts
 │   │   ├── dates.test.ts
+│   │   ├── jurisdictions.test.ts
 │   │   └── uri.test.ts
 │   ├── tools/
 │   │   ├── get-citations.tool.test.ts

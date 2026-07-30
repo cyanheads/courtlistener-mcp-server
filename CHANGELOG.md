@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.7.0](changelog/0.7.x/0.7.0.md) — 2026-07-30 · ⚠️ Breaking
+
+courtlistener_lookup_courts's jurisdiction filter now mirrors CourtListener's own Court.JURISDICTIONS choices exactly, in place of the drifted 15-code enum.
+
 ## [0.6.1](changelog/0.6.x/0.6.1.md) — 2026-07-30
 
 courtlistener_get_judge walks the full paginated position history instead of a fixed 50-row fetch; courtlistener_lookup_citation gets a caller-controlled court-backfill budget; courtlistener_lookup_courts can now enumerate every court, active or historical, via a bundled full snapshot.
