@@ -9,31 +9,50 @@
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-// Mock withRetry to execute the fn directly (no retries, no backoff) and
-// fetchWithTimeout to delegate to the mocked global fetch.
+// Mock withRetry to execute the fn directly (no retries, no backoff) and fetchWithTimeout
+// to delegate to the mocked global fetch — throwing on non-2xx exactly as the real transport
+// does, so the service's classifyFetchError path is the one under test. (A mock that returned
+// the raw Response on an error status routed every non-2xx case into the service's manual
+// fallback branches, which production never reaches.)
 vi.mock('@cyanheads/mcp-ts-core/utils', async (importOriginal) => {
   const original = await importOriginal<typeof import('@cyanheads/mcp-ts-core/utils')>();
+  const { McpError, JsonRpcErrorCode } = await import('@cyanheads/mcp-ts-core/errors');
   return {
     ...original,
     withRetry: async (fn: () => Promise<unknown>) => fn(),
-    fetchWithTimeout: (url: string, _timeout: number, _ctx: unknown, opts?: RequestInit) =>
-      fetch(url, opts),
+    fetchWithTimeout: async (url: string, _timeout: number, _ctx: unknown, opts?: RequestInit) => {
+      const response = await fetch(url, opts);
+      if (response.ok) return response;
+      const body = await response.text().catch(() => '');
+      const retryAfter = response.headers.get('retry-after');
+      throw new McpError(
+        original.httpStatusToErrorCode(response.status) ?? JsonRpcErrorCode.InternalError,
+        `Fetch failed for ${url}. Status: ${response.status}`,
+        {
+          status: response.status,
+          statusText: response.statusText,
+          body,
+          ...(retryAfter !== null && { retryAfter }),
+          errorSource: 'FetchHttpError',
+        },
+      );
+    },
   };
 });
 
-import type { AppConfig } from '@cyanheads/mcp-ts-core/config';
 import { getDocketTool } from '@/mcp-server/tools/definitions/get-docket.tool.js';
 import { getPartiesTool } from '@/mcp-server/tools/definitions/get-parties.tool.js';
 import {
   CourtListenerService,
+  type CourtListenerServiceConfig,
   getCourtListenerService,
   initCourtListenerService,
 } from '@/services/courtlistener/courtlistener-service.js';
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-function makeMockConfig(token = 'secret-token-abc123'): AppConfig {
-  return { apiToken: token } as unknown as AppConfig;
+function makeMockConfig(token = 'secret-token-abc123'): CourtListenerServiceConfig {
+  return { apiToken: token, mcpServerVersion: '0.0.0-test' };
 }
 
 function makeMockStorage() {
@@ -44,14 +63,14 @@ function mockFetchResponse(
   overrides: Partial<{
     status: number;
     ok: boolean;
-    headerGet: (h: string) => string | null;
+    headers: Record<string, string>;
     body: string;
   }> = {},
 ) {
   const {
     status = 200,
     ok = true,
-    headerGet = () => null,
+    headers = {},
     body = '{"count":0,"next":null,"previous":null,"results":[]}',
   } = overrides;
 
@@ -60,7 +79,9 @@ function mockFetchResponse(
     vi.fn().mockResolvedValue({
       status,
       ok,
-      headers: { get: headerGet },
+      // A real Headers instance — header lookup is case-insensitive upstream, and the
+      // transport reads `retry-after` lowercase.
+      headers: new Headers(headers),
       text: async () => body,
     } as unknown as Response),
   );
@@ -73,6 +94,29 @@ describe('initCourtListenerService / getCourtListenerService', () => {
     initCourtListenerService(makeMockConfig(), makeMockStorage());
     expect(() => getCourtListenerService()).not.toThrow();
     expect(getCourtListenerService()).toBeInstanceOf(CourtListenerService);
+  });
+});
+
+// ── outbound request headers ─────────────────────────────────────────────────
+
+describe('outbound headers', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('derives the User-Agent version from the server config, not a literal (#55)', async () => {
+    const svc = new CourtListenerService(
+      { apiToken: 'tok', mcpServerVersion: '9.8.7' },
+      makeMockStorage(),
+    );
+    mockFetchResponse();
+
+    await svc.searchOpinions({ q: 'test' }, createMockContext());
+
+    const init = vi.mocked(fetch).mock.calls[0]?.[1] as RequestInit;
+    expect((init.headers as Record<string, string>)['User-Agent']).toBe(
+      'courtlistener-mcp-server/9.8.7',
+    );
   });
 });
 
@@ -152,12 +196,7 @@ describe('HTTP error classification', () => {
   });
 
   it('includes Retry-After in rate-limit message when header is present', async () => {
-    mockFetchResponse({
-      status: 429,
-      ok: false,
-      headerGet: (h: string) => (h === 'Retry-After' ? '60' : null),
-      body: '',
-    });
+    mockFetchResponse({ status: 429, ok: false, headers: { 'Retry-After': '60' }, body: '' });
     await expect(svc.searchOpinions({ q: 'test' }, ctx)).rejects.toMatchObject({
       message: expect.stringContaining('60'),
     });
@@ -171,14 +210,18 @@ describe('HTTP error classification', () => {
     });
   });
 
-  it('throws serviceUnavailable when HTML body is returned on a non-200', async () => {
+  it('surfaces a 503 HTML error page as ServiceUnavailable', async () => {
+    const { JsonRpcErrorCode } = await import('@cyanheads/mcp-ts-core/errors');
     mockFetchResponse({
       status: 503,
       ok: false,
       body: '<!DOCTYPE html><html><body>Service Unavailable</body></html>',
     });
+    // The transport maps the status and throws before the service sees the body, so the
+    // classifier passes a 503 through with its status-mapped code.
     await expect(svc.searchOpinions({ q: 'test' }, ctx)).rejects.toMatchObject({
-      message: expect.stringContaining('HTML'),
+      code: JsonRpcErrorCode.ServiceUnavailable,
+      data: { status: 503 },
     });
   });
 
@@ -433,24 +476,22 @@ describe('rate-limit message content', () => {
     vi.unstubAllGlobals();
   });
 
-  it('rate-limit message includes tier hint when no Retry-After', async () => {
+  it('rate-limit message names the throttle windows when no Retry-After', async () => {
     mockFetchResponse({ status: 429, ok: false, body: '' });
     try {
       await svc.searchOpinions({ q: 'test' }, ctx);
       expect.fail('Should have thrown');
     } catch (err) {
       const msg = (err as Error).message ?? '';
-      expect(msg).toContain('Free tier');
+      expect(msg).toContain('per minute, hour, and day');
+      // No per-tier request ceiling is asserted — the published figures are unconfirmed,
+      // and the actionable wait is the Retry-After the error already carries.
+      expect(msg).not.toMatch(/\d+\s*(req)?\/(min|hr|day)/);
     }
   });
 
   it('rate-limit message includes Retry-After value when header present', async () => {
-    mockFetchResponse({
-      status: 429,
-      ok: false,
-      headerGet: (h: string) => (h === 'Retry-After' ? '120' : null),
-      body: '',
-    });
+    mockFetchResponse({ status: 429, ok: false, headers: { 'Retry-After': '120' }, body: '' });
     try {
       await svc.searchOpinions({ q: 'test' }, ctx);
       expect.fail('Should have thrown');
@@ -458,6 +499,23 @@ describe('rate-limit message content', () => {
       const msg = (err as Error).message ?? '';
       expect(msg).toContain('120');
     }
+  });
+
+  it('forwards the upstream Retry-After onto the error data, not just the message (#52)', async () => {
+    mockFetchResponse({ status: 429, ok: false, headers: { 'Retry-After': '47' }, body: '' });
+    await expect(svc.searchOpinions({ q: 'test' }, ctx)).rejects.toMatchObject({
+      message: expect.stringContaining('Retry-After: 47s'),
+      data: { reason: 'rate_limited', retryable: false, retryAfter: '47' },
+    });
+  });
+
+  it('omits retryAfter when CourtListener sends no Retry-After header (#52)', async () => {
+    mockFetchResponse({ status: 429, ok: false, body: '' });
+    const err = (await svc.searchOpinions({ q: 'test' }, ctx).catch((e) => e)) as {
+      data: Record<string, unknown>;
+    };
+    expect(err.data.reason).toBe('rate_limited');
+    expect(err.data).not.toHaveProperty('retryAfter');
   });
 });
 
@@ -981,6 +1039,248 @@ describe('getDocket entries pagination (#32)', () => {
     );
     const docket = await svc.getDocket(5578727, 20, 1, ctx);
     expect(docket.docket_entries_next_page).toBeNull();
+  });
+});
+
+// ── getParties: docket scoping, attorney detail, role decoding (#45 #54 #59) ──
+// A /parties/ record carries the party's attorney relationships for EVERY docket that
+// party has ever appeared on. Batching all of them into /attorneys/?id=… overran the
+// origin's URI limit (414) and reported unrelated counsel as attorneys on this docket —
+// and `id` is an exact lookup, so the batch resolved detail for only one of them.
+
+describe('getParties attorney scoping, detail, and role decoding (#45 #54 #59)', () => {
+  const DOCKET = 4192313;
+  const OTHER_DOCKET = 4219807;
+
+  let svc: CourtListenerService;
+  let ctx: ReturnType<typeof createMockContext>;
+
+  beforeEach(() => {
+    svc = new CourtListenerService(makeMockConfig(), makeMockStorage());
+    ctx = createMockContext();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** Stub /parties/ with the given relationships; records every /attorneys/ URL requested. */
+  function stubParties(
+    attorneys: Array<{
+      attorney_id: number;
+      docket_id: number;
+      role: number | null;
+      date_action: string | null;
+    }>,
+    details: Array<{ id: number; name: string }> = [],
+  ): string[] {
+    const attorneyUrls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) => {
+        let body: string;
+        if (url.includes('/attorneys/')) {
+          attorneyUrls.push(url);
+          const params = new URL(url).searchParams;
+          const expand = (rows: typeof details) =>
+            rows.map((d) => ({
+              ...d,
+              contact_raw: `${d.name} — 865 S Figueroa St`,
+              email: '',
+              fax: '',
+              phone: '',
+            }));
+          // `id` is an exact lookup upstream: repeated params collapse to the LAST value, so a
+          // multi-ID request resolves exactly one record (#59). Modelled here so a return to
+          // ID batching fails loudly instead of passing against a forgiving stub.
+          const ids = params.getAll('id');
+          if (ids.length > 0) {
+            const last = Number(ids[ids.length - 1]);
+            body = JSON.stringify({
+              count: 1,
+              next: null,
+              previous: null,
+              results: expand(details.filter((d) => d.id === last)),
+            });
+          } else {
+            // The docket filter returns the docket's whole roster, cursor-paginated.
+            const offset = Number(params.get('cursor') ?? 0);
+            const nextOffset = offset + 100;
+            body = JSON.stringify({
+              count: details.length,
+              next:
+                nextOffset < details.length
+                  ? `https://www.courtlistener.com/api/rest/v4/attorneys/?cursor=${nextOffset}`
+                  : null,
+              previous: null,
+              results: expand(details.slice(offset, nextOffset)),
+            });
+          }
+        } else {
+          body = JSON.stringify({
+            count: 'https://www.courtlistener.com/api/rest/v4/parties/?count=on',
+            next: null,
+            previous: null,
+            results: [
+              {
+                id: 2001,
+                name: 'Apple Inc.',
+                extra_info: '',
+                party_types: [
+                  {
+                    docket: `https://www.courtlistener.com/api/rest/v4/dockets/${DOCKET}/`,
+                    name: 'Defendant',
+                  },
+                  {
+                    docket: `https://www.courtlistener.com/api/rest/v4/dockets/${OTHER_DOCKET}/`,
+                    name: 'Plaintiff',
+                  },
+                ],
+                attorneys,
+              },
+            ],
+          });
+        }
+        return { status: 200, ok: true, headers: new Headers(), text: async () => body };
+      }),
+    );
+    return attorneyUrls;
+  }
+
+  it('keeps only the relationships belonging to the requested docket', async () => {
+    const attorneyUrls = stubParties(
+      [
+        { attorney_id: 106656, docket_id: DOCKET, role: 2, date_action: null },
+        { attorney_id: 999001, docket_id: OTHER_DOCKET, role: 1, date_action: null },
+        { attorney_id: 999002, docket_id: 5_000_000, role: 1, date_action: null },
+      ],
+      [{ id: 106656, name: 'Sidford L Brown' }],
+    );
+
+    const result = await svc.getParties(DOCKET, 1, 10, ctx);
+
+    expect(result.parties[0]?.attorneys.map((a) => a.attorney_id)).toEqual([106656]);
+    // Detail is resolved through the docket filter — `id` is an exact lookup upstream, so a
+    // repeated-`id` batch silently resolved only the last one (#59).
+    const attorneyUrl = new URL(attorneyUrls[0] ?? '');
+    expect(attorneyUrl.searchParams.get('docket')).toBe(String(DOCKET));
+    expect(attorneyUrl.searchParams.getAll('id')).toEqual([]);
+  });
+
+  it('resolves a name and contact block for every attorney on the docket (#59)', async () => {
+    const attorneyUrls = stubParties(
+      [
+        { attorney_id: 106656, docket_id: DOCKET, role: 2, date_action: null },
+        { attorney_id: 663414, docket_id: DOCKET, role: 1, date_action: null },
+        { attorney_id: 106657, docket_id: DOCKET, role: 1, date_action: null },
+      ],
+      [
+        { id: 106656, name: 'Sidford L Brown' },
+        { id: 663414, name: 'Bruce R Zisser' },
+        { id: 106657, name: 'Lara Sue Garner' },
+      ],
+    );
+
+    const attorneys = (await svc.getParties(DOCKET, 1, 10, ctx)).parties[0]?.attorneys ?? [];
+
+    expect(attorneys.map((a) => a.name)).toEqual([
+      'Sidford L Brown',
+      'Bruce R Zisser',
+      'Lara Sue Garner',
+    ]);
+    for (const att of attorneys) expect(att.contact_raw).not.toBe('');
+    // One upstream call for the whole roster — no per-attorney fan-out.
+    expect(attorneyUrls).toHaveLength(1);
+  });
+
+  it('makes no attorney request when the page has no attorneys of record', async () => {
+    const attorneyUrls = stubParties([
+      { attorney_id: 999001, docket_id: OTHER_DOCKET, role: 1, date_action: null },
+    ]);
+
+    const result = await svc.getParties(DOCKET, 1, 10, ctx);
+
+    expect(result.parties[0]?.attorneys).toEqual([]);
+    expect(attorneyUrls).toEqual([]);
+  });
+
+  it('decodes role_code to a label and carries the end date of a terminated relationship', async () => {
+    stubParties(
+      [
+        { attorney_id: 106656, docket_id: DOCKET, role: 2, date_action: null },
+        { attorney_id: 106657, docket_id: DOCKET, role: 6, date_action: '2013-11-04' },
+        { attorney_id: 106658, docket_id: DOCKET, role: 99, date_action: null },
+      ],
+      [
+        { id: 106656, name: 'Sidford L Brown' },
+        { id: 106657, name: 'Lara Sue Garner' },
+        { id: 106658, name: 'Unlisted Counsel' },
+      ],
+    );
+
+    const attorneys = (await svc.getParties(DOCKET, 1, 10, ctx)).parties[0]?.attorneys ?? [];
+
+    // 2 is "Lead attorney" — 1 is "Attorney to be noticed", the mapping the docs had backwards.
+    expect(attorneys[0]).toMatchObject({ role_code: 2, role: 'Lead attorney', date_action: null });
+    expect(attorneys[1]).toMatchObject({ role: 'Terminated', date_action: '2013-11-04' });
+    // Codes outside the documented enum pass through as the stringified code.
+    expect(attorneys[2]).toMatchObject({ role_code: 99, role: '99' });
+  });
+
+  it('walks cursor pages until every attorney on a large roster is resolved', async () => {
+    const attorneys = Array.from({ length: 250 }, (_, i) => ({
+      attorney_id: 200_000 + i,
+      docket_id: DOCKET,
+      role: 1,
+      date_action: null,
+    }));
+    const details = attorneys.map((a) => ({
+      id: a.attorney_id,
+      name: `Counsel ${a.attorney_id}`,
+    }));
+    const attorneyUrls = stubParties(attorneys, details);
+
+    const resolved = (await svc.getParties(DOCKET, 1, 10, ctx)).parties[0]?.attorneys ?? [];
+
+    expect(resolved).toHaveLength(250);
+    expect(resolved.every((a) => a.name !== '')).toBe(true);
+    // 250 rows at 100 per page — three cursor pages, then the walk stops.
+    expect(attorneyUrls).toHaveLength(3);
+  });
+
+  it('warns instead of silently emitting blank names when the page bound is hit', async () => {
+    const attorneys = Array.from({ length: 600 }, (_, i) => ({
+      attorney_id: 300_000 + i,
+      docket_id: DOCKET,
+      role: 1,
+      date_action: null,
+    }));
+    const details = attorneys.map((a) => ({ id: a.attorney_id, name: `Counsel ${a.attorney_id}` }));
+    const attorneyUrls = stubParties(attorneys, details);
+
+    const resolved = (await svc.getParties(DOCKET, 1, 10, ctx)).parties[0]?.attorneys ?? [];
+
+    // The walk stops at the bound, so the tail keeps empty names — but it is announced.
+    expect(attorneyUrls).toHaveLength(5);
+    expect(resolved.filter((a) => a.name === '')).toHaveLength(100);
+    expect(ctx.log.calls).toContainEqual(
+      expect.objectContaining({
+        level: 'warning',
+        data: expect.objectContaining({ docketId: DOCKET, unresolved: 100 }),
+      }),
+    );
+  });
+
+  it('reports an absent upstream role code as Unrecorded rather than a fabricated label', async () => {
+    stubParties(
+      [{ attorney_id: 106656, docket_id: DOCKET, role: null, date_action: null }],
+      [{ id: 106656, name: 'Sidford L Brown' }],
+    );
+
+    const attorneys = (await svc.getParties(DOCKET, 1, 10, ctx)).parties[0]?.attorneys ?? [];
+
+    // CourtListener's Role.role is nullable; String(null) would have shipped "null" as a label.
+    expect(attorneys[0]).toMatchObject({ role_code: null, role: 'Unrecorded' });
   });
 });
 

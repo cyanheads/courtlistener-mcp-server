@@ -11,8 +11,8 @@ export const getPartiesTool = tool('courtlistener_get_parties', {
   title: 'Get Parties',
   description:
     'Fetch all parties and attorneys of record for a RECAP federal docket by docket ID. ' +
-    "Returns each party's name, role (Plaintiff, Defendant, Petitioner, Respondent, etc.), and their attorneys with contact information. " +
-    'Requires two upstream calls per page (parties + attorney batch); keep page_size low to stay within the free-tier rate limit (5 req/min, 125/day). ' +
+    "Returns each party's name, role (Plaintiff, Defendant, Petitioner, Respondent, etc.), and their attorneys with contact information, scoped to this docket. " +
+    'Costs two upstream requests per call (parties + attorney lookup) against a rate-limited free tier, and one more for each extra page of a large attorney roster. ' +
     'Obtain docket IDs from courtlistener_search_dockets or courtlistener_get_docket.',
   annotations: { readOnlyHint: true, idempotentHint: true },
 
@@ -38,7 +38,7 @@ export const getPartiesTool = tool('courtlistener_get_parties', {
       .optional()
       .default(10)
       .describe(
-        'Number of parties per page (1–10). Each call makes two upstream requests (parties + attorney batch) — keep low to stay within the free-tier rate limit.',
+        'Requested number of parties per page (1–10). CourtListener paginates this endpoint at a fixed size and does not honor the requested value, so a page can come back larger than asked for.',
       ),
   }),
 
@@ -89,8 +89,20 @@ export const getPartiesTool = tool('courtlistener_get_parties', {
                       ),
                     role_code: z
                       .number()
+                      .nullable()
                       .describe(
-                        'Numeric attorney role code from the party–attorney relationship (e.g., 1 = Lead attorney).',
+                        'Numeric attorney role code from the party–attorney relationship (1 = Attorney to be noticed, 2 = Lead attorney, 3 = Attorney in sealed group, 4 = Pro hac vice, 5 = Self-terminated, 6 = Terminated, 7 = Suspended, 8 = Inactive, 9 = Disbarred, 10 = Unknown); null when upstream recorded no code.',
+                      ),
+                    role: z
+                      .string()
+                      .describe(
+                        'role_code decoded to a label (e.g., "Lead attorney"). Codes 5–9 ("Self-terminated" through "Disbarred") mean the attorney is no longer of record. The stringified code when upstream sends a value outside the documented enum, "Unrecorded" when it sends none.',
+                      ),
+                    date_action: z
+                      .string()
+                      .nullable()
+                      .describe(
+                        'Date the attorney–party relationship ended; null while the attorney is still of record.',
                       ),
                   })
                   .describe('Attorney of record for this party.'),
@@ -105,7 +117,12 @@ export const getPartiesTool = tool('courtlistener_get_parties', {
   // Surfaces the upstream party total on both response surfaces so the agent
   // knows when a page_size-capped page is a partial view of the full list.
   enrichment: {
-    totalCount: z.number().describe('Total parties on this docket across all pages.'),
+    totalCount: z
+      .number()
+      .optional()
+      .describe(
+        'Total parties on this docket across all pages — present only when the API reports a numeric count (this endpoint returns it as a URL by default, so it is absent for any list spanning more than one page).',
+      ),
   },
 
   errors: [
@@ -119,10 +136,10 @@ export const getPartiesTool = tool('courtlistener_get_parties', {
     {
       reason: 'rate_limited',
       code: JsonRpcErrorCode.RateLimited,
-      when: '429 response from CourtListener. Each call to this tool makes two upstream requests.',
-      retryable: true,
+      when: '429 response from CourtListener. Each call to this tool makes at least two upstream requests.',
+      retryable: false,
       recovery:
-        'Wait for the Retry-After period. Free tier: 5 req/min, 50/hr, 125/day. This tool costs 2 requests per call.',
+        'Wait out the Retry-After interval reported on the error before calling again. CourtListener throttles per minute, hour, and day, so an immediate retry fails; this tool costs at least 2 requests per call.',
     },
   ],
 
@@ -172,7 +189,10 @@ export const getPartiesTool = tool('courtlistener_get_parties', {
           lines.push('**Attorneys:**');
           for (const att of party.attorneys) {
             const name = att.name || `Attorney ID ${att.attorney_id}`;
-            lines.push(`- ${name} (ID: ${att.attorney_id}, role code: ${att.role_code})`);
+            const ended = att.date_action ? `, ended ${att.date_action}` : '';
+            lines.push(
+              `- ${name} (ID: ${att.attorney_id}, ${att.role} [code ${att.role_code ?? 'none'}]${ended})`,
+            );
             if (att.contact_raw) lines.push(`  ${att.contact_raw}`);
           }
         }

@@ -52,13 +52,12 @@ await createApp({
   instructions:
     'CourtListener MCP server — access 9M+ US court opinions, RECAP federal dockets, judge records, citation networks, and oral arguments.\n' +
     '- Start with courtlistener_lookup_courts to discover court IDs before filtering searches\n' +
-    '- Free tier rate limit: 5 req/min, 50/hr, 125/day — keep page_size low and avoid multi-hop workflows that exceed 3–4 calls\n' +
+    '- CourtListener publishes free-tier limits of 5 req/min, 50/hr, 125/day, but actual limits vary by token tier — pace multi-hop workflows and honor the Retry-After returned on a 429\n' +
     '- courtlistener_lookup_citation resolves citation strings (e.g., "410 U.S. 113") to cluster IDs\n' +
     '- courtlistener_get_citations traces precedent networks (direction="cited_by" for downstream influence)',
   setup(core) {
-    const serverConfig = getServerConfig();
     initCourtListenerService(
-      serverConfig as unknown as import('@cyanheads/mcp-ts-core/config').AppConfig,
+      { ...getServerConfig(), mcpServerVersion: core.config.mcpServerVersion },
       core.storage,
     );
   },

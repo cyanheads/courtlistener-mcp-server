@@ -29,7 +29,9 @@ const basePlaintiff: Party = {
       attorney_id: 5001,
       name: 'Harold Lee',
       contact_raw: '1 Infinite Loop, Cupertino CA 95014\n(408) 996-1010',
-      role_code: 1,
+      role_code: 2,
+      role: 'Lead attorney',
+      date_action: null,
     },
   ],
 };
@@ -44,7 +46,9 @@ const baseDefendant: Party = {
       attorney_id: 5002,
       name: 'Quinn Emanuel',
       contact_raw: '50 California St., San Francisco CA 94111',
-      role_code: 1,
+      role_code: 6,
+      role: 'Terminated',
+      date_action: '2013-11-04',
     },
   ],
 };
@@ -75,7 +79,10 @@ describe('getPartiesTool', () => {
     expect(plaintiff.attorneys).toHaveLength(1);
     expect(plaintiff.attorneys[0].attorney_id).toBe(5001);
     expect(plaintiff.attorneys[0].name).toBe('Harold Lee');
-    expect(plaintiff.attorneys[0].role_code).toBe(1);
+    expect(plaintiff.attorneys[0].role_code).toBe(2);
+    expect(plaintiff.attorneys[0].role).toBe('Lead attorney');
+    expect(result.parties[1].attorneys[0].role).toBe('Terminated');
+    expect(result.parties[1].attorneys[0].date_action).toBe('2013-11-04');
   });
 
   it('passes docket_id, page, and page_size to service', async () => {
@@ -109,8 +116,12 @@ describe('getPartiesTool', () => {
     const result = await getPartiesTool.handler(input, ctx);
     expect(result.total_parties).toBeNull();
     expect(result.next_cursor).toBe('2');
-    // nullable total must still validate, and the enrich.total call must be skipped (no throw)
-    expect(() => getPartiesTool.output.parse(result)).not.toThrow();
+    // The framework validates against output.extend(enrichment) — the schema advertised in
+    // tools/list — so the enrichment twin of an unknown count must be optional too (#57).
+    // Asserting the bare output schema here is what let the required totalCount ship.
+    expect(() =>
+      getPartiesTool.output.extend(getPartiesTool.enrichment).parse(result),
+    ).not.toThrow();
   });
 
   it('throws not_found when service throws NotFound', async () => {
@@ -175,7 +186,9 @@ describe('getPartiesTool', () => {
               attorney_id: 5001,
               name: 'Harold Lee',
               contact_raw: '1 Infinite Loop',
-              role_code: 1,
+              role_code: 2,
+              role: 'Lead attorney',
+              date_action: null,
             },
           ],
         },
@@ -200,9 +213,10 @@ describe('getPartiesTool', () => {
     expect(text).toContain('Plaintiff');
     expect(text).toContain('Samsung Electronics');
     expect(text).toContain('Defendant');
-    // attorney info must be rendered
+    // attorney info must be rendered — including the decoded role label (#54)
     expect(text).toContain('Harold Lee');
     expect(text).toContain('5001');
+    expect(text).toContain('Lead attorney');
     // extra_info must be rendered
     expect(text).toContain('South Korean Corporation');
     // party id must be rendered

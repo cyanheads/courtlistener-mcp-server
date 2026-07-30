@@ -5,7 +5,6 @@
  */
 
 import type { Context } from '@cyanheads/mcp-ts-core';
-import type { AppConfig } from '@cyanheads/mcp-ts-core/config';
 import {
   JsonRpcErrorCode,
   notFound,
@@ -39,6 +38,34 @@ import { idFromUri } from './uri.js';
 
 const REQUEST_TIMEOUT_MS = 30_000;
 
+/**
+ * Cursor pages walked while resolving attorney detail. CourtListener paginates
+ * `/attorneys/` at a fixed 20 rows — it ignores `page_size` on this endpoint — so this
+ * caps detail resolution at the first ~100 attorneys of a docket's roster. The walk
+ * stops as soon as every needed ID is resolved, so a typical docket costs one call;
+ * a roster past the cap logs a warning and leaves the surplus names empty.
+ */
+const ATTORNEY_PAGE_LIMIT = 5;
+
+/**
+ * CourtListener `Role.ATTORNEY_ROLES` codes (cl/people_db/models.py) → labels.
+ * Codes 5–9 mark a relationship that has ended, so the label changes how an entry
+ * reads: a "Terminated" attorney is not current counsel. Unknown codes pass through
+ * as the stringified code rather than being dropped or guessed.
+ */
+const ATTORNEY_ROLE_LABELS: Record<number, string> = {
+  1: 'Attorney to be noticed',
+  2: 'Lead attorney',
+  3: 'Attorney in sealed group',
+  4: 'Pro hac vice',
+  5: 'Self-terminated',
+  6: 'Terminated',
+  7: 'Suspended',
+  8: 'Inactive',
+  9: 'Disbarred',
+  10: 'Unknown',
+};
+
 /** Extract cursor token from a CourtListener next URL. */
 function extractCursor(nextUrl: string | null): string | null {
   if (!nextUrl) return null;
@@ -67,7 +94,7 @@ function toDocketId(docket: number | string): number | null {
 function buildRateLimitMessage(retryAfter: string | null): string {
   const base = 'CourtListener rate limit reached.';
   const hint =
-    'Free tier: 5 req/min, 50/hr, 125/day. Check courtlistener.com for membership options.';
+    'CourtListener throttles per minute, hour, and day. Check courtlistener.com for membership options.';
   if (retryAfter) {
     return `${base} Retry-After: ${retryAfter}s. ${hint}`;
   }
@@ -121,50 +148,73 @@ function notFoundForPath(path: string) {
  * (already-classified domain errors, 5xx, timeouts) through untouched.
  */
 function classifyFetchError(err: unknown, path: string): unknown {
-  const e = err as { code?: number; data?: { status?: number; reason?: string } } | null;
+  const e = err as {
+    code?: number;
+    data?: { status?: number; reason?: string; retryAfter?: string };
+  } | null;
   if (e?.data?.reason) return err; // already a domain error carrying a reason
   const status = e?.data?.status;
   if (status === 404 || e?.code === JsonRpcErrorCode.NotFound) return notFoundForPath(path);
   if (status === 429 || e?.code === JsonRpcErrorCode.RateLimited) {
+    // fetchWithTimeout already read CourtListener's Retry-After off the response and put it
+    // on the error — carry it through instead of making the agent guess the wait.
+    const retryAfter = e?.data?.retryAfter ?? null;
     // retryable: false — CourtListener's free-tier windows are per-minute/hour/day; withRetry's
     // 2/4/8s backoff can never clear them, so fail fast and let the agent honor Retry-After.
-    return rateLimited(buildRateLimitMessage(null), { reason: 'rate_limited', retryable: false });
+    return rateLimited(buildRateLimitMessage(retryAfter), {
+      reason: 'rate_limited',
+      retryable: false,
+      ...(retryAfter && { retryAfter }),
+    });
   }
   return err;
+}
+
+/**
+ * What the service needs to run: the server-specific env config (`getServerConfig()`)
+ * plus the running server's version, which lives on the framework config and is
+ * reported in the outbound User-Agent.
+ */
+export interface CourtListenerServiceConfig {
+  /** CourtListener API token — required by the env schema, so never absent at runtime. */
+  apiToken: string;
+  /** API base URL; defaults to the public v4 endpoint. */
+  baseUrl?: string;
+  /** Running server version — `core.config.mcpServerVersion` in `setup()`. */
+  mcpServerVersion: string;
 }
 
 export class CourtListenerService {
   private readonly baseUrl: string;
   private readonly token: string;
+  private readonly userAgent: string;
 
-  constructor(config: AppConfig, _storage: StorageService) {
-    const cfg = config as unknown as { baseUrl?: string; apiToken?: string };
-    this.baseUrl = cfg.baseUrl ?? 'https://www.courtlistener.com/api/rest/v4';
-    this.token = cfg.apiToken ?? '';
+  constructor(config: CourtListenerServiceConfig, _storage: StorageService) {
+    this.baseUrl = config.baseUrl ?? 'https://www.courtlistener.com/api/rest/v4';
+    this.token = config.apiToken;
+    // Read from the running server's version so a release bump reaches the outbound
+    // User-Agent — the value an upstream maintainer attributes traffic by.
+    this.userAgent = `courtlistener-mcp-server/${config.mcpServerVersion}`;
   }
 
   private headers(): Record<string, string> {
     return {
       Authorization: `Token ${this.token}`,
       Accept: 'application/json',
-      'User-Agent': 'courtlistener-mcp-server/0.5.0',
+      'User-Agent': this.userAgent,
     };
   }
 
-  /** Generic GET with retry, rate-limit detection, and JSON parse. Arrays are serialized as repeated params (e.g., id=1&id=2). */
+  /** Generic GET with retry, rate-limit detection, and JSON parse. */
   private get<T>(
     path: string,
-    params: Record<string, string | number | boolean | undefined | number[]>,
+    params: Record<string, string | number | boolean | undefined>,
     ctx: Context,
   ): Promise<T> {
     const url = new URL(`${this.baseUrl}${path}`);
     for (const [k, v] of Object.entries(params)) {
       if (v === undefined || v === '') continue;
-      if (Array.isArray(v)) {
-        for (const item of v) url.searchParams.append(k, String(item));
-      } else {
-        url.searchParams.set(k, String(v));
-      }
+      url.searchParams.set(k, String(v));
     }
     const fullUrl = url.toString();
     ctx.log.debug('CourtListener GET', { url: fullUrl });
@@ -188,35 +238,7 @@ export class CourtListenerService {
           throw classifyFetchError(err, path);
         }
 
-        // The status checks below are a fallback: fetchWithTimeout throws on non-2xx in
-        // production (handled above), but a Response-returning caller/test double lands here.
-        if (response.status === 429) {
-          const retryAfter = response.headers.get('Retry-After');
-          // retryable: false — a per-minute/hour/day window can't clear within withRetry's backoff.
-          throw rateLimited(buildRateLimitMessage(retryAfter), {
-            reason: 'rate_limited',
-            retryable: false,
-            ...(retryAfter && { retryAfter }),
-          });
-        }
-
-        if (response.status === 404) {
-          throw notFoundForPath(path);
-        }
-
-        if (!response.ok) {
-          const body = await response.text().catch(() => '');
-          if (/^\s*<(!DOCTYPE|html)/i.test(body)) {
-            throw serviceUnavailable(
-              `CourtListener returned HTML (status ${response.status}) — likely a maintenance window or error page.`,
-            );
-          }
-          throw serviceUnavailable(`CourtListener API error: HTTP ${response.status} for ${path}`, {
-            status: response.status,
-            body: body.slice(0, 200),
-          });
-        }
-
+        // Only 2xx reaches here; a non-2xx already threw above.
         const text = await response.text();
         if (/^\s*<(!DOCTYPE|html)/i.test(text)) {
           throw serviceUnavailable(
@@ -260,31 +282,7 @@ export class CourtListenerService {
           throw classifyFetchError(err, path);
         }
 
-        // Fallback path for a Response-returning caller/test double (see get()).
-        if (response.status === 429) {
-          const retryAfter = response.headers.get('Retry-After');
-          // retryable: false — a per-minute/hour/day window can't clear within withRetry's backoff.
-          throw rateLimited(buildRateLimitMessage(retryAfter), {
-            reason: 'rate_limited',
-            retryable: false,
-            ...(retryAfter && { retryAfter }),
-          });
-        }
-
-        if (response.status === 404) {
-          throw notFound('Citation not found in CourtListener database.', {
-            reason: 'not_found',
-          });
-        }
-
-        if (!response.ok) {
-          const text = await response.text().catch(() => '');
-          throw serviceUnavailable(`CourtListener API error: HTTP ${response.status}`, {
-            status: response.status,
-            body: text.slice(0, 200),
-          });
-        }
-
+        // Only 2xx reaches here; a non-2xx already threw above.
         const text = await response.text();
         return JSON.parse(text) as T;
       },
@@ -759,12 +757,13 @@ export class CourtListenerService {
   // ── Parties ───────────────────────────────────────────────────────────────
 
   /**
-   * Fetch parties and their attorneys for a docket. Two upstream calls per page:
-   * 1. GET /parties/?docket=<id>&page=<n>&page_size=<n>&filter_nested_results=True
-   * 2. GET /attorneys/?id=<a>&id=<b>&... (batch fetch for all attorney IDs on the page)
+   * Fetch parties and their attorneys for a docket. Two upstream calls for a typical docket:
+   * 1. GET /parties/?docket=<id>&page=<n>&page_size=<n>
+   * 2. GET /attorneys/?docket=<id> — the docket's whole attorney roster, cursor-paginated
    *
    * Attorney names and contact details require the second call — the /parties/ response
-   * embeds only attorney_id, role code, and docket_id inline.
+   * embeds only attorney_id, role code, and docket_id inline. Call 2 repeats (up to
+   * `ATTORNEY_PAGE_LIMIT` times) only while IDs from call 1 remain unresolved.
    */
   async getParties(
     docketId: number,
@@ -787,31 +786,55 @@ export class CourtListenerService {
         docket: docketId,
         page,
         page_size: pageSize,
-        filter_nested_results: true,
       },
       ctx,
     );
 
-    // Collect unique attorney IDs from this page to batch-fetch names/contact
+    // A /parties/ record aggregates a party's attorney relationships across EVERY docket that
+    // party appears on, so a repeat litigant contributes thousands of unrelated relationships.
+    // (`filter_nested_results` does not help: upstream only trims the nested rows when the
+    // request carries a related-lookup key such as `docket__id`, never a plain `docket`.)
+    // Scope to the requested docket before anything else — unscoped, these entries misreport
+    // attorneys from other cases as counsel here.
+    const scopedResults = pageData.results.map((raw) => ({
+      ...raw,
+      attorneys: raw.attorneys.filter((rel) => rel.docket_id === docketId),
+    }));
+
+    // Unique attorney IDs on this page — the set whose names and contact blocks need resolving.
     const allAttorneyIds = [
-      ...new Set(pageData.results.flatMap((p) => p.attorneys.map((a) => a.attorney_id))),
+      ...new Set(scopedResults.flatMap((p) => p.attorneys.map((a) => a.attorney_id))),
     ];
 
-    // Map attorney_id → detail; empty when there are no attorneys on this page
+    // Map attorney_id → detail; empty when there are no attorneys on this page.
+    // `/attorneys/` has no multi-ID filter — `id` is an exact lookup, so repeated `id=` params
+    // collapse to the last one and every other attorney comes back unresolved. Its `docket`
+    // filter returns the roster this docket needs instead, cursor-paginated.
     const attorneyMap = new Map<number, AttorneyDetail>();
-    if (allAttorneyIds.length > 0) {
-      // /attorneys/ accepts repeated id= params for batch lookup
+    const unresolved = new Set(allAttorneyIds);
+    let attorneyCursor: string | null = null;
+    for (let fetched = 0; fetched < ATTORNEY_PAGE_LIMIT && unresolved.size > 0; fetched++) {
       const attPage = await this.get<CourtListenerPage<AttorneyDetail>>(
         '/attorneys/',
-        { id: allAttorneyIds, page_size: allAttorneyIds.length + 5 },
+        { docket: docketId, cursor: attorneyCursor ?? undefined },
         ctx,
       );
       for (const att of attPage.results) {
-        attorneyMap.set(att.id, att);
+        if (unresolved.delete(att.id)) attorneyMap.set(att.id, att);
       }
+      attorneyCursor = extractCursor(attPage.next);
+      if (!attorneyCursor) break;
+    }
+    if (unresolved.size > 0) {
+      // Say so rather than emitting blank names as if upstream had no record of them.
+      ctx.log.warning('Attorney detail unresolved after the page walk', {
+        docketId,
+        unresolved: unresolved.size,
+        pagesWalked: ATTORNEY_PAGE_LIMIT,
+      });
     }
 
-    const parties: Party[] = pageData.results.map((raw) => {
+    const parties: Party[] = scopedResults.map((raw) => {
       // Derive role for this docket from party_types — pick the entry whose docket matches.
       // pt.docket arrives as a `.../dockets/<id>/` URL, so resolve it to a numeric ID first.
       const roleEntry = raw.party_types.find((pt) => toDocketId(pt.docket) === docketId);
@@ -823,7 +846,10 @@ export class CourtListenerService {
           attorney_id: rel.attorney_id,
           name: detail?.name ?? '',
           contact_raw: detail?.contact_raw ?? '',
-          role_code: rel.role,
+          role_code: rel.role ?? null,
+          role:
+            rel.role == null ? 'Unrecorded' : (ATTORNEY_ROLE_LABELS[rel.role] ?? String(rel.role)),
+          date_action: rel.date_action ?? null,
         };
       });
 
@@ -875,7 +901,10 @@ export class CourtListenerService {
 
 let _service: CourtListenerService | undefined;
 
-export function initCourtListenerService(config: AppConfig, storage: StorageService): void {
+export function initCourtListenerService(
+  config: CourtListenerServiceConfig,
+  storage: StorageService,
+): void {
   _service = new CourtListenerService(config, storage);
 }
 

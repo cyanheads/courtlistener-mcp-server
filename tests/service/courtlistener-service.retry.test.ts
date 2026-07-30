@@ -17,13 +17,17 @@ vi.mock('@cyanheads/mcp-ts-core/utils', async (importOriginal) => {
   return { ...original, fetchWithTimeout: vi.fn() };
 });
 
-import type { AppConfig } from '@cyanheads/mcp-ts-core/config';
 import type { StorageService } from '@cyanheads/mcp-ts-core/storage';
 import { fetchWithTimeout } from '@cyanheads/mcp-ts-core/utils';
-import { CourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
+import {
+  CourtListenerService,
+  type CourtListenerServiceConfig,
+} from '@/services/courtlistener/courtlistener-service.js';
 
-const makeConfig = (token = 'secret-token'): AppConfig =>
-  ({ apiToken: token }) as unknown as AppConfig;
+const makeConfig = (token = 'secret-token'): CourtListenerServiceConfig => ({
+  apiToken: token,
+  mcpServerVersion: '0.0.0-test',
+});
 const makeStorage = () => ({}) as unknown as StorageService;
 
 describe('429 fail-fast (#25)', () => {
@@ -60,5 +64,25 @@ describe('429 fail-fast (#25)', () => {
     expect(fetchWithTimeout).toHaveBeenCalledTimes(1);
     // And no exhaustion suffix, because withRetry never entered the retry loop.
     expect(err.message).not.toContain('failed after');
+  });
+
+  it('carries the transport-captured Retry-After through withRetry to the agent (#52)', async () => {
+    const { McpError, JsonRpcErrorCode } = await import('@cyanheads/mcp-ts-core/errors');
+    // fetchWithTimeout attaches the upstream Retry-After header to the error data.
+    vi.mocked(fetchWithTimeout).mockRejectedValue(
+      new McpError(JsonRpcErrorCode.RateLimited, 'Fetch failed. Status: 429', {
+        status: 429,
+        retryAfter: '47',
+        errorSource: 'FetchHttpError',
+      }),
+    );
+
+    const err = (await svc.searchOpinions({ q: 'test' }, ctx).catch((e) => e)) as InstanceType<
+      typeof McpError
+    >;
+
+    // The wait time survives classification on both surfaces — data for routing, message for display.
+    expect(err.data).toMatchObject({ reason: 'rate_limited', retryAfter: '47' });
+    expect(err.message).toContain('Retry-After: 47s');
   });
 });

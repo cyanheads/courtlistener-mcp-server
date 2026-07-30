@@ -59,7 +59,7 @@ Present findings as:
 - **Precedent Trajectory** (if deep): which courts have applied, distinguished, or limited the ruling
 - **Research Gaps**: what questions remain unanswered and what additional searches would address them
 
-Rate limit note: free tier is 5 req/min, 50/hr, 125/day — pace your tool calls accordingly.`,
+Rate limit note: CourtListener publishes free-tier limits of 5 req/min, 50/hr, 125/day, though actual limits vary by token tier — pace your tool calls and honor the Retry-After returned on a 429.`,
         },
       },
     ];

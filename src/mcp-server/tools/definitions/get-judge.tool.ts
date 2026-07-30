@@ -165,8 +165,9 @@ export const getJudgeTool = tool('courtlistener_get_judge', {
       reason: 'rate_limited',
       code: JsonRpcErrorCode.RateLimited,
       when: '429 response from CourtListener.',
-      retryable: true,
-      recovery: 'Wait for the Retry-After period. Free tier: 5 req/min, 50/hr, 125/day.',
+      retryable: false,
+      recovery:
+        'Wait out the Retry-After interval reported on the error before calling again. CourtListener throttles per minute, hour, and day, so an immediate retry fails.',
     },
   ],
 

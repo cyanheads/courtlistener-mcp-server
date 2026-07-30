@@ -12,7 +12,7 @@ import { toStorageUrl } from '@/services/courtlistener/uri.js';
 export const searchOpinionsTool = tool('courtlistener_search_opinions', {
   title: 'Search Court Opinions',
   description:
-    'Full-text search across 9M+ written US court opinions with field-level filtering. Returns opinion cluster summaries with case metadata, citations, matched text snippets, and the individual opinion variants filed in each case. Supports CourtListener field syntax (caseName:"roe v wade", court_id:scotus, judge:"Alito") and boolean operators (AND, OR, NOT). Use courtlistener_lookup_courts to find court IDs. Rate limit: 5 req/min, 50/hr, 125/day on the free tier.',
+    'Full-text search across 9M+ written US court opinions with field-level filtering. Returns opinion cluster summaries with case metadata, citations, matched text snippets, and the individual opinion variants filed in each case. Supports CourtListener field syntax (caseName:"roe v wade", court_id:scotus, judge:"Alito") and boolean operators (AND, OR, NOT). Use courtlistener_lookup_courts to find court IDs. CourtListener publishes free-tier limits of 5 req/min, 50/hr, 125/day; actual limits vary by token tier.',
   annotations: { readOnlyHint: true, openWorldHint: true, idempotentHint: false },
 
   input: z.object({
@@ -185,9 +185,9 @@ export const searchOpinionsTool = tool('courtlistener_search_opinions', {
       reason: 'rate_limited',
       code: JsonRpcErrorCode.RateLimited,
       when: '429 response from CourtListener — minute, hour, or day throttle hit.',
-      retryable: true,
+      retryable: false,
       recovery:
-        'Wait for the rate-limit window to reset (Retry-After header in seconds). Free tier: 5 req/min, 50/hr, 125/day.',
+        'Wait out the Retry-After interval reported on the error before calling again. CourtListener throttles per minute, hour, and day, so an immediate retry fails.',
     },
     {
       reason: 'invalid_query',

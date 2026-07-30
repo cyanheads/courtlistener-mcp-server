@@ -105,9 +105,9 @@ export const getCitationsTool = tool('courtlistener_get_citations', {
       reason: 'rate_limited',
       code: JsonRpcErrorCode.RateLimited,
       when: '429 response from CourtListener.',
-      retryable: true,
+      retryable: false,
       recovery:
-        'Wait for the Retry-After period before retrying. Free tier: 5 req/min, 50/hr, 125/day.',
+        'Wait out the Retry-After interval reported on the error before calling again. CourtListener throttles per minute, hour, and day, so an immediate retry fails.',
     },
     {
       reason: 'invalid_date',

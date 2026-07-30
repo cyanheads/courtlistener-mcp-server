@@ -457,10 +457,19 @@ export interface PartyType {
 export interface AttorneyRelationship {
   /** Numeric attorney ID — pass to /attorneys/{id}/ for name and contact. */
   attorney_id: number;
-  /** Docket this relationship applies to. */
+  /** Date the relationship ended (ISO 8601); null while the attorney is still of record. */
+  date_action: string | null;
+  /**
+   * Docket this relationship applies to. A party record aggregates relationships across every
+   * docket the party has appeared on, so this is the only way to scope attorneys to one case.
+   */
   docket_id: number;
-  /** Numeric role code from the party–attorney relationship (e.g. 1 = "Lead attorney"). */
-  role: number;
+  /**
+   * Numeric role code from the party–attorney relationship (e.g. 2 = "Lead attorney").
+   * Nullable upstream — the field is optional on CourtListener's `Role` model, so it
+   * arrives null when the PACER role text could not be mapped to a code.
+   */
+  role: number | null;
 }
 
 /** Attorney detail from /attorneys/{id}/. */
@@ -486,7 +495,15 @@ export interface Party {
     attorney_id: number;
     name: string;
     contact_raw: string;
-    role_code: number;
+    /** Role code as sent by upstream; null when it recorded no code. */
+    role_code: number | null;
+    /**
+     * Decoded role_code label; the stringified code when upstream sends one outside the
+     * enum, "Unrecorded" when it sends none.
+     */
+    role: string;
+    /** Date the relationship ended; null while the attorney is still of record. */
+    date_action: string | null;
   }[];
   /** Additional metadata from upstream (e.g., pro se status, date range). */
   extra_info: string;
