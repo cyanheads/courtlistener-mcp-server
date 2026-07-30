@@ -110,10 +110,10 @@ describe('getOralArgumentTool', () => {
 
   // #31 — a long transcript overflows the inline byte budget and returns a section
   // outline instead of a truncated payload.
-  describe('outline-on-overflow (#31)', () => {
+  describe('outline-on-overflow (#31, #51)', () => {
     const longTranscript = 'The Court will hear argument. '.repeat(1100); // ~33 KB
 
-    it('overflows to a section outline dominated by the transcript', async () => {
+    it('withholds only the transcript and keeps every record field (#51)', async () => {
       mockSvc.getOralArgument = vi
         .fn()
         .mockResolvedValue({ ...baseAudio, stt_transcript: longTranscript });
@@ -122,16 +122,68 @@ describe('getOralArgumentTool', () => {
       const result = await getOralArgumentTool.handler(input, ctx);
 
       expect(result.kind).toBe('outline');
-      // full-mode fields are dropped in outline mode
+      // The transcript is the one field withheld.
       expect(result.transcript).toBeUndefined();
-      expect(result.oral_argument_id).toBeUndefined();
-      const sections = result.sections ?? [];
-      expect(sections.map((s) => s.name)).toContain('transcript');
-      // transcript is the largest section
-      expect(sections[0]?.name).toBe('transcript');
-      expect(result.retrieval_notice).toContain('sections');
+      // Pre-fix every one of these was dropped, leaving a 26-character content[] payload
+      // that told the agent neither which case it fetched nor what to chain to.
+      expect(result.oral_argument_id).toBe(105162);
+      expect(result.case_name).toBe(baseAudio.case_name);
+      expect(result.case_name_full).toBe(baseAudio.case_name_full);
+      expect(result.docket_id).toBe(73418842);
+      expect(result.duration_seconds).toBe(1607);
+      expect(result.download_url).toBe(baseAudio.download_url);
+      expect(result.judges).toBe('');
+      expect(result.panel_ids).toEqual([42, 43]);
+      expect(result.has_transcript).toBe(true);
       // structuredContent parse holds
       expect(() => getOralArgumentTool.output.parse(result)).not.toThrow();
+    });
+
+    it('lists transcript as the only retrievable section (#51)', async () => {
+      mockSvc.getOralArgument = vi
+        .fn()
+        .mockResolvedValue({ ...baseAudio, stt_transcript: longTranscript });
+      const ctx = createMockContext();
+      const input = getOralArgumentTool.input.parse({ id: 105162 });
+      const result = await getOralArgumentTool.handler(input, ctx);
+
+      // Pre-fix the outline advertised 4-byte scalars (duration_seconds, has_transcript,
+      // case_name_full, judges) as retrievable sections — pure noise now that they are
+      // always present.
+      expect(result.sections).toEqual([
+        { name: 'transcript', bytes: JSON.stringify(longTranscript).length },
+      ]);
+      expect(result.retrieval_notice).toContain('sections:["transcript"]');
+    });
+
+    it('renders the metadata header on the outline arm in content[] (#51)', async () => {
+      mockSvc.getOralArgument = vi
+        .fn()
+        .mockResolvedValue({ ...baseAudio, stt_transcript: longTranscript });
+      const ctx = createMockContext();
+      const input = getOralArgumentTool.input.parse({ id: 105162 });
+      const result = await getOralArgumentTool.handler(input, ctx);
+
+      const text = getOralArgumentTool.format!(getOralArgumentTool.output.parse(result))
+        .map((b) => (b as { text: string }).text)
+        .join('\n');
+      // Pre-fix content[] was exactly '**Response mode:** outline' — 26 characters.
+      expect(text.length).toBeGreaterThan(100);
+      expect(text).toContain('**Response mode:** outline');
+      expect(text).toContain(baseAudio.case_name);
+      expect(text).toContain('73418842');
+      expect(text).toContain('sections available');
+    });
+
+    it('inlines a transcript that fits the budget', async () => {
+      mockSvc.getOralArgument = vi.fn().mockResolvedValue(baseAudio);
+      const ctx = createMockContext();
+      const input = getOralArgumentTool.input.parse({ id: 105162 });
+      const result = await getOralArgumentTool.handler(input, ctx);
+
+      expect(result.kind).toBe('full');
+      expect(result.transcript).toBe(baseAudio.stt_transcript);
+      expect(result.sections).toBeUndefined();
     });
 
     it('returns the full transcript on a section re-call', async () => {
@@ -255,13 +307,19 @@ describe('getOralArgumentTool', () => {
     expect(text).not.toContain('truncated');
   });
 
-  it('format renders the outline arm with sections and notice', () => {
+  it('format renders the outline arm with metadata, sections, and notice', () => {
     const output = getOralArgumentTool.output.parse({
       kind: 'outline',
-      sections: [
-        { name: 'transcript', bytes: 33000 },
-        { name: 'case_name_full', bytes: 64 },
-      ],
+      oral_argument_id: 105162,
+      case_name: 'Arrowhead Capital Finance v. Seven Arts',
+      case_name_full: 'Arrowhead Capital Finance, Ltd. v. Seven Arts Entertainment, Inc.',
+      docket_id: 73418842,
+      duration_seconds: 1607,
+      download_url: 'https://www.courtlistener.com/audio/mp3/case.mp3',
+      judges: '',
+      panel_ids: [42, 43],
+      has_transcript: true,
+      sections: [{ name: 'transcript', bytes: 33000 }],
       retrieval_notice: 'Re-call with sections:["transcript"] to retrieve the full transcript.',
     });
     const blocks = getOralArgumentTool.format!(output);
@@ -269,8 +327,11 @@ describe('getOralArgumentTool', () => {
     expect(text).toContain('transcript');
     expect(text).toContain('sections available');
     expect(text).toContain('Re-call with sections');
-    // #38 — a pure outline drops every record field, so the mode line is the only
-    // signal that the payload is an outline; it must still reach content[].
+    // #38 — the mode line must reach content[], not just structuredContent.
     expect(text).toContain('**Response mode:** outline');
+    // #51 — the outline arm carries the record metadata, so the header renders too.
+    expect(text).toContain('Arrowhead Capital Finance v. Seven Arts');
+    expect(text).toContain('105162');
+    expect(text).toContain('73418842');
   });
 });

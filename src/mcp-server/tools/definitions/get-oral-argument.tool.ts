@@ -6,16 +6,15 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import {
+  DEFAULT_OUTLINE_BUDGET_BYTES,
   formatOutline,
   OUTLINE_VARIANT,
-  outlineOnOverflow,
-  selectSections,
 } from '@cyanheads/mcp-ts-core/utils';
 import { getCourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
 import { idFromUri, personIdFromUri } from '@/services/courtlistener/uri.js';
 
-/** Full-mode fields — the record itself. Made optional in the tool output so an
- *  outline (or a section-scoped re-call) can omit the fields it doesn't carry. */
+/** The record's fields. Made optional in the tool output because `transcript` is the
+ *  one field an outline response withholds; the rest accompany every response. */
 const OralArgumentDetail = z.object({
   oral_argument_id: z.number().describe('Audio recording ID.'),
   case_name: z.string().describe('Case name.'),
@@ -30,17 +29,21 @@ const OralArgumentDetail = z.object({
   has_transcript: z.boolean().describe('True if a speech-to-text transcript is available.'),
   transcript: z
     .string()
-    .describe('Speech-to-text transcript; empty string if transcription has not completed.'),
+    .describe(
+      'Speech-to-text transcript; empty string if transcription has not completed. The only field an outline response withholds — re-call with sections:["transcript"] to retrieve it.',
+    ),
 });
 
-/** The only valid `sections` names: `selectSections` projects on the record's own
- *  top-level keys, so derive them from the schema rather than restating the list. */
+/** Valid `sections` names — the record's own top-level keys, derived from the schema
+ *  rather than restated. `transcript` is the only name that adds anything, since the
+ *  rest accompany every response; a selection naming only the others is accepted and
+ *  returns the record without the transcript. */
 const SECTION_NAMES = Object.keys(OralArgumentDetail.shape);
 
 export const getOralArgumentTool = tool('courtlistener_get_oral_argument', {
   title: 'Get Oral Argument',
   description:
-    'Fetch the full detail record for a single oral argument audio recording by its ID (the audio_id from courtlistener_search_oral_arguments). Returns the case name, panel judge IDs, duration, MP3 download URL, linked docket, and the speech-to-text transcript when transcription has completed. A long transcript overflows to a section outline; re-call with sections:["transcript"] to retrieve it in full. The argument date is not on this record — it comes from the search result or the linked docket.',
+    'Fetch the full detail record for a single oral argument audio recording by its ID (the audio_id from courtlistener_search_oral_arguments). Returns the case name, panel judge IDs, duration, MP3 download URL, linked docket, and the speech-to-text transcript when transcription has completed. A long transcript is withheld and listed as a retrievable section instead; re-call with sections:["transcript"] to pull it. Every other field is present either way. The argument date is not on this record — it comes from the search result or the linked docket.',
   annotations: { readOnlyHint: true, idempotentHint: true },
 
   input: z.object({
@@ -54,7 +57,7 @@ export const getOralArgumentTool = tool('courtlistener_get_oral_argument', {
       .array(z.string())
       .optional()
       .describe(
-        'Section identifiers to retrieve in full, from a prior outline response (e.g. ["transcript"]). Omit for the full record, or an outline if it overflows the inline budget.',
+        'Section identifiers to retrieve, from a prior outline response — ["transcript"] is the only one that adds anything, since every other field is returned regardless. A selection that omits "transcript" therefore returns the record without it. Omit this argument entirely for the whole record, or the record minus an oversized transcript.',
       ),
   }),
 
@@ -62,7 +65,7 @@ export const getOralArgumentTool = tool('courtlistener_get_oral_argument', {
     kind: z
       .enum(['full', 'outline'])
       .describe(
-        "'full' returns the record (or the selected sections); 'outline' lists retrievable sections when the transcript overflows the inline byte budget.",
+        "'full' carries the transcript inline; 'outline' withholds it and lists it as a retrievable section because it overflows the inline byte budget. Every other field of the record is present either way.",
       ),
     ...OralArgumentDetail.partial().shape,
     // Outline arm — reuses OUTLINE_VARIANT's shape. The section element carries an
@@ -71,14 +74,16 @@ export const getOralArgumentTool = tool('courtlistener_get_oral_argument', {
     sections: z
       .array(
         OUTLINE_VARIANT.shape.sections.element.describe(
-          'A retrievable section of the record and its serialized byte size.',
+          'A withheld section of the record and its serialized byte size.',
         ),
       )
       .optional()
-      .describe('Retrievable sections, largest first — pass names to `sections` on a re-call.'),
+      .describe(
+        'Sections withheld from this response — only ever `transcript`; pass its name to `sections` on a re-call. Absent when nothing was withheld.',
+      ),
     retrieval_notice: OUTLINE_VARIANT.shape.notice
       .optional()
-      .describe('How to re-call the tool for specific sections when the record overflows.'),
+      .describe('How to re-call the tool for the transcript when it overflows the inline budget.'),
   }),
 
   errors: [
@@ -140,7 +145,11 @@ export const getOralArgumentTool = tool('courtlistener_get_oral_argument', {
       return id !== null ? [id] : [];
     });
 
-    const detail = {
+    // Cheap record metadata — kept in every response, full or outline. The transcript
+    // is the only field large enough to be worth withholding; the rest are scalars and
+    // short arrays that cost nothing, and an outline without them tells the agent
+    // neither which case it fetched nor what to chain to next.
+    const meta = {
       oral_argument_id: audio.id,
       case_name: audio.case_name ?? '',
       case_name_full: audio.case_name_full ?? '',
@@ -150,38 +159,39 @@ export const getOralArgumentTool = tool('courtlistener_get_oral_argument', {
       judges: audio.judges ?? '',
       panel_ids: panelIds,
       has_transcript: transcript.length > 0,
-      transcript,
     };
 
     ctx.log.info('courtlistener_get_oral_argument complete', {
       id: input.id,
-      has_transcript: detail.has_transcript,
+      has_transcript: meta.has_transcript,
     });
 
-    // Selection re-call: return only the requested sections plus identity fields.
-    // Unknown names were already rejected before the fetch, so selectSections only
-    // ever sees valid keys here.
+    // Selection re-call: the transcript is the only withheld field, so it is the only
+    // name that adds anything. Unknown names were already rejected before the fetch.
     if (input.sections?.length) {
       return {
-        ...selectSections(detail, input.sections, {
-          alwaysKeep: ['oral_argument_id', 'case_name'],
-        }),
+        ...meta,
+        ...(input.sections.includes('transcript') ? { transcript } : {}),
         kind: 'full' as const,
       };
     }
 
-    // Disclosure path: the whole record under budget, else a section outline. The
-    // transcript is the one dominant field among small scalars, so the framework's
-    // default extractor (one section per top-level key) needs no customization.
-    const overflow = outlineOnOverflow(detail);
-    if (overflow.kind === 'outline') {
+    // Disclosure path. `outlineOnOverflow` can't drive this: it short-circuits to the
+    // full document whenever fewer than two sections are extracted, so scoping it to
+    // the transcript alone would inline every oversized transcript — the exact payload
+    // the outline arm exists to avoid. Measure the one field against the same budget
+    // and build the single-section outline directly.
+    const transcriptBytes = JSON.stringify(transcript).length;
+    if (transcriptBytes > DEFAULT_OUTLINE_BUDGET_BYTES) {
       return {
+        ...meta,
         kind: 'outline' as const,
-        sections: overflow.sections,
-        retrieval_notice: overflow.notice,
+        sections: [{ name: 'transcript', bytes: transcriptBytes }],
+        retrieval_notice:
+          'Transcript too large to inline. Re-call courtlistener_get_oral_argument with the same id plus sections:["transcript"] to retrieve it in full. Every other field of the record is already in this response.',
       };
     }
-    return overflow;
+    return { ...meta, transcript, kind: 'full' as const };
   },
 
   format: (result) => {
@@ -194,26 +204,21 @@ export const getOralArgumentTool = tool('courtlistener_get_oral_argument', {
         })
       : [];
 
-    // `kind` is required in every response, so it renders on both paths — a pure
-    // outline drops every record field and would otherwise show no discriminator.
-    const modeLine = `**Response mode:** ${result.kind}`;
+    // Record metadata accompanies both arms, so this header renders in every mode.
+    // `kind` is required in every response and renders unconditionally — keying it off
+    // an arm would hide the discriminator from content[]-only clients.
+    const lines: string[] = [`## ${result.case_name ?? ''}`, `**Response mode:** ${result.kind}`];
 
-    // Full arm — keyed on oral_argument_id (always kept). Each field is guarded
-    // because a section-scoped re-call returns a partial record.
-    if (result.oral_argument_id === undefined) {
-      return [{ type: 'text', text: modeLine }, ...outlineBlocks];
-    }
-
-    const lines: string[] = [`## ${result.case_name ?? ''}`, modeLine];
-
-    const meta: string[] = [`**Audio ID:** ${result.oral_argument_id}`];
+    const meta: string[] = [];
+    if (result.oral_argument_id !== undefined)
+      meta.push(`**Audio ID:** ${result.oral_argument_id}`);
     if (result.docket_id !== undefined) meta.push(`**Docket ID:** ${result.docket_id}`);
     if (result.duration_seconds !== undefined) {
       const durationMin = Math.floor(result.duration_seconds / 60);
       const durationSec = result.duration_seconds % 60;
       meta.push(`**Duration:** ${durationMin}m ${durationSec}s (${result.duration_seconds}s)`);
     }
-    lines.push(meta.join(' | '));
+    if (meta.length > 0) lines.push(meta.join(' | '));
 
     if (result.case_name_full && result.case_name_full !== result.case_name) {
       lines.push(`*${result.case_name_full}*`);
