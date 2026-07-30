@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.5.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/courtlistener-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/courtlistener-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/courtlistener-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.2-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.5.1-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/courtlistener-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/courtlistener-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/courtlistener-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.2-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -121,9 +121,10 @@ Fetch full docket metadata and entry list for a single federal case.
 
 Fetch all parties and attorneys of record for a RECAP federal docket.
 
-- Returns each party's name, docket-scoped role (Plaintiff, Defendant, Petitioner, Respondent, etc.), and attorneys with contact information
-- Attorney names and contact details are resolved in a single batch call per page — 2 upstream requests total per invocation
-- Paginate large party lists with `page` and `page_size` (max 10); keep `page_size` low to stay within the free-tier rate limit
+- Returns each party's name, docket-scoped role (Plaintiff, Defendant, Petitioner, Respondent, etc.), and the attorneys of record on this docket with contact information
+- Attorney roles are decoded to labels (`Lead attorney`, `Terminated`, …) alongside the raw code, with the date a relationship ended
+- Attorney names and contact details are resolved from the docket's attorney roster — 2 upstream requests per invocation, plus one for each extra roster page on a docket with a large attorney list
+- Paginate large party lists with `page`; `page_size` (max 10) is a request only — CourtListener paginates this endpoint at a fixed size and can return more parties than asked for
 - Obtain docket IDs from `courtlistener_search_dockets` or `courtlistener_get_docket`
 
 ---
@@ -312,7 +313,7 @@ MCP_TRANSPORT_TYPE=http MCP_HTTP_PORT=3010 COURTLISTENER_API_TOKEN=... bun run s
 ### Prerequisites
 
 - [Bun v1.3.2](https://bun.sh/) or higher (or Node.js v24+).
-- A CourtListener API token — free account at [courtlistener.com](https://www.courtlistener.com/sign-in/). Free tier: 5 req/min, 50 req/hr, 125 req/day. [Free Law Project membership](https://free.law/donate/) unlocks higher limits.
+- A CourtListener API token — free account at [courtlistener.com](https://www.courtlistener.com/sign-in/). CourtListener publishes free-tier limits of 5 req/min, 50 req/hr, 125 req/day; actual limits vary by token tier. [Free Law Project membership](https://free.law/donate/) unlocks higher limits.
 
 ### Installation
 
@@ -347,7 +348,7 @@ All configuration is validated at startup via Zod schemas in `src/config/server-
 
 | Variable | Description | Default |
 |:---------|:------------|:--------|
-| `COURTLISTENER_API_TOKEN` | **Required.** API token from your CourtListener account settings. Free tier: 5 req/min, 50/hr, 125/day. | — |
+| `COURTLISTENER_API_TOKEN` | **Required.** API token from your CourtListener account settings. CourtListener's published free-tier limits are 5 req/min, 50/hr, 125/day; actual limits vary by token tier. | — |
 | `COURTLISTENER_BASE_URL` | API base URL override. | `https://www.courtlistener.com/api/rest/v4` |
 | `MCP_TRANSPORT_TYPE` | Transport: `stdio` or `http`. | `stdio` |
 | `MCP_HTTP_PORT` | HTTP server port. | `3010` |

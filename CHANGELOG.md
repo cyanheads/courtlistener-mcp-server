@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.5.1](changelog/0.5.x/0.5.1.md) — 2026-07-29
+
+courtlistener_get_parties now scopes attorneys to the requested docket and resolves their names/contact through a docket-filtered cursor walk instead of a broken batch lookup; role_code decodes correctly and the upstream Retry-After now reaches rate-limit errors.
+
 ## [0.5.0](changelog/0.5.x/0.5.0.md) — 2026-07-29 · ⚠️ Breaking
 
 search_dockets, search_opinions/get_citations, and search_judges now parse the v4 /search/ response shapes instead of keys the API never returns — document_count is removed, snippet nests under opinions[], current_position derives from positions[]; local_path/filepath_local resolve to fetchable storage URLs; mcp-ts-core 0.11.0.
