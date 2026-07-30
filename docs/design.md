@@ -265,6 +265,8 @@ Resolve legal citations (e.g., "410 U.S. 113", "93 S. Ct. 705") to opinion clust
 ```ts
 citation: z.string().trim()
   .describe('Text to extract citations from — normally a single citation (e.g., "410 U.S. 113", "347 U.S. 483", "93 S. Ct. 705"), but any passage works and every citation in it is resolved. Supports standard reporter formats. Up to 64,000 characters, which is CourtListener's own ceiling.'),
+max_court_lookups: z.number().int().min(0).max(MAX_COURT_BACKFILL_LIMIT).optional().default(COURT_BACKFILL_LIMIT)
+  .describe('How many distinct dockets this call may spend a request on to resolve cluster courts. 0 skips court resolution; MAX_COURT_BACKFILL_LIMIT (20) is the ceiling.'),
 ```
 
 Blank and oversized input are both rejected before the request is sent — `CitationAPIRequestSerializer.text` is a `CharField(max_length=64_000)`, so a longer passage is refused upstream after the request is already spent.
@@ -285,6 +287,7 @@ Blank and oversized input are both rejected before the request is sent — `Cita
       case_name: string | null,
       court: string | null,              // backfilled from docket_id — see note
       court_id: string | null,
+      court_resolution: 'resolved' | 'no_docket' | 'lookup_failed' | 'over_budget',
       date_filed: string | null,
       docket_id: number | null,
       citations: string[],               // all known citations for this case
@@ -296,7 +299,7 @@ Blank and oversized input are both rejected before the request is sent — `Cita
 }
 ```
 
-**Implementation note:** Uses `POST /citation-lookup/` with `{"text": citation}`. `IsAuthenticated` is on the viewset, so there is no unauthenticated path and no search fallback. Upstream returns `[]` only when eyecite parsed no citation at all — that is the sole `not_found` case; a citation that parses but matches nothing is an entry with `status: 404`. The embedded `OpinionClusterSerializer` has no `court` field (the court lives on the linked docket), so `court`/`court_id` are resolved from `docket_id` at one `/dockets/{id}/` request each, capped at `COURT_BACKFILL_LIMIT` distinct dockets per call; clusters past the cap keep a null court and the response notice reports how many.
+**Implementation note:** Uses `POST /citation-lookup/` with `{"text": citation}`. `IsAuthenticated` is on the viewset, so there is no unauthenticated path and no search fallback. Upstream returns `[]` only when eyecite parsed no citation at all — that is the sole `not_found` case; a citation that parses but matches nothing is an entry with `status: 404`. The embedded `OpinionClusterSerializer` has no `court` field (the court lives on the linked docket), so `court`/`court_id` are resolved from `docket_id` at one `/dockets/{id}/` request each, sequentially, bounded by `max_court_lookups` (default `COURT_BACKFILL_LIMIT`); the walk stops early on the first rate-limited response. Each cluster's `court_resolution` names why a court is or isn't populated, and the response notice separately counts clusters left unresolved by budget exhaustion versus a failed lookup — only the former is worth retrying with a larger budget.
 
 **Errors:**
 | Reason | Code | When | Retryable |
@@ -541,8 +544,15 @@ has_opinion_scraper: z.boolean().optional()
     has_opinion_scraper: boolean,
     has_oral_argument_scraper: boolean,
   }>,
+  all_matching_court_ids: string[],          // complete filtered id set from a bundled
+                                              // snapshot, no request cost; empty (not a
+                                              // prefix) when the match count exceeds a
+                                              // 1,000-id inlining ceiling
+  all_matching_court_ids_complete: boolean,  // false only when the ceiling was hit
 }
 ```
+
+The snapshot (`src/services/courtlistener/court-names-data.ts`, regenerate via `bun run courts:snapshot`) covers all courts, active and historical — `/courts/` itself stays authoritative for full records and anything changed since the snapshot date.
 
 ---
 

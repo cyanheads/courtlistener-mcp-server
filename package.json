@@ -1,6 +1,6 @@
 {
   "name": "@cyanheads/courtlistener-mcp-server",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "mcpName": "io.github.cyanheads/courtlistener-mcp-server",
   "description": "Search and retrieve US court opinions, federal dockets, judge records, citation networks, and oral arguments from CourtListener's 9M+ opinion corpus via MCP. STDIO or Streamable HTTP.",
   "type": "module",
@@ -22,6 +22,7 @@
     "build": "bun run scripts/build.ts",
     "rebuild": "bun run scripts/clean.ts && bun run build",
     "clean": "bun run scripts/clean.ts",
+    "courts:snapshot": "bun run scripts/generate-court-names.ts",
     "devcheck": "bun run scripts/devcheck.ts",
     "audit:refresh": "rm -f bun.lock && bun install && bun audit",
     "tree": "bun run scripts/tree.ts",

@@ -1,6 +1,6 @@
 # courtlistener-mcp-server - Directory Structure
 
-Generated on: 2026-07-30 06:02:37
+Generated on: 2026-07-30 07:17:36
 
 ```text
 courtlistener-mcp-server/
@@ -43,6 +43,7 @@ courtlistener-mcp-server/
 │   ├── clean-mcpb.ts
 │   ├── clean.ts
 │   ├── devcheck.ts
+│   ├── generate-court-names.ts
 │   ├── lint-mcp.ts
 │   ├── lint-packaging.ts
 │   ├── list-skills.ts

@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.6.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/courtlistener-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/courtlistener-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/courtlistener-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.2-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.6.1-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/courtlistener-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/courtlistener-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/courtlistener-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.2-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -93,10 +93,10 @@ Resolve legal citations to opinion cluster IDs.
 
 - Accepts standard reporter formats: "410 U.S. 113", "347 U.S. 483", "93 S. Ct. 705"
 - Returns `matches`, one entry per citation CourtListener extracted from the input — pass a passage and every citation in it resolves, each with its own `status` (200 one case, 300 several candidates, 400 unrecognized reporter, 404 no match) and decoded `status_label`
-- Each match carries the cases it resolved to: `cluster_id`, `case_name`, `court` / `court_id`, `docket_id`, `date_filed`, all known citation strings, `cite_count`, `precedential_status`, and `judges`
+- Each match carries the cases it resolved to: `cluster_id`, `case_name`, `court` / `court_id`, `court_resolution`, `docket_id`, `date_filed`, all known citation strings, `cite_count`, `precedential_status`, and `judges`
 - An unresolved or ambiguous citation comes back inside `matches`, not as an error — only text carrying no parseable citation at all fails
-- `court` is absent from the citation-lookup payload (the court lives on the linked docket), so it is resolved from `docket_id` — one extra request per distinct docket, bounded per call, and null for clusters past that bound
-- One upstream POST to `/citation-lookup/` plus those court lookups. The endpoint requires authentication and has no unauthenticated path
+- `court` is absent from the citation-lookup payload (the court lives on the linked docket), so it is resolved from `docket_id` — one extra request per distinct docket, bounded by `max_court_lookups` (default 4, up to 20; 0 skips court resolution). `court_resolution` (`resolved` / `no_docket` / `lookup_failed` / `over_budget`) says why a court is or isn't populated — only `over_budget` is worth retrying with a larger budget
+- One upstream POST to `/citation-lookup/` plus those court lookups, issued sequentially and stopped early on the first rate-limited response. The endpoint requires authentication and has no unauthenticated path
 
 ---
 
@@ -149,7 +149,7 @@ Search judge and person records across the federal and state bench.
 
 Fetch a judge's full biographical profile.
 
-- Complete position history: all courts served, position type, appointer, nomination date, confirmation date, termination reason — plus non-judicial roles, which carry no court and describe themselves in `job_title` and `organization_name`
+- Position history: all courts served, position type, appointer, nomination date, confirmation date, termination reason — plus non-judicial roles, which carry no court and describe themselves in `job_title` and `organization_name`. `/positions/` is cursor-walked under a page bound; a `truncated` notice and `positionsShown`/`truncated` fields report when a long career ran past it
 - Position type, termination reason, and degree level come back decoded (`position_type_label`, `termination_reason_label`, `degree_label`) alongside the raw codes CourtListener's own filters take
 - Birth, death, and position dates carry the precision CourtListener recorded — `dob_granularity` and the per-position `date_start_granularity` read `year`, `month`, or `day`, and a year-only record renders as the year rather than the stored `YYYY-01-01` placeholder
 - Education records with school, degree, and year
@@ -166,6 +166,7 @@ List courts with optional jurisdiction and scraper filters.
 - `has_opinion_scraper` filter useful for planning opinion searches — courts without scrapers have sparse coverage
 - Returns `id` (the `court_id` string for use in all search and filter parameters), citation string (e.g., "9th Cir."), and jurisdiction label
 - Page-number paginated at a **fixed 20 rows per page** — `/courts/` ignores any requested page size, so there is no way to pull a larger page. Enumerating a whole bench costs one call per 20 courts against a rate-limited free tier, and the inactive bench is several times larger than the active one: `status: 'any'` makes the full set reachable, not cheap. Filter by `jurisdiction` to answer a question in one call; pass a response's `next_cursor` back as `page` when you genuinely need to walk
+- `all_matching_court_ids` returns the complete filtered id set from a bundled snapshot of every CourtListener court, at no request cost — covers the default bench and every jurisdiction filter. Empty (not a truncated prefix) when more than 1,000 courts match; check `all_matching_court_ids_complete` before reading emptiness as "no courts match". The live `courts` page stays authoritative for full records
 
 ---
 
