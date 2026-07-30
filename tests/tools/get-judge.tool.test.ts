@@ -3,7 +3,7 @@
  * @module tests/tools/get-judge.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getJudgeTool } from '@/mcp-server/tools/definitions/get-judge.tool.js';
 import type { CourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
@@ -543,6 +543,47 @@ describe('getJudgeTool', () => {
       expect(result.dod_granularity).toBe('year');
       const text = (getJudgeTool.format!(result)[0] as { text: string }).text;
       expect(text).toContain('**Died:** 2020');
+    });
+  });
+  // #64 — /positions/ is cursor-paginated and the fetch took only the first page, so a
+  // long career came back short with nothing in the response saying so. A truncated list
+  // is byte-identical to a complete one; only a caller-visible flag separates them.
+  describe('position truncation disclosure (#64)', () => {
+    it('reports the walk reaching the end, on a surface the caller can read', async () => {
+      mockSvc.getPerson = vi.fn().mockResolvedValue({ ...basePerson, positions_truncated: false });
+      const ctx = createMockContext();
+      const input = getJudgeTool.input.parse({ person_id: 300 });
+      await getJudgeTool.handler(input, ctx);
+
+      const enrichment = getEnrichment(ctx);
+      expect(enrichment.truncated).toBe(false);
+      expect(enrichment.positionsShown).toBe(1);
+      expect(enrichment.notice).toBeUndefined();
+    });
+
+    it('reports a bounded-out position history to the caller, not just the log', async () => {
+      mockSvc.getPerson = vi.fn().mockResolvedValue({ ...basePerson, positions_truncated: true });
+      const ctx = createMockContext();
+      const input = getJudgeTool.input.parse({ person_id: 300 });
+      const result = await getJudgeTool.handler(input, ctx);
+
+      // structuredContent and the content[] trailer both carry enrichment, so this is
+      // the caller's answer — a ctx.log.warning would never leave the server.
+      const enrichment = getEnrichment(ctx);
+      expect(enrichment.truncated).toBe(true);
+      expect(enrichment.positionsShown).toBe(1);
+      expect(enrichment.notice).toContain('partial');
+      // The domain payload is unchanged and still valid — disclosure rides alongside it.
+      expect(result.positions).toHaveLength(1);
+    });
+
+    it('treats a payload with no truncation flag as complete', async () => {
+      mockSvc.getPerson = vi.fn().mockResolvedValue(basePerson);
+      const ctx = createMockContext();
+      const input = getJudgeTool.input.parse({ person_id: 300 });
+      await getJudgeTool.handler(input, ctx);
+
+      expect(getEnrichment(ctx).truncated).toBe(false);
     });
   });
 });

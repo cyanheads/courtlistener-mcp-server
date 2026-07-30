@@ -24,6 +24,7 @@ import type {
   CitationMatch,
   Court,
   CourtListenerPage,
+  CourtResolution,
   Docket,
   DocketEntry,
   DocketSearchResult,
@@ -62,16 +63,42 @@ const ATTORNEY_PAGE_LIMIT = 5;
 const SUB_OPINION_PAGE_LIMIT = 5;
 
 /**
- * Distinct dockets resolved to a court name while normalizing a citation lookup.
- * The embedded cluster carries no court, so each one costs its own `/dockets/{id}/`
- * request — and one submitted text can carry many citations. CourtListener publishes
- * a free-tier ceiling of 5 requests/minute (actual limits vary by token tier), and the
- * lookup itself already spent one, so the walk stops here and leaves the surplus
- * clusters' `court` null rather than spending an unbounded number of requests.
- * Exported so the tool can name the cap on the wire: a null court is otherwise
- * indistinguishable from one that genuinely could not be resolved.
+ * Cursor pages walked while collecting a person's positions. `/positions/` is
+ * cursor-paginated (`PositionViewSet.ordering = "-id"`, with `id` among its
+ * `cursor_ordering_fields`), and the viewset declares no `pagination_class`, so it
+ * inherits `VersionBasedPagination` — whose cursor paginator is constructed with no
+ * `page_size_query_param` and the DRF-wide `PAGE_SIZE` of 20. `page_size` is therefore
+ * ignored here, and the bound counts pages, not rows. Upstream stores every role a
+ * person held as its own row — judgeships, clerkships, prosecutor and academic stints —
+ * so a long career runs past one page; hitting the bound reports the truncation to the
+ * caller instead of presenting a partial history as whole.
+ */
+const POSITION_PAGE_LIMIT = 5;
+
+/**
+ * Default number of distinct dockets resolved to a court name while normalizing a
+ * citation lookup. The embedded cluster carries no court, so each one costs its own
+ * `/dockets/{id}/` request — and one submitted text can carry many citations.
+ *
+ * The two halves of the call draw on separate upstream budgets: `/citation-lookup/`
+ * sets `throttle_classes = [CitationCountRateThrottle]`, which meters a private
+ * `citations` scope by citations submitted (60/min) and replaces the default throttles
+ * entirely, so the lookup spends nothing from the general per-request budget the docket
+ * fetches draw on (published free tier: 5/min, 50/hour, 125/day; actual limits vary by
+ * token tier). The default therefore spends most — not all — of one minute's general
+ * allowance, leaving headroom for whatever else the caller is doing.
+ *
+ * Callers override it per call via the tool's `max_court_lookups` input, bounded by
+ * `MAX_COURT_BACKFILL_LIMIT`. Exported so the tool can name the default on the wire.
  */
 export const COURT_BACKFILL_LIMIT = 4;
+
+/**
+ * Ceiling on a caller-supplied court-backfill budget. Past a minute's general allowance
+ * the walk is throttled rather than fast, so this bounds how much of an hourly budget
+ * one call can consume; the walk stops early on the first 429 regardless.
+ */
+export const MAX_COURT_BACKFILL_LIMIT = 20;
 
 /**
  * CourtListener `Role.ATTORNEY_ROLES` codes (cl/people_db/models.py) → labels.
@@ -537,13 +564,35 @@ export class CourtListenerService {
         recovery: { hint: RECOVERY_HINTS.person },
       });
     }
-    // /people/{id}/ returns positions as URI strings — fetch actual position objects separately
-    const positionsPage = await this.get<CourtListenerPage<PersonPosition>>(
-      '/positions/',
-      { person: personId, page_size: 50 },
-      ctx,
-    );
-    data.positions = positionsPage.results;
+    /**
+     * /people/{id}/ returns positions as URI strings — fetch the actual position objects
+     * separately, walking the cursor to the end so a long career keeps its tail. No
+     * `page_size`: the endpoint ignores it (see `POSITION_PAGE_LIMIT`), so sending one
+     * implies a size upstream will never honor.
+     */
+    const positions: PersonPosition[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < POSITION_PAGE_LIMIT; page++) {
+      const positionsPage = await this.get<CourtListenerPage<PersonPosition>>(
+        '/positions/',
+        { person: personId, cursor: cursor ?? undefined },
+        ctx,
+      );
+      positions.push(...positionsPage.results);
+      cursor = extractCursor(positionsPage.next);
+      if (!cursor) break;
+    }
+    data.positions = positions;
+    // The caller decides what to do about a partial history, so the bound travels on the
+    // payload — a short list is otherwise indistinguishable from a short career.
+    data.positions_truncated = cursor !== null;
+    if (cursor) {
+      ctx.log.warning('Positions remain unfetched after the page walk', {
+        personId,
+        fetched: positions.length,
+        pagesWalked: POSITION_PAGE_LIMIT,
+      });
+    }
     return data;
   }
 
@@ -731,11 +780,16 @@ export class CourtListenerService {
    * Resolve every citation `/citation-lookup/` finds in the submitted text. Upstream
    * parses the text and returns one entry per citation, each with its own status and
    * candidate clusters — so this returns the whole list rather than collapsing it to a
-   * first match. Court names are backfilled from each cluster's docket (see
-   * `COURT_BACKFILL_LIMIT`); a failed backfill leaves `court` null instead of failing
-   * the lookup, which resolved fine on its own.
+   * first match. Court names are backfilled from each cluster's docket, bounded by
+   * `maxCourtLookups` (see `COURT_BACKFILL_LIMIT`); a failed backfill leaves `court`
+   * null instead of failing the lookup, which resolved fine on its own. Every cluster
+   * carries a `court_resolution` saying which of those cases it is.
    */
-  async lookupCitation(citation: string, ctx: Context): Promise<CitationMatch[]> {
+  async lookupCitation(
+    citation: string,
+    maxCourtLookups: number,
+    ctx: Context,
+  ): Promise<CitationMatch[]> {
     type RawCluster = {
       id?: number;
       caseName?: string;
@@ -776,17 +830,31 @@ export class CourtListenerService {
         ),
       ),
     ];
-    const courtIdByDocket = await this.resolveCourtIdsForDockets(docketIds, ctx);
+    const { resolved, attempted } = await this.resolveCourtIdsForDockets(
+      docketIds,
+      maxCourtLookups,
+      ctx,
+    );
 
     return result.map((entry) => ({
       citation: entry.citation ?? '',
       clusters: (entry.clusters ?? []).map((c): CitationCluster => {
-        const courtId = c.docket_id ? (courtIdByDocket.get(c.docket_id) ?? null) : null;
+        const courtId = c.docket_id ? (resolved.get(c.docket_id) ?? null) : null;
+        // Four outcomes collapse to the same null court, so name which one applies:
+        // the caller's next move differs (raise the budget vs. fetch the docket vs. nothing to fetch).
+        const court_resolution: CourtResolution = !c.docket_id
+          ? 'no_docket'
+          : courtId
+            ? 'resolved'
+            : attempted.has(c.docket_id)
+              ? 'lookup_failed'
+              : 'over_budget';
         return {
           cluster_id: c.id ?? null,
           case_name: c.caseName ?? c.case_name ?? null,
           court: courtId ? resolveCourtName(courtId) : null,
           court_id: courtId,
+          court_resolution,
           date_filed: c.date_filed ?? null,
           docket_id: c.docket_id ?? null,
           citations: (c.citations ?? []).map((cit) => `${cit.volume} ${cit.reporter} ${cit.page}`),
@@ -802,36 +870,56 @@ export class CourtListenerService {
   }
 
   /**
-   * Map docket IDs to their court identifiers, one request each, bounded by
-   * `COURT_BACKFILL_LIMIT`. A miss is non-fatal — the caller reports a null court
-   * rather than guessing one — and dockets past the bound are announced instead of
-   * silently dropping their courts.
+   * Map docket IDs to their court identifiers, one request each, bounded by `budget`.
+   * A miss is non-fatal — the caller reports a null court rather than guessing one.
+   *
+   * Issued one at a time rather than as a `Promise.all` burst: these share the general
+   * per-request throttle with everything else the caller is doing, and a 429 on the
+   * first one means every sibling in flight would 429 too. Sequential lets the walk
+   * stop on the first throttle instead of spending the rest of the budget learning the
+   * same thing, and the dockets it never reached report `over_budget` rather than a
+   * failure that never happened.
+   *
+   * `attempted` is the set a request was actually spent on, so the caller can tell a
+   * docket that failed from one the budget never reached.
    */
   private async resolveCourtIdsForDockets(
     docketIds: number[],
+    budget: number,
     ctx: Context,
-  ): Promise<Map<number, string>> {
+  ): Promise<{ resolved: Map<number, string>; attempted: Set<number> }> {
     const resolved = new Map<number, string>();
-    const wanted = docketIds.slice(0, COURT_BACKFILL_LIMIT);
+    const attempted = new Set<number>();
+    const wanted = docketIds.slice(0, budget);
 
-    await Promise.all(
-      wanted.map(async (docketId) => {
-        try {
-          const summary = await this.getDocketSummary(docketId, ctx);
-          if (summary.court_id) resolved.set(docketId, summary.court_id);
-        } catch (err) {
-          ctx.log.debug('court backfill failed', { docketId, err: String(err) });
+    for (const docketId of wanted) {
+      attempted.add(docketId);
+      try {
+        const summary = await this.getDocketSummary(docketId, ctx);
+        if (summary.court_id) resolved.set(docketId, summary.court_id);
+      } catch (err) {
+        ctx.log.debug('court backfill failed', { docketId, err: String(err) });
+        const reason = (err as { data?: { reason?: string } } | null)?.data?.reason;
+        if (reason === 'rate_limited') {
+          ctx.log.warning('Court backfill stopped on a rate limit', {
+            resolved: resolved.size,
+            remaining: docketIds.length - resolved.size,
+          });
+          break;
         }
-      }),
-    );
+      }
+    }
 
-    if (docketIds.length > wanted.length) {
+    // Counts the dockets no request was spent on — the budget's surplus plus anything the
+    // rate-limit break skipped, which a budget-only comparison would miss.
+    if (attempted.size < docketIds.length) {
       ctx.log.warning('Court resolution bounded — clusters past the bound keep a null court', {
         dockets: docketIds.length,
-        resolved: wanted.length,
+        attempted: attempted.size,
+        resolved: resolved.size,
       });
     }
-    return resolved;
+    return { resolved, attempted };
   }
 
   // ── Financial Disclosures ───────────────────────────────────────────────────

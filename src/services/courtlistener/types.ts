@@ -267,6 +267,12 @@ export interface Person {
   }>;
   /** Populated by a separate /positions/?person={id} call — URI strings on /people/{id}/. */
   positions: PersonPosition[];
+  /**
+   * True when the bounded `/positions/` page walk stopped with pages outstanding, so
+   * `positions` holds a prefix of the person's history rather than all of it. Set by
+   * `getPerson`; absent on payloads that never went through it.
+   */
+  positions_truncated?: boolean;
 }
 
 /** Position record from /positions/?person={id}. */
@@ -334,6 +340,16 @@ export interface AudioSearchResult {
 }
 
 /**
+ * Why a cluster's court is or is not on the payload.
+ * - `resolved` — the docket lookup returned a court.
+ * - `no_docket` — the cluster carries no `docket_id`, so there is nothing to resolve from.
+ * - `lookup_failed` — a request was spent on the docket and it yielded no court.
+ * - `over_budget` — no request was spent: the per-call budget ran out, or the walk stopped
+ *   early on a 429.
+ */
+export type CourtResolution = 'resolved' | 'no_docket' | 'lookup_failed' | 'over_budget';
+
+/**
  * One opinion cluster a citation resolved to. `/citation-lookup/` embeds
  * CourtListener's `OpinionClusterSerializer`, which is built on the OpinionCluster
  * model — the court lives on the linked *docket*, so it is absent here and has to
@@ -354,6 +370,11 @@ export interface CitationCluster {
   court: string | null;
   /** Filterable court identifier from the same lookup; null under the same conditions as `court`. */
   court_id: string | null;
+  /**
+   * Which of those conditions applies — `resolved`, `no_docket`, `lookup_failed`, or
+   * `over_budget`. Without it every unresolved case is the same null court.
+   */
+  court_resolution: CourtResolution;
   date_filed: string | null;
   /** Linked docket — pass to courtlistener_get_docket. */
   docket_id: number | null;

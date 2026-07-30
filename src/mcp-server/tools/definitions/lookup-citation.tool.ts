@@ -10,6 +10,7 @@ import { expandCode } from '@/services/courtlistener/codes.js';
 import {
   COURT_BACKFILL_LIMIT,
   getCourtListenerService,
+  MAX_COURT_BACKFILL_LIMIT,
 } from '@/services/courtlistener/courtlistener-service.js';
 
 /**
@@ -46,13 +47,18 @@ const CitationCluster = z
       .string()
       .nullable()
       .describe(
-        `Court display name. The citation-lookup payload carries no court, so this is resolved from the cluster's docket — one extra request each, capped at ${COURT_BACKFILL_LIMIT} distinct dockets per call. Null when that lookup was skipped past the cap, failed, or the cluster has no docket_id; the response notice reports how many clusters were left unresolved. Pass docket_id to courtlistener_get_docket, or cluster_id to courtlistener_get_opinion, to resolve one.`,
+        `Court display name. The citation-lookup payload carries no court, so this is resolved from the cluster's docket — one extra request each, capped by max_court_lookups (default ${COURT_BACKFILL_LIMIT} distinct dockets per call). Null when that lookup was skipped past the budget, failed, or the cluster has no docket_id; court_resolution says which. Pass docket_id to courtlistener_get_docket, or cluster_id to courtlistener_get_opinion, to resolve one.`,
       ),
     court_id: z
       .string()
       .nullable()
       .describe(
         'Court identifier for the `court` filter on the search tools (e.g. "scotus"); null under the same conditions as `court`.',
+      ),
+    court_resolution: z
+      .enum(['resolved', 'no_docket', 'lookup_failed', 'over_budget'])
+      .describe(
+        'Why court/court_id are or are not populated: "resolved" the docket lookup returned a court; "no_docket" the cluster carries no docket_id, so nothing can be resolved; "lookup_failed" a request was spent on the docket and it yielded no court; "over_budget" no request was spent because max_court_lookups ran out or the walk stopped on a rate limit — raise max_court_lookups or fetch that docket directly.',
       ),
     date_filed: z.string().nullable().describe('Date the opinion was filed; null if not recorded.'),
     docket_id: z
@@ -103,7 +109,7 @@ const CitationMatch = z
 
 export const lookupCitationTool = tool('courtlistener_lookup_citation', {
   title: 'Lookup Legal Citation',
-  description: `Resolve legal citations (e.g., "410 U.S. 113", "93 S. Ct. 705") to opinion cluster IDs and case metadata. Enables workflows that start from a known citation rather than a search query. CourtListener extracts every citation it finds in the submitted text, so passing a passage returns one entry per citation, each with its own resolution status — an unresolved or ambiguous citation is reported in the results, not raised as an error. Supports standard US reporter formats. Costs one upstream request plus one per distinct docket whose court is resolved, capped at ${COURT_BACKFILL_LIMIT} dockets — at most ${COURT_BACKFILL_LIMIT + 1} requests per call. CourtListener meters this endpoint by citations submitted rather than by call, so a long passage spends proportionally more of a rate-limited free tier. Requires authentication — uses the CourtListener /citation-lookup/ endpoint.`,
+  description: `Resolve legal citations (e.g., "410 U.S. 113", "93 S. Ct. 705") to opinion cluster IDs and case metadata. Enables workflows that start from a known citation rather than a search query. CourtListener extracts every citation it finds in the submitted text, so passing a passage returns one entry per citation, each with its own resolution status — an unresolved or ambiguous citation is reported in the results, not raised as an error. Supports standard US reporter formats. Costs one request against CourtListener's per-citation quota, plus one ordinary request per distinct docket whose court is resolved — max_court_lookups bounds that second half (default ${COURT_BACKFILL_LIMIT}, set 0 to skip court resolution entirely). CourtListener meters this endpoint by citations submitted rather than by call, so a long passage spends proportionally more of that quota. Requires authentication — uses the CourtListener /citation-lookup/ endpoint.`,
   annotations: { readOnlyHint: true, idempotentHint: true },
 
   input: z.object({
@@ -112,6 +118,16 @@ export const lookupCitationTool = tool('courtlistener_lookup_citation', {
       .trim()
       .describe(
         `Text to extract citations from — normally a single citation (e.g., "410 U.S. 113", "347 U.S. 483", "93 S. Ct. 705"), but any passage works and every citation in it is resolved. Supports standard reporter formats. Up to ${MAX_CITATION_TEXT_CHARS} characters, which is CourtListener's own ceiling; a longer passage is rejected here rather than spending a request to be refused upstream.`,
+      ),
+    max_court_lookups: z
+      .number()
+      .int()
+      .min(0)
+      .max(MAX_COURT_BACKFILL_LIMIT)
+      .optional()
+      .default(COURT_BACKFILL_LIMIT)
+      .describe(
+        `How many distinct dockets this call may spend a request on to resolve cluster courts. The lookup itself is metered separately by CourtListener (per citation submitted), so this budget is drawn entirely from the ordinary per-request allowance — published free tier 5/min, 50/hour, 125/day, varying by token tier. 0 skips court resolution and costs nothing beyond the lookup; ${MAX_COURT_BACKFILL_LIMIT} is the ceiling. Clusters past the budget come back with court null and court_resolution "over_budget".`,
       ),
   }),
 
@@ -131,7 +147,7 @@ export const lookupCitationTool = tool('courtlistener_lookup_citation', {
       .string()
       .optional()
       .describe(
-        'Caveats on this result: a recovery hint when no citation in the input resolved to a case, and a count of clusters whose court the per-call docket cap left unresolved. Absent when neither applies.',
+        'Caveats on this result: a recovery hint when no citation in the input resolved to a case, and counts of the clusters whose court went unresolved — split by whether the per-call docket budget ran out or an attempted lookup returned nothing, since only the first is worth retrying with a larger budget. Absent when none applies.',
       ),
   },
 
@@ -185,7 +201,7 @@ export const lookupCitationTool = tool('courtlistener_lookup_citation', {
 
     const svc = getCourtListenerService();
 
-    const found = await svc.lookupCitation(input.citation, ctx);
+    const found = await svc.lookupCitation(input.citation, input.max_court_lookups, ctx);
 
     // The service already speaks the output's shape; the label is the only addition.
     const matches = found.map((match) => ({
@@ -200,12 +216,12 @@ export const lookupCitationTool = tool('courtlistener_lookup_citation', {
       citations_resolved: resolvedCount,
     });
 
-    // A cluster that carries a docket but no court_id is one the bounded backfill did
-    // not reach — the cap is a server-side decision, so without this the caller sees a
-    // null court identical to one that genuinely has no court and never learns why.
-    const unresolvedCourts = matches
-      .flatMap((m) => m.clusters)
-      .filter((c) => c.docket_id !== null && c.court_id === null).length;
+    // A null court has four causes and the caller's next move differs by cause, so the
+    // notice separates the two that are actionable — the budget is a server-side
+    // decision the caller can raise, a failed lookup is not.
+    const clusters = matches.flatMap((m) => m.clusters);
+    const overBudget = clusters.filter((c) => c.court_resolution === 'over_budget').length;
+    const lookupFailed = clusters.filter((c) => c.court_resolution === 'lookup_failed').length;
 
     const notices: string[] = [];
     if (resolvedCount === 0) {
@@ -214,9 +230,14 @@ export const lookupCitationTool = tool('courtlistener_lookup_citation', {
         `No citation in "${input.citation}" resolved to a case (${reasons}). Verify the reporter format (volume reporter page) or try courtlistener_search_opinions with the case name.`,
       );
     }
-    if (unresolvedCourts > 0) {
+    if (overBudget > 0) {
       notices.push(
-        `Court unresolved on ${unresolvedCourts} of the returned clusters: resolving a court costs one request per docket and is capped at ${COURT_BACKFILL_LIMIT} per call, and an individual docket lookup can also fail. Pass that cluster's docket_id to courtlistener_get_docket, or its cluster_id to courtlistener_get_opinion, to resolve it.`,
+        `Court unresolved on ${overBudget} of the returned clusters because the per-call budget of ${input.max_court_lookups} docket lookups ran out. Raise max_court_lookups (up to ${MAX_COURT_BACKFILL_LIMIT}) to resolve more, or pass a cluster's docket_id to courtlistener_get_docket.`,
+      );
+    }
+    if (lookupFailed > 0) {
+      notices.push(
+        `Court unresolved on ${lookupFailed} of the returned clusters whose docket lookup was attempted and returned no court. Raising max_court_lookups will not change these — pass the cluster's docket_id to courtlistener_get_docket, or its cluster_id to courtlistener_get_opinion.`,
       );
     }
 
@@ -251,7 +272,9 @@ export const lookupCitationTool = tool('courtlistener_lookup_citation', {
       for (const cluster of match.clusters) {
         lines.push(`- **Cluster ID:** ${cluster.cluster_id ?? 'unknown'}`);
         if (cluster.case_name) lines.push(`  **Case:** ${cluster.case_name}`);
-        lines.push(`  **Court:** ${cluster.court ?? 'unresolved'} (${cluster.court_id ?? 'n/a'})`);
+        lines.push(
+          `  **Court:** ${cluster.court ?? 'unresolved'} (${cluster.court_id ?? 'n/a'}) [${cluster.court_resolution}]`,
+        );
         if (cluster.date_filed) lines.push(`  **Filed:** ${cluster.date_filed}`);
         if (cluster.docket_id != null) lines.push(`  **Docket ID:** ${cluster.docket_id}`);
         if (cluster.precedential_status) lines.push(`  **Status:** ${cluster.precedential_status}`);

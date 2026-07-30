@@ -417,7 +417,7 @@ describe('lookupCitation POST path', () => {
       { 488071: 'scotus' },
     );
 
-    const result = await svc.lookupCitation('410 U.S. 113', ctx);
+    const result = await svc.lookupCitation('410 U.S. 113', 4, ctx);
     expect(result).toHaveLength(1);
     const match = result[0]!;
     expect(match.citation).toBe('410 U.S. 113');
@@ -451,7 +451,7 @@ describe('lookupCitation POST path', () => {
       { 488071: 'scotus' },
     );
 
-    const cluster = (await svc.lookupCitation('410 U.S. 113', ctx))[0]!.clusters[0]!;
+    const cluster = (await svc.lookupCitation('410 U.S. 113', 4, ctx))[0]!.clusters[0]!;
     expect(cluster.court_id).toBe('scotus');
     expect(cluster.court).toBe('Supreme Court of the United States');
     expect(docketUrls).toHaveLength(1);
@@ -470,7 +470,7 @@ describe('lookupCitation POST path', () => {
       { 488071: 'error' },
     );
 
-    const cluster = (await svc.lookupCitation('410 U.S. 113', ctx))[0]!.clusters[0]!;
+    const cluster = (await svc.lookupCitation('410 U.S. 113', 4, ctx))[0]!.clusters[0]!;
     // The citation resolved; only the court enrichment did not.
     expect(cluster.cluster_id).toBe(108713);
     expect(cluster.court).toBeNull();
@@ -487,7 +487,7 @@ describe('lookupCitation POST path', () => {
       },
     ]);
 
-    const cluster = (await svc.lookupCitation('1 F.3d 1', ctx))[0]!.clusters[0]!;
+    const cluster = (await svc.lookupCitation('1 F.3d 1', 4, ctx))[0]!.clusters[0]!;
     expect(cluster.docket_id).toBeNull();
     expect(cluster.court).toBeNull();
   });
@@ -524,6 +524,7 @@ describe('lookupCitation POST path', () => {
 
     const result = await svc.lookupCitation(
       'See 410 U.S. 113 and 347 U.S. 483; also 999 F.3d 1.',
+      4,
       ctx,
     );
     expect(result.map((m) => m.citation)).toEqual(['410 U.S. 113', '347 U.S. 483', '999 F.3d 1']);
@@ -551,24 +552,28 @@ describe('lookupCitation POST path', () => {
       { 11: 'scotus', 12: 'scotus' },
     );
 
-    const match = (await svc.lookupCitation('1 U.S. 1', ctx))[0]!;
+    const match = (await svc.lookupCitation('1 U.S. 1', 4, ctx))[0]!;
     expect(match.status).toBe(300);
     expect(match.clusters.map((c) => c.cluster_id)).toEqual([1, 2]);
   });
 
-  it('bounds the court backfill and announces the clusters it left unresolved', async () => {
-    // Six distinct dockets against a COURT_BACKFILL_LIMIT of 4 — the surplus keeps a null
-    // court rather than spending an unbounded number of requests on one call.
-    const entries = Array.from({ length: 6 }, (_, i) => ({
+  /** `count` entries, one cluster each, every cluster on its own docket. */
+  function manyCitations(count: number) {
+    return Array.from({ length: count }, (_, i) => ({
       citation: `${i + 1} F.3d 1`,
       normalized_citations: [`${i + 1} F.3d 1`],
       status: 200,
       clusters: [{ id: 1000 + i, case_name: `Case ${i}`, docket_id: 500 + i }],
     }));
-    const courts = Object.fromEntries(Array.from({ length: 6 }, (_, i) => [500 + i, 'ca9']));
-    const docketUrls = stubCitationLookup(entries, courts);
+  }
 
-    const result = await svc.lookupCitation('a passage with six citations', ctx);
+  it('bounds the court backfill and announces the clusters it left unresolved', async () => {
+    // Six distinct dockets against a budget of 4 — the surplus keeps a null court rather
+    // than spending an unbounded number of requests on one call.
+    const courts = Object.fromEntries(Array.from({ length: 6 }, (_, i) => [500 + i, 'ca9']));
+    const docketUrls = stubCitationLookup(manyCitations(6), courts);
+
+    const result = await svc.lookupCitation('a passage with six citations', 4, ctx);
     expect(docketUrls).toHaveLength(4);
     expect(result.filter((m) => m.clusters[0]?.court_id === 'ca9')).toHaveLength(4);
     expect(result.filter((m) => m.clusters[0]?.court === null)).toHaveLength(2);
@@ -576,6 +581,147 @@ describe('lookupCitation POST path', () => {
       expect.objectContaining({
         level: 'warning',
         data: expect.objectContaining({ dockets: 6, resolved: 4 }),
+      }),
+    );
+  });
+
+  // #66 — the budget was a hardcoded constant. The lookup and the backfill draw on
+  // separate upstream budgets, so how many dockets a lookup is worth is the caller's
+  // call, not a fixed server-side number.
+  it('honors a caller-supplied court-lookup budget (#66)', async () => {
+    const courts = Object.fromEntries(Array.from({ length: 6 }, (_, i) => [500 + i, 'ca9']));
+    const docketUrls = stubCitationLookup(manyCitations(6), courts);
+
+    const result = await svc.lookupCitation('a passage with six citations', 6, ctx);
+    expect(docketUrls).toHaveLength(6);
+    expect(result.every((m) => m.clusters[0]?.court_id === 'ca9')).toBe(true);
+    expect(result.every((m) => m.clusters[0]?.court_resolution === 'resolved')).toBe(true);
+  });
+
+  it('spends no request at all on a budget of zero (#66)', async () => {
+    const courts = Object.fromEntries(Array.from({ length: 3 }, (_, i) => [500 + i, 'ca9']));
+    const docketUrls = stubCitationLookup(manyCitations(3), courts);
+
+    const result = await svc.lookupCitation('a passage with three citations', 0, ctx);
+    expect(docketUrls).toHaveLength(0);
+    // The citations still resolved — only the court enrichment was declined.
+    expect(result.map((m) => m.clusters[0]?.cluster_id)).toEqual([1000, 1001, 1002]);
+    expect(result.every((m) => m.clusters[0]?.court_resolution === 'over_budget')).toBe(true);
+  });
+
+  // #66 — court: null had four causes and the payload named none of them, so a caller
+  // could not tell "raise the budget" from "this docket has no court to give".
+  it('names why each cluster court is missing (#66)', async () => {
+    stubCitationLookup(
+      [
+        {
+          citation: '1 F.3d 1',
+          normalized_citations: ['1 F.3d 1'],
+          status: 200,
+          clusters: [
+            { id: 1, case_name: 'Resolved', docket_id: 500 },
+            { id: 2, case_name: 'Failed', docket_id: 501 },
+            { id: 3, case_name: 'No docket' },
+            { id: 4, case_name: 'Past the budget', docket_id: 502 },
+          ],
+        },
+      ],
+      { 500: 'ca9', 501: 'error' },
+    );
+
+    const clusters = (await svc.lookupCitation('1 F.3d 1', 2, ctx))[0]!.clusters;
+    expect(clusters.map((c) => c.court_resolution)).toEqual([
+      'resolved',
+      'lookup_failed',
+      'no_docket',
+      'over_budget',
+    ]);
+  });
+
+  // #66 — a Promise.all burst spent the whole budget learning what one 429 already said,
+  // and shared the general throttle with the rest of the caller's traffic.
+  it('issues the docket fetches one at a time rather than as a burst (#66)', async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const entries = manyCitations(4);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) => {
+        if (url.includes('/dockets/')) {
+          inFlight++;
+          maxInFlight = Math.max(maxInFlight, inFlight);
+          await new Promise((r) => setTimeout(r, 1));
+          inFlight--;
+          const id = Number(url.match(/\/dockets\/(\d+)\//)?.[1]);
+          return {
+            status: 200,
+            ok: true,
+            headers: new Headers(),
+            text: async () =>
+              JSON.stringify({ id, court_id: 'ca9', docket_number: '', case_name: '' }),
+          };
+        }
+        return {
+          status: 200,
+          ok: true,
+          headers: new Headers(),
+          text: async () => JSON.stringify(entries),
+        };
+      }),
+    );
+
+    await svc.lookupCitation('four citations', 4, ctx);
+    expect(maxInFlight).toBe(1);
+  });
+
+  it('stops the backfill on the first rate limit instead of spending the rest (#66)', async () => {
+    const docketUrls: string[] = [];
+    const entries = manyCitations(4);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) => {
+        if (url.includes('/dockets/')) {
+          docketUrls.push(url);
+          // The first docket resolves; every one after it is throttled.
+          const id = Number(url.match(/\/dockets\/(\d+)\//)?.[1]);
+          if (id === 500) {
+            return {
+              status: 200,
+              ok: true,
+              headers: new Headers(),
+              text: async () =>
+                JSON.stringify({ id, court_id: 'ca9', docket_number: '', case_name: '' }),
+            };
+          }
+          return {
+            status: 429,
+            ok: false,
+            headers: new Headers({ 'retry-after': '60' }),
+            text: async () => '{"detail":"Request was throttled."}',
+          };
+        }
+        return {
+          status: 200,
+          ok: true,
+          headers: new Headers(),
+          text: async () => JSON.stringify(entries),
+        };
+      }),
+    );
+
+    const result = await svc.lookupCitation('four citations', 4, ctx);
+    // One success plus the single 429 that stopped the walk — not all four.
+    expect(docketUrls).toHaveLength(2);
+    expect(result.map((m) => m.clusters[0]?.court_resolution)).toEqual([
+      'resolved',
+      'lookup_failed',
+      'over_budget',
+      'over_budget',
+    ]);
+    expect(ctx.log.calls).toContainEqual(
+      expect.objectContaining({
+        level: 'warning',
+        data: expect.objectContaining({ resolved: 1 }),
       }),
     );
   });
@@ -599,7 +745,7 @@ describe('lookupCitation POST path', () => {
       { 488071: 'scotus' },
     );
 
-    const result = await svc.lookupCitation('410 U.S. 113, 93 S. Ct. 705', ctx);
+    const result = await svc.lookupCitation('410 U.S. 113, 93 S. Ct. 705', 4, ctx);
     expect(docketUrls).toHaveLength(1);
     expect(result.every((m) => m.clusters[0]?.court_id === 'scotus')).toBe(true);
   });
@@ -607,7 +753,7 @@ describe('lookupCitation POST path', () => {
   it('throws notFound when citation response is empty array', async () => {
     const { JsonRpcErrorCode } = await import('@cyanheads/mcp-ts-core/errors');
     mockFetchResponse({ body: '[]' });
-    await expect(svc.lookupCitation('999 X.Y. 999', ctx)).rejects.toMatchObject({
+    await expect(svc.lookupCitation('999 X.Y. 999', 4, ctx)).rejects.toMatchObject({
       code: JsonRpcErrorCode.NotFound,
     });
   });
@@ -626,7 +772,7 @@ describe('lookupCitation POST path', () => {
       },
     ]);
 
-    const result = await svc.lookupCitation('999 X.Y. 1', ctx);
+    const result = await svc.lookupCitation('999 X.Y. 1', 4, ctx);
     expect(result).toHaveLength(1);
     expect(result[0]!.status).toBe(404);
     expect(result[0]!.clusters).toEqual([]);
@@ -638,7 +784,7 @@ describe('lookupCitation POST path', () => {
     const svc2 = new CourtListenerService(makeMockConfig(SECRET), makeMockStorage());
     mockFetchResponse({ status: 429, ok: false, body: '' });
     try {
-      await svc2.lookupCitation('410 U.S. 113', ctx);
+      await svc2.lookupCitation('410 U.S. 113', 4, ctx);
       expect.fail('Should have thrown');
     } catch (err) {
       expect(JSON.stringify(err)).not.toContain(SECRET);
@@ -1241,6 +1387,110 @@ describe('getOpinionCluster sub-opinion pagination (#48)', () => {
 
     // One distinct cited opinion per variant — capped at 20 before the walk landed.
     expect(result.total).toBe(35);
+  });
+});
+
+// ── getPerson position pagination (#64) ──────────────────────────────────────
+// /positions/ is cursor-paginated and ignores page_size (PositionViewSet declares no
+// pagination_class, so it inherits VersionBasedPagination's fixed 20-row cursor pages).
+// A single fetch dropped every role past the first page and said nothing about it.
+
+describe('getPerson position pagination (#64)', () => {
+  let svc: CourtListenerService;
+  let ctx: ReturnType<typeof createMockContext>;
+
+  beforeEach(() => {
+    svc = new CourtListenerService(makeMockConfig(), makeMockStorage());
+    ctx = createMockContext();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /**
+   * Stub person 1234 whose /positions/ list holds `total` rows served `perPage` at a
+   * time over a cursor. Returns the /positions/ URLs called.
+   */
+  function stubPerson(total: number, perPage: number): string[] {
+    const positionUrls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) => {
+        let body: string;
+        if (url.includes('/positions/')) {
+          positionUrls.push(url);
+          const offset = Number(new URL(url).searchParams.get('cursor') ?? 0);
+          const rows = Math.max(0, Math.min(perPage, total - offset));
+          body = JSON.stringify({
+            count: total,
+            next:
+              offset + perPage < total
+                ? `https://www.courtlistener.com/api/rest/v4/positions/?cursor=${offset + perPage}`
+                : null,
+            previous: null,
+            results: Array.from({ length: rows }, (_, i) => ({
+              position_type: 'jud',
+              court: { id: 'ca9', full_name: 'Ninth Circuit', short_name: 'CA9' },
+              date_start: `19${String(70 + ((offset + i) % 30)).padStart(2, '0')}-01-01`,
+            })),
+          });
+        } else {
+          body = JSON.stringify({ id: 1234, name_first: 'Test', name_last: 'Judge' });
+        }
+        return { status: 200, ok: true, headers: new Headers(), text: async () => body };
+      }),
+    );
+    return positionUrls;
+  }
+
+  it('walks the cursor to the end instead of keeping only the first page', async () => {
+    const positionUrls = stubPerson(35, 20);
+
+    const person = await svc.getPerson(1234, ctx);
+
+    expect(person.positions).toHaveLength(35);
+    expect(person.positions_truncated).toBe(false);
+    expect(positionUrls).toHaveLength(2);
+    expect(new URL(positionUrls[0]!).searchParams.get('cursor')).toBeNull();
+    expect(new URL(positionUrls[1]!).searchParams.get('cursor')).toBe('20');
+  });
+
+  it('costs a single call for a career that fits on one page', async () => {
+    const positionUrls = stubPerson(6, 20);
+
+    const person = await svc.getPerson(1234, ctx);
+
+    expect(person.positions).toHaveLength(6);
+    expect(person.positions_truncated).toBe(false);
+    expect(positionUrls).toHaveLength(1);
+  });
+
+  // page_size is a no-op on this endpoint, so asking for one advertises a size upstream
+  // will never honor.
+  it('does not ask for a page size the endpoint ignores', async () => {
+    const positionUrls = stubPerson(6, 20);
+
+    await svc.getPerson(1234, ctx);
+
+    expect(new URL(positionUrls[0]!).searchParams.get('page_size')).toBeNull();
+  });
+
+  it('reports truncation on the payload when the page bound is hit', async () => {
+    const positionUrls = stubPerson(400, 20);
+
+    const person = await svc.getPerson(1234, ctx);
+
+    expect(positionUrls).toHaveLength(5);
+    expect(person.positions).toHaveLength(100);
+    // The flag is the caller-visible half — the log line never leaves the server.
+    expect(person.positions_truncated).toBe(true);
+    expect(ctx.log.calls).toContainEqual(
+      expect.objectContaining({
+        level: 'warning',
+        data: expect.objectContaining({ personId: 1234, fetched: 100 }),
+      }),
+    );
   });
 });
 

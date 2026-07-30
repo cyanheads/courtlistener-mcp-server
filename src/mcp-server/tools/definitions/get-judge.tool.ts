@@ -203,7 +203,7 @@ const codeSuffix = (label: string, code: string | null): string =>
 export const getJudgeTool = tool('courtlistener_get_judge', {
   title: 'Get Judge Profile',
   description:
-    'Fetch full biographical profile for a single judge: every position on record — judicial appointments across all courts plus non-judicial roles — education, political affiliations, and ABA ratings. Obtain person IDs from courtlistener_search_judges results.',
+    'Fetch full biographical profile for a single judge: positions on record — judicial appointments across all courts plus non-judicial roles — education, political affiliations, and ABA ratings. The position list is paginated upstream and walked under a page bound; the response reports whether it was truncated. Obtain person IDs from courtlistener_search_judges results.',
   annotations: { readOnlyHint: true, idempotentHint: true },
 
   input: z.object({
@@ -375,9 +375,25 @@ export const getJudgeTool = tool('courtlistener_get_judge', {
           .describe('Position record — judicial or otherwise.'),
       )
       .describe(
-        'Every position on record, across all courts — judicial appointments plus non-judicial roles (private practice, prosecutor, professor), which carry no court and describe themselves in job_title.',
+        'Positions on record, across all courts — judicial appointments plus non-judicial roles (private practice, prosecutor, professor), which carry no court and describe themselves in job_title. CourtListener paginates this list and the walk is bounded, so read the truncated flag before treating it as a complete career.',
       ),
   }),
+
+  // Agent-facing context the positions array cannot carry on its own: CourtListener
+  // paginates /positions/ and the walk is bounded, so a short list has two possible
+  // meanings — a short career, or a bound that stopped short of the whole history.
+  enrichment: {
+    positionsShown: z.number().describe('Number of position records returned.'),
+    truncated: z
+      .boolean()
+      .describe(
+        "True when the bounded /positions/ page walk stopped with pages outstanding — positions[] is then a prefix of the person's record, not the whole of it. False when the walk reached the end.",
+      ),
+    notice: z
+      .string()
+      .optional()
+      .describe('Present only when positions[] was truncated: what was withheld.'),
+  },
 
   errors: [
     {
@@ -462,6 +478,14 @@ export const getJudgeTool = tool('courtlistener_get_judge', {
       person_id: input.person_id,
       positions_count: positions.length,
     });
+
+    const truncated = person.positions_truncated === true;
+    ctx.enrich({ positionsShown: positions.length, truncated });
+    if (truncated) {
+      ctx.enrich.notice(
+        `Position history is partial: ${positions.length} records returned and more remain. CourtListener paginates /positions/ and this walk is bounded, so roles past the bound are absent — treat this as a prefix of the record, not the full career.`,
+      );
+    }
 
     return {
       person_id: person.id,

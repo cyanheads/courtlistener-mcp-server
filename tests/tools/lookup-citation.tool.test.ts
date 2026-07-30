@@ -25,6 +25,7 @@ function cluster(overrides: Record<string, unknown> = {}) {
     case_name: 'Roe v. Wade',
     court: 'Supreme Court of the United States',
     court_id: 'scotus',
+    court_resolution: 'resolved',
     date_filed: '1973-01-22',
     docket_id: 488071,
     citations: ['410 U.S. 113', '93 S. Ct. 705'],
@@ -99,7 +100,9 @@ describe('lookupCitationTool', () => {
         normalized_citation: '1 F.3d 1',
         status: 200,
         error_message: '',
-        clusters: [cluster({ court: null, court_id: null, docket_id: null })],
+        clusters: [
+          cluster({ court: null, court_id: null, court_resolution: 'no_docket', docket_id: null }),
+        ],
       },
     ]);
     const ctx = createMockContext();
@@ -116,10 +119,14 @@ describe('lookupCitationTool', () => {
     expect(getEnrichment(ctx).notice).toBeUndefined();
   });
 
-  // Court resolution is capped per call, and the cap is a server-side decision: a
+  // Court resolution is budgeted per call, and the budget is a server-side decision: a
   // cluster that carries a docket but no court_id looks identical to one with no court
   // at all. The response has to say so, or the caller never learns the difference.
-  it('reports the clusters whose court the per-call cap left unresolved', async () => {
+  //
+  // #66 — and the two causes carry different advice: a bounded-out cluster resolves on a
+  // larger budget, an attempted-and-failed one does not. One aggregate count told the
+  // caller to retry work that will fail again.
+  it('reports bounded-out and failed court lookups as separate causes (#66)', async () => {
     mockSvc.lookupCitation = vi.fn().mockResolvedValue([
       {
         citation: '410 U.S. 113',
@@ -133,14 +140,30 @@ describe('lookupCitationTool', () => {
         normalized_citation: '1 F.3d 1',
         status: 200,
         error_message: '',
-        clusters: [cluster({ cluster_id: 2, court: null, court_id: null, docket_id: 900 })],
+        clusters: [
+          cluster({
+            cluster_id: 2,
+            court: null,
+            court_id: null,
+            court_resolution: 'over_budget',
+            docket_id: 900,
+          }),
+        ],
       },
       {
         citation: '2 F.3d 2',
         normalized_citation: '2 F.3d 2',
         status: 200,
         error_message: '',
-        clusters: [cluster({ cluster_id: 3, court: null, court_id: null, docket_id: 901 })],
+        clusters: [
+          cluster({
+            cluster_id: 3,
+            court: null,
+            court_id: null,
+            court_resolution: 'lookup_failed',
+            docket_id: 901,
+          }),
+        ],
       },
     ]);
     const ctx = createMockContext();
@@ -148,10 +171,36 @@ describe('lookupCitationTool', () => {
     await lookupCitationTool.handler(input, ctx);
 
     const notice = getEnrichment(ctx).notice as string;
-    expect(notice).toContain('Court unresolved on 2');
+    // One bounded out (raising the budget helps) and one attempted-and-failed (it does not).
+    expect(notice).toContain('Court unresolved on 1 of the returned clusters because');
+    expect(notice).toContain('Raise max_court_lookups');
+    expect(notice).toContain('Raising max_court_lookups will not change these');
     expect(notice).toContain('courtlistener_get_docket');
     // Citations did resolve, so the not-found recovery hint must not be mixed in.
     expect(notice).not.toContain('No citation in');
+  });
+
+  // #66 — the budget was a hardcoded constant with no caller control, so a caller who
+  // needed no court names still paid for four docket lookups.
+  it('threads the caller-supplied court-lookup budget through to the service (#66)', async () => {
+    mockSvc.lookupCitation = vi.fn().mockResolvedValue([]);
+    const ctx = createMockContext();
+    const input = lookupCitationTool.input.parse({
+      citation: '410 U.S. 113',
+      max_court_lookups: 0,
+    });
+    await lookupCitationTool.handler(input, ctx);
+    expect(mockSvc.lookupCitation).toHaveBeenCalledWith('410 U.S. 113', 0, ctx);
+  });
+
+  it('defaults the court-lookup budget and rejects one past the ceiling (#66)', async () => {
+    expect(lookupCitationTool.input.parse({ citation: '410 U.S. 113' }).max_court_lookups).toBe(4);
+    expect(() =>
+      lookupCitationTool.input.parse({ citation: '410 U.S. 113', max_court_lookups: 21 }),
+    ).toThrow();
+    expect(() =>
+      lookupCitationTool.input.parse({ citation: '410 U.S. 113', max_court_lookups: -1 }),
+    ).toThrow();
   });
 
   // #50 — upstream extracts every citation in the submitted text and returns one entry
@@ -350,7 +399,7 @@ describe('lookupCitationTool', () => {
       const ctx = createMockContext();
       const input = lookupCitationTool.input.parse({ citation: '  410 U.S. 113  ' });
       await lookupCitationTool.handler(input, ctx);
-      expect(mockSvc.lookupCitation).toHaveBeenCalledWith('410 U.S. 113', ctx);
+      expect(mockSvc.lookupCitation).toHaveBeenCalledWith('410 U.S. 113', 4, ctx);
     });
   });
 
@@ -379,6 +428,26 @@ describe('lookupCitationTool', () => {
     expect(text).toContain('Published');
     expect(text).toContain('Blackmun, Burger, Douglas');
     expect(text).toContain('Resolved to one case');
+  });
+
+  // #66 — content[] clients see only format() output, so the cause of a null court has
+  // to reach that surface too, not just structuredContent.
+  it('renders why a court went unresolved in content[] (#66)', () => {
+    const output = lookupCitationTool.output.parse({
+      matches: [
+        {
+          citation: '1 F.3d 1',
+          normalized_citation: '1 F.3d 1',
+          status: 200,
+          status_label: 'Resolved to one case',
+          error_message: '',
+          clusters: [cluster({ court: null, court_id: null, court_resolution: 'over_budget' })],
+        },
+      ],
+    });
+    const text = (lookupCitationTool.format!(output)[0] as { text: string }).text;
+    expect(text).toContain('unresolved');
+    expect(text).toContain('over_budget');
   });
 
   it('formats every match in a multi-citation response (#50)', () => {
