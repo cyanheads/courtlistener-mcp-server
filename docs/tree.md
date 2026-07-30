@@ -1,6 +1,6 @@
 # courtlistener-mcp-server - Directory Structure
 
-Generated on: 2026-07-16 06:19:17
+Generated on: 2026-07-30 01:15:48
 
 ```text
 courtlistener-mcp-server/
@@ -26,6 +26,7 @@ courtlistener-mcp-server/
 │   ├── 0.2.x/
 │   ├── 0.3.x/
 │   ├── 0.4.x/
+│   ├── 0.5.x/
 │   └── template.md
 ├── docs/
 │   ├── design.md

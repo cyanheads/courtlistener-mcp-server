@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.5.0](changelog/0.5.x/0.5.0.md) — 2026-07-29 · ⚠️ Breaking
+
+search_dockets, search_opinions/get_citations, and search_judges now parse the v4 /search/ response shapes instead of keys the API never returns — document_count is removed, snippet nests under opinions[], current_position derives from positions[]; local_path/filepath_local resolve to fetchable storage URLs; mcp-ts-core 0.11.0.
+
 ## [0.4.3](changelog/0.4.x/0.4.3.md) — 2026-07-16
 
 courtlistener_get_oral_argument rejects an unknown `sections` name before fetching the oral-argument record, instead of fetching first and rejecting after.
