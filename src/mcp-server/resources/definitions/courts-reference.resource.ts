@@ -99,6 +99,12 @@ export const courtsReferenceResource = resource(COURTS_REFERENCE_URI, {
   mimeType: 'text/markdown',
   params: z.object({}),
 
+  // The whole document is compiled into the build — jurisdiction tables, the court-name
+  // snapshot, the rate-limit notes — so it cannot change until the server is redeployed.
+  // Nothing here is tenant- or caller-specific, so a shared cache may hold it.
+  // 2026-07-28 clients only; 2025-era reads are unaffected.
+  cacheHint: { ttlMs: 86_400_000, cacheScope: 'public' },
+
   handler(_params, ctx) {
     ctx.log.debug('courtlistener://reference/courts accessed');
     return COURTS_REFERENCE_CONTENT;

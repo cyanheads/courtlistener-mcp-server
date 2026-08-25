@@ -9,6 +9,7 @@ import { getOpinionTool } from '@/mcp-server/tools/definitions/get-opinion.tool.
 import type { CourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
 import * as svcModule from '@/services/courtlistener/courtlistener-service.js';
 import type { OpinionCluster } from '@/services/courtlistener/types.js';
+import { captureError } from '../helpers/capture-error.js';
 
 const mockSvc = {
   getOpinionCluster: vi.fn(),
@@ -49,7 +50,7 @@ const baseCluster: OpinionCluster = {
       per_curiam: false,
       html: '<p>Opinion text</p>',
       plain_text: 'Opinion plain text',
-      opinions_cited: [{ id: 999, resource_uri: '/api/rest/v4/opinions/999/' }],
+      opinions_cited: ['/api/rest/v4/opinions/999/'],
       download_url: 'https://example.com/opinion.pdf',
     },
   ],
@@ -58,7 +59,7 @@ const baseCluster: OpinionCluster = {
 describe('getOpinionTool', () => {
   it('returns full cluster metadata for valid cluster_id', async () => {
     mockSvc.getOpinionCluster = vi.fn().mockResolvedValue(baseCluster);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getOpinionTool.errors });
     const input = getOpinionTool.input.parse({ cluster_id: 100 });
     const result = await getOpinionTool.handler(input, ctx);
 
@@ -80,6 +81,65 @@ describe('getOpinionTool', () => {
       type_label: 'lead-opinion',
       author_id: 42,
       per_curiam: false,
+    });
+  });
+
+  // `opinions_cited` arrives as resource-URI strings; the handler mines the numeric
+  // opinion ID out of each. Both consumption surfaces carry the derived list, and a
+  // URI the pattern cannot match is dropped rather than surfacing as NaN.
+  describe('cites extraction from opinions_cited URIs', () => {
+    it('derives numeric opinion IDs into structuredContent and format() alike', async () => {
+      mockSvc.getOpinionCluster = vi.fn().mockResolvedValue({
+        ...baseCluster,
+        sub_opinions: [
+          {
+            ...baseCluster.sub_opinions[0]!,
+            opinions_cited: [
+              '/api/rest/v4/opinions/999/',
+              'https://www.courtlistener.com/api/rest/v4/opinions/1234/',
+            ],
+          },
+        ],
+      });
+      const ctx = createMockContext({ errors: getOpinionTool.errors });
+      const input = getOpinionTool.input.parse({ cluster_id: 100 });
+      const result = await getOpinionTool.handler(input, ctx);
+
+      expect(result.opinions?.[0]?.cites).toEqual([999, 1234]);
+
+      const text = (getOpinionTool.format!(result)[0] as { text: string }).text;
+      expect(text).toContain('**Cites:** 999, 1234');
+    });
+
+    it('drops a URI with no extractable opinion ID instead of emitting NaN', async () => {
+      mockSvc.getOpinionCluster = vi.fn().mockResolvedValue({
+        ...baseCluster,
+        sub_opinions: [
+          {
+            ...baseCluster.sub_opinions[0]!,
+            opinions_cited: ['/api/rest/v4/dockets/5000/', '/api/rest/v4/opinions/7/'],
+          },
+        ],
+      });
+      const ctx = createMockContext({ errors: getOpinionTool.errors });
+      const input = getOpinionTool.input.parse({ cluster_id: 100 });
+      const result = await getOpinionTool.handler(input, ctx);
+
+      expect(result.opinions?.[0]?.cites).toEqual([7]);
+    });
+
+    it('renders no Cites line when the opinion cites nothing', async () => {
+      mockSvc.getOpinionCluster = vi.fn().mockResolvedValue({
+        ...baseCluster,
+        sub_opinions: [{ ...baseCluster.sub_opinions[0]!, opinions_cited: [] }],
+      });
+      const ctx = createMockContext({ errors: getOpinionTool.errors });
+      const input = getOpinionTool.input.parse({ cluster_id: 100 });
+      const result = await getOpinionTool.handler(input, ctx);
+
+      expect(result.opinions?.[0]?.cites).toEqual([]);
+      const text = (getOpinionTool.format!(result)[0] as { text: string }).text;
+      expect(text).not.toContain('**Cites:**');
     });
   });
 
@@ -107,7 +167,7 @@ describe('getOpinionTool', () => {
           mkVariant(9425161, '110somethingnew'),
         ],
       });
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: getOpinionTool.errors });
       const input = getOpinionTool.input.parse({ cluster_id: 100 });
       const result = await getOpinionTool.handler(input, ctx);
 
@@ -132,7 +192,7 @@ describe('getOpinionTool', () => {
         ...baseCluster,
         sub_opinions: [mkVariant(9425158, '030concurrence')],
       });
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: getOpinionTool.errors });
       const input = getOpinionTool.input.parse({ cluster_id: 100 });
       const result = await getOpinionTool.handler(input, ctx);
       const text = (getOpinionTool.format!(result)[0] as { text: string }).text;
@@ -146,7 +206,7 @@ describe('getOpinionTool', () => {
       mockSvc.getOpinionCluster = vi
         .fn()
         .mockResolvedValue({ ...baseCluster, sub_opinions: [mkVariant(1, '')] });
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: getOpinionTool.errors });
       const input = getOpinionTool.input.parse({ cluster_id: 100 });
       const result = await getOpinionTool.handler(input, ctx);
       expect(result.opinions?.[0]?.type_label).toBe('');
@@ -192,7 +252,7 @@ describe('getOpinionTool', () => {
       ],
     };
     mockSvc.getOpinionCluster = vi.fn().mockResolvedValue(variantCluster);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getOpinionTool.errors });
     const input = getOpinionTool.input.parse({ cluster_id: 100 });
     const result = await getOpinionTool.handler(input, ctx);
 
@@ -207,9 +267,9 @@ describe('getOpinionTool', () => {
   });
 
   it('extracts docket_id from docket URI when not directly provided', async () => {
-    const clusterNoDocketId: OpinionCluster = { ...baseCluster, docket_id: undefined };
+    const { docket_id: _omittedDocketId, ...clusterNoDocketId } = baseCluster;
     mockSvc.getOpinionCluster = vi.fn().mockResolvedValue(clusterNoDocketId);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getOpinionTool.errors });
     const input = getOpinionTool.input.parse({ cluster_id: 100 });
     const result = await getOpinionTool.handler(input, ctx);
     expect(result.docket_id).toBe(5000);
@@ -218,7 +278,7 @@ describe('getOpinionTool', () => {
   it('still returns the opinion when docket backfill fails (non-fatal)', async () => {
     mockSvc.getOpinionCluster = vi.fn().mockResolvedValue(baseCluster);
     mockSvc.getDocketSummary = vi.fn().mockRejectedValue(new Error('docket fetch failed'));
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getOpinionTool.errors });
     const input = getOpinionTool.input.parse({ cluster_id: 100 });
     const result = await getOpinionTool.handler(input, ctx);
     expect(result.case_name).toBe('Roe v. Wade');
@@ -271,7 +331,7 @@ describe('getOpinionTool', () => {
 
     it('overflows to a per-variant outline while keeping cheap cluster metadata', async () => {
       mockSvc.getOpinionCluster = vi.fn().mockResolvedValue(overflowCluster);
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: getOpinionTool.errors });
       const input = getOpinionTool.input.parse({ cluster_id: 100 });
       const result = await getOpinionTool.handler(input, ctx);
 
@@ -294,7 +354,7 @@ describe('getOpinionTool', () => {
 
     it('returns a selected opinion variant in full on a section re-call', async () => {
       mockSvc.getOpinionCluster = vi.fn().mockResolvedValue(overflowCluster);
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: getOpinionTool.errors });
       const input = getOpinionTool.input.parse({ cluster_id: 100, sections: ['opinion_222'] });
       const result = await getOpinionTool.handler(input, ctx);
 
@@ -314,7 +374,7 @@ describe('getOpinionTool', () => {
       const ctx = createMockContext({ errors: getOpinionTool.errors });
       const input = getOpinionTool.input.parse({ cluster_id: 100, sections: ['not_a_section'] });
 
-      const err = await getOpinionTool.handler(input, ctx).catch((e) => e);
+      const err = await captureError(() => getOpinionTool.handler(input, ctx));
       expect(err).toMatchObject({ data: { reason: 'unknown_section' } });
       expect(err.message).toContain('not_a_section');
       // the valid names for this cluster are listed back to the caller
@@ -330,7 +390,7 @@ describe('getOpinionTool', () => {
         sections: ['opinion_111', 'opinion_999'],
       });
 
-      const err = await getOpinionTool.handler(input, ctx).catch((e) => e);
+      const err = await captureError(() => getOpinionTool.handler(input, ctx));
       expect(err).toMatchObject({ data: { reason: 'unknown_section' } });
       expect(err.message).toContain('opinion_999');
     });
@@ -340,7 +400,7 @@ describe('getOpinionTool', () => {
       const ctx = createMockContext({ errors: getOpinionTool.errors });
       const input = getOpinionTool.input.parse({ cluster_id: 100, sections: ['opinion_1'] });
 
-      const err = await getOpinionTool.handler(input, ctx).catch((e) => e);
+      const err = await captureError(() => getOpinionTool.handler(input, ctx));
       expect(err).toMatchObject({ data: { reason: 'unknown_section' } });
       expect(err.message).toContain('no opinion variants');
     });

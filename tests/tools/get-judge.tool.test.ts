@@ -73,7 +73,7 @@ const basePerson: Person = {
 describe('getJudgeTool', () => {
   it('returns full judge profile for valid person_id', async () => {
     mockSvc.getPerson = vi.fn().mockResolvedValue(basePerson);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getJudgeTool.errors });
     const input = getJudgeTool.input.parse({ person_id: 300 });
     const result = await getJudgeTool.handler(input, ctx);
 
@@ -83,13 +83,13 @@ describe('getJudgeTool', () => {
     // single-letter codes are expanded to readable labels (matching search_judges output)
     expect(result.gender).toBe('Female');
     expect(result.aba_ratings).toContain('Well Qualified');
-    expect(result.political_affiliations[0].affiliation).toBe('Democratic');
+    expect(result.political_affiliations[0]!.affiliation).toBe('Democratic');
     expect(result.education).toHaveLength(2);
-    expect(result.education[0].school).toBe('Cornell University');
+    expect(result.education[0]!.school).toBe('Cornell University');
     // the year comes from upstream's degree_year column; reading a key CourtListener
     // does not serve left this null for every record ever returned
-    expect(result.education[0].year).toBe(1954);
-    expect(result.education[1].year).toBe(1959);
+    expect(result.education[0]!.year).toBe(1954);
+    expect(result.education[1]!.year).toBe(1959);
     expect(result.positions).toHaveLength(1);
     expect(result.positions[0]).toMatchObject({
       court: 'Supreme Court of the United States',
@@ -129,13 +129,13 @@ describe('getJudgeTool', () => {
       positions: [mkPosition('e_part'), mkPosition('x_unknown_code')],
     };
     mockSvc.getPerson = vi.fn().mockResolvedValue(person);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getJudgeTool.errors });
     const input = getJudgeTool.input.parse({ person_id: 300 });
     const result = await getJudgeTool.handler(input, ctx);
     // known code expands
-    expect(result.positions[0].nomination_process).toBe('Partisan Election');
+    expect(result.positions[0]!.nomination_process).toBe('Partisan Election');
     // unknown code passes through unchanged rather than being dropped or guessed
-    expect(result.positions[1].nomination_process).toBe('x_unknown_code');
+    expect(result.positions[1]!.nomination_process).toBe('x_unknown_code');
   });
 
   it('throws not_found for missing person', async () => {
@@ -170,7 +170,7 @@ describe('getJudgeTool', () => {
       positions: [],
     };
     mockSvc.getPerson = vi.fn().mockResolvedValue(sparsePerson);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getJudgeTool.errors });
     const input = getJudgeTool.input.parse({ person_id: 301 });
     const result = await getJudgeTool.handler(input, ctx);
     expect(result.aba_ratings).toEqual([]);
@@ -248,7 +248,7 @@ describe('getJudgeTool', () => {
       positions: [{ ...basePerson.positions[0]!, termination_reason: '' }],
     };
     mockSvc.getPerson = vi.fn().mockResolvedValue(person);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getJudgeTool.errors });
     const input = getJudgeTool.input.parse({ person_id: 300 });
     const result = await getJudgeTool.handler(input, ctx);
 
@@ -265,7 +265,7 @@ describe('getJudgeTool', () => {
   describe('position, termination, and degree code expansion (#46)', () => {
     it('expands the codes and keeps the raw values beside them', async () => {
       mockSvc.getPerson = vi.fn().mockResolvedValue(basePerson);
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: getJudgeTool.errors });
       const input = getJudgeTool.input.parse({ person_id: 300 });
       const result = await getJudgeTool.handler(input, ctx);
 
@@ -313,7 +313,7 @@ describe('getJudgeTool', () => {
         ],
       };
       mockSvc.getPerson = vi.fn().mockResolvedValue(person);
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: getJudgeTool.errors });
       const input = getJudgeTool.input.parse({ person_id: 300 });
       const result = await getJudgeTool.handler(input, ctx);
       expect(result.positions[0]?.position_type_label).toBe('Assistant District Attorney');
@@ -343,7 +343,7 @@ describe('getJudgeTool', () => {
         ],
       };
       mockSvc.getPerson = vi.fn().mockResolvedValue(person);
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: getJudgeTool.errors });
       const input = getJudgeTool.input.parse({ person_id: 300 });
       const result = await getJudgeTool.handler(input, ctx);
 
@@ -379,7 +379,7 @@ describe('getJudgeTool', () => {
         ],
       };
       mockSvc.getPerson = vi.fn().mockResolvedValue(person);
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: getJudgeTool.errors });
       const input = getJudgeTool.input.parse({ person_id: 300 });
       const result = await getJudgeTool.handler(input, ctx);
 
@@ -407,7 +407,7 @@ describe('getJudgeTool', () => {
 
     it('renders a year-only birth date as the year, keeping the stored ISO date', async () => {
       mockSvc.getPerson = vi.fn().mockResolvedValue(withDob('1954-01-01', '%Y'));
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: getJudgeTool.errors });
       const input = getJudgeTool.input.parse({ person_id: 300 });
       const result = await getJudgeTool.handler(input, ctx);
 
@@ -420,7 +420,7 @@ describe('getJudgeTool', () => {
 
     it('renders a month-only birth date to the month', async () => {
       mockSvc.getPerson = vi.fn().mockResolvedValue(withDob('1954-06-01', '%Y-%m'));
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: getJudgeTool.errors });
       const input = getJudgeTool.input.parse({ person_id: 300 });
       const result = await getJudgeTool.handler(input, ctx);
 
@@ -432,7 +432,7 @@ describe('getJudgeTool', () => {
 
     it('renders a day-precision date in full', async () => {
       mockSvc.getPerson = vi.fn().mockResolvedValue(basePerson);
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: getJudgeTool.errors });
       const input = getJudgeTool.input.parse({ person_id: 300 });
       const result = await getJudgeTool.handler(input, ctx);
 
@@ -443,7 +443,7 @@ describe('getJudgeTool', () => {
 
     it('reports no granularity when the record carries none, and renders the stored date', async () => {
       mockSvc.getPerson = vi.fn().mockResolvedValue(withDob('1954-01-01', ''));
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: getJudgeTool.errors });
       const input = getJudgeTool.input.parse({ person_id: 300 });
       const result = await getJudgeTool.handler(input, ctx);
 
@@ -479,7 +479,7 @@ describe('getJudgeTool', () => {
         ],
       };
       mockSvc.getPerson = vi.fn().mockResolvedValue(person);
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: getJudgeTool.errors });
       const input = getJudgeTool.input.parse({ person_id: 300 });
       const result = await getJudgeTool.handler(input, ctx);
 
@@ -511,7 +511,7 @@ describe('getJudgeTool', () => {
         ],
       };
       mockSvc.getPerson = vi.fn().mockResolvedValue(person);
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: getJudgeTool.errors });
       const input = getJudgeTool.input.parse({ person_id: 300 });
       const result = await getJudgeTool.handler(input, ctx);
 
@@ -522,7 +522,7 @@ describe('getJudgeTool', () => {
 
     it('renders day-precision position dates in full', async () => {
       mockSvc.getPerson = vi.fn().mockResolvedValue(basePerson);
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: getJudgeTool.errors });
       const input = getJudgeTool.input.parse({ person_id: 300 });
       const result = await getJudgeTool.handler(input, ctx);
       const text = (getJudgeTool.format!(result)[0] as { text: string }).text;
@@ -535,7 +535,7 @@ describe('getJudgeTool', () => {
         date_dod: '2020-01-01',
         date_granularity_dod: '%Y',
       });
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: getJudgeTool.errors });
       const input = getJudgeTool.input.parse({ person_id: 300 });
       const result = await getJudgeTool.handler(input, ctx);
 
@@ -551,7 +551,7 @@ describe('getJudgeTool', () => {
   describe('position truncation disclosure (#64)', () => {
     it('reports the walk reaching the end, on a surface the caller can read', async () => {
       mockSvc.getPerson = vi.fn().mockResolvedValue({ ...basePerson, positions_truncated: false });
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: getJudgeTool.errors });
       const input = getJudgeTool.input.parse({ person_id: 300 });
       await getJudgeTool.handler(input, ctx);
 
@@ -563,7 +563,7 @@ describe('getJudgeTool', () => {
 
     it('reports a bounded-out position history to the caller, not just the log', async () => {
       mockSvc.getPerson = vi.fn().mockResolvedValue({ ...basePerson, positions_truncated: true });
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: getJudgeTool.errors });
       const input = getJudgeTool.input.parse({ person_id: 300 });
       const result = await getJudgeTool.handler(input, ctx);
 
@@ -579,7 +579,7 @@ describe('getJudgeTool', () => {
 
     it('treats a payload with no truncation flag as complete', async () => {
       mockSvc.getPerson = vi.fn().mockResolvedValue(basePerson);
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: getJudgeTool.errors });
       const input = getJudgeTool.input.parse({ person_id: 300 });
       await getJudgeTool.handler(input, ctx);
 

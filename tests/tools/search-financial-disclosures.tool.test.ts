@@ -48,12 +48,12 @@ describe('searchFinancialDisclosuresTool', () => {
     mockSvc.searchFinancialDisclosures = vi
       .fn()
       .mockResolvedValue({ total: 2, results: [baseDisclosure], nextCursor: null });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchFinancialDisclosuresTool.errors });
     const input = searchFinancialDisclosuresTool.input.parse({ judge_id: 1609, year: 2022 });
     const result = await searchFinancialDisclosuresTool.handler(input, ctx);
 
     expect(result.results).toHaveLength(1);
-    const d = result.results[0];
+    const d = result.results[0]!;
     expect(d.disclosure_id).toBe(34210);
     // person id is extracted from the resource URI
     expect(d.person_id).toBe(1609);
@@ -82,13 +82,13 @@ describe('searchFinancialDisclosuresTool', () => {
     mockSvc.searchFinancialDisclosures = vi
       .fn()
       .mockResolvedValue({ total: null, results: [d2022, d2021], nextCursor: null });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchFinancialDisclosuresTool.errors });
     const input = searchFinancialDisclosuresTool.input.parse({ judge_id: 1609, year: 2021 });
     const result = await searchFinancialDisclosuresTool.handler(input, ctx);
 
     expect(result.results).toHaveLength(1);
-    expect(result.results[0].year).toBe(2021);
-    expect(result.results[0].disclosure_id).toBe(34205);
+    expect(result.results[0]!.year).toBe(2021);
+    expect(result.results[0]!.disclosure_id).toBe(34205);
     // year is a client-side filter — the API (which 400s on unknown params) never sees it
     expect(mockSvc.searchFinancialDisclosures).toHaveBeenCalledWith(
       expect.not.objectContaining({ year: expect.anything() }),
@@ -100,7 +100,7 @@ describe('searchFinancialDisclosuresTool', () => {
     mockSvc.searchFinancialDisclosures = vi
       .fn()
       .mockResolvedValue({ total: null, results: [], nextCursor: null });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchFinancialDisclosuresTool.errors });
     const input = searchFinancialDisclosuresTool.input.parse({ judge_id: 99999 });
     const result = await searchFinancialDisclosuresTool.handler(input, ctx);
 
@@ -172,7 +172,7 @@ describe('searchFinancialDisclosuresTool', () => {
     mockSvc.searchFinancialDisclosures = vi
       .fn()
       .mockResolvedValue({ total: null, results: [otherYear], nextCursor: 'cD05MDY=' });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchFinancialDisclosuresTool.errors });
     const input = searchFinancialDisclosuresTool.input.parse({ judge_id: 3045, year: 2010 });
     const result = await searchFinancialDisclosuresTool.handler(input, ctx);
 
@@ -189,7 +189,7 @@ describe('searchFinancialDisclosuresTool', () => {
     mockSvc.searchFinancialDisclosures = vi
       .fn()
       .mockResolvedValue({ total: null, results: [], nextCursor: null });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchFinancialDisclosuresTool.errors });
     const input = searchFinancialDisclosuresTool.input.parse({ judge_id: 99999, year: 2010 });
     await searchFinancialDisclosuresTool.handler(input, ctx);
     const enrichment = getEnrichment(ctx);

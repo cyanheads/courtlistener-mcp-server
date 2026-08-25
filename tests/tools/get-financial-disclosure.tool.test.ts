@@ -127,7 +127,7 @@ function makeOverflowDisclosure(): FinancialDisclosure {
 describe('getFinancialDisclosureTool', () => {
   it('returns full itemization with decoded codes for a small filing', async () => {
     mockSvc.getFinancialDisclosure = vi.fn().mockResolvedValue(baseDisclosure);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getFinancialDisclosureTool.errors });
     const input = getFinancialDisclosureTool.input.parse({ disclosure_id: 34207 });
     const result = await getFinancialDisclosureTool.handler(input, ctx);
 
@@ -167,7 +167,7 @@ describe('getFinancialDisclosureTool', () => {
 
   it('returns only the requested categories when categories is passed', async () => {
     mockSvc.getFinancialDisclosure = vi.fn().mockResolvedValue(baseDisclosure);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getFinancialDisclosureTool.errors });
     const input = getFinancialDisclosureTool.input.parse({
       disclosure_id: 34207,
       categories: ['investments', 'debts'],
@@ -186,7 +186,7 @@ describe('getFinancialDisclosureTool', () => {
 
   it('overflows to a per-category outline while keeping metadata and counts', async () => {
     mockSvc.getFinancialDisclosure = vi.fn().mockResolvedValue(makeOverflowDisclosure());
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getFinancialDisclosureTool.errors });
     const input = getFinancialDisclosureTool.input.parse({ disclosure_id: 34207 });
     const result = await getFinancialDisclosureTool.handler(input, ctx);
 
@@ -208,7 +208,7 @@ describe('getFinancialDisclosureTool', () => {
 
   it('returns a large category in full on an explicit category re-call (no overflow gate)', async () => {
     mockSvc.getFinancialDisclosure = vi.fn().mockResolvedValue(makeOverflowDisclosure());
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getFinancialDisclosureTool.errors });
     const input = getFinancialDisclosureTool.input.parse({
       disclosure_id: 34207,
       categories: ['investments'],

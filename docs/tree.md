@@ -1,11 +1,9 @@
 # courtlistener-mcp-server - Directory Structure
 
-Generated on: 2026-07-30 07:54:51
+Generated on: 2026-08-25 05:13:45
 
 ```text
 courtlistener-mcp-server/
-├── .agents/
-├── .claude/
 ├── .claude-plugin/
 │   └── plugin.json
 ├── .codex-plugin/
@@ -16,6 +14,8 @@ courtlistener-mcp-server/
 │   │   ├── bug_report.yml
 │   │   ├── config.yml
 │   │   └── feature_request.yml
+│   ├── CODE_OF_CONDUCT.md
+│   ├── CONTRIBUTING.md
 │   ├── FUNDING.yml
 │   └── SECURITY.md
 ├── .vscode/
@@ -173,6 +173,8 @@ courtlistener-mcp-server/
 │   │       └── uri.ts
 │   └── index.ts
 ├── tests/
+│   ├── helpers/
+│   │   └── capture-error.ts
 │   ├── prompts/
 │   │   └── legal-research.prompt.test.ts
 │   ├── resources/

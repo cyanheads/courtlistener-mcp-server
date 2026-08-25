@@ -62,7 +62,7 @@ const baseServiceResult = {
 describe('getPartiesTool', () => {
   it('returns mapped parties with roles and attorneys', async () => {
     mockSvc.getParties = vi.fn().mockResolvedValue(baseServiceResult);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getPartiesTool.errors });
     const input = getPartiesTool.input.parse({ docket_id: 8000 });
     const result = await getPartiesTool.handler(input, ctx);
 
@@ -71,17 +71,17 @@ describe('getPartiesTool', () => {
     expect(result.next_cursor).toBeNull();
     expect(result.parties).toHaveLength(2);
 
-    const plaintiff = result.parties[0];
+    const plaintiff = result.parties[0]!;
     expect(plaintiff.id).toBe(1001);
     expect(plaintiff.name).toBe('Apple Inc.');
     expect(plaintiff.role).toBe('Plaintiff');
     expect(plaintiff.attorneys).toHaveLength(1);
-    expect(plaintiff.attorneys[0].attorney_id).toBe(5001);
-    expect(plaintiff.attorneys[0].name).toBe('Harold Lee');
-    expect(plaintiff.attorneys[0].role_code).toBe(2);
-    expect(plaintiff.attorneys[0].role).toBe('Lead attorney');
-    expect(result.parties[1].attorneys[0].role).toBe('Terminated');
-    expect(result.parties[1].attorneys[0].date_action).toBe('2013-11-04');
+    expect(plaintiff.attorneys[0]!.attorney_id).toBe(5001);
+    expect(plaintiff.attorneys[0]!.name).toBe('Harold Lee');
+    expect(plaintiff.attorneys[0]!.role_code).toBe(2);
+    expect(plaintiff.attorneys[0]!.role).toBe('Lead attorney');
+    expect(result.parties[1]!.attorneys[0]!.role).toBe('Terminated');
+    expect(result.parties[1]!.attorneys[0]!.date_action).toBe('2013-11-04');
   });
 
   // #61 — /parties/ is cursor-paginated (PartyViewSet.ordering = "-id", which sits in its
@@ -92,7 +92,7 @@ describe('getPartiesTool', () => {
 
     it('threads the opaque cursor to the service, not a page number', async () => {
       mockSvc.getParties = vi.fn().mockResolvedValue({ count: 0, next_cursor: null, parties: [] });
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: getPartiesTool.errors });
       const input = getPartiesTool.input.parse({ docket_id: 9999, cursor: CURSOR, page_size: 5 });
       await getPartiesTool.handler(input, ctx);
       expect(mockSvc.getParties).toHaveBeenCalledWith(9999, CURSOR, 5, ctx);
@@ -100,7 +100,7 @@ describe('getPartiesTool', () => {
 
     it('sends no cursor on a first-page call', async () => {
       mockSvc.getParties = vi.fn().mockResolvedValue({ count: 0, next_cursor: null, parties: [] });
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: getPartiesTool.errors });
       const input = getPartiesTool.input.parse({ docket_id: 9999 });
       await getPartiesTool.handler(input, ctx);
       expect(mockSvc.getParties).toHaveBeenCalledWith(9999, undefined, 10, ctx);
@@ -110,7 +110,7 @@ describe('getPartiesTool', () => {
       mockSvc.getParties = vi
         .fn()
         .mockResolvedValue({ count: null, next_cursor: CURSOR, parties: [basePlaintiff] });
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: getPartiesTool.errors });
       const first = await getPartiesTool.handler(
         getPartiesTool.input.parse({ docket_id: 8000 }),
         ctx,
@@ -138,7 +138,7 @@ describe('getPartiesTool', () => {
       next_cursor: 'cD0xMDA%3D',
       parties: [basePlaintiff],
     });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getPartiesTool.errors });
     const input = getPartiesTool.input.parse({ docket_id: 8000, page_size: 1 });
     const result = await getPartiesTool.handler(input, ctx);
     expect(result.total_parties).toBeNull();
@@ -147,7 +147,7 @@ describe('getPartiesTool', () => {
     // tools/list — so the enrichment twin of an unknown count must be optional too (#57).
     // Asserting the bare output schema here is what let the required totalCount ship.
     expect(() =>
-      getPartiesTool.output.extend(getPartiesTool.enrichment).parse(result),
+      getPartiesTool.output.extend(getPartiesTool.enrichment!).parse(result),
     ).not.toThrow();
   });
 
@@ -188,12 +188,12 @@ describe('getPartiesTool', () => {
       next_cursor: null,
       parties: [sparseParty],
     });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getPartiesTool.errors });
     const input = getPartiesTool.input.parse({ docket_id: 8000 });
     const result = await getPartiesTool.handler(input, ctx);
 
-    expect(result.parties[0].role).toBeNull();
-    expect(result.parties[0].attorneys).toHaveLength(0);
+    expect(result.parties[0]!.role).toBeNull();
+    expect(result.parties[0]!.attorneys).toHaveLength(0);
   });
 
   it('formats output with all required fields', () => {

@@ -10,7 +10,7 @@ import { courtsReferenceResource } from '@/mcp-server/resources/definitions/cour
 describe('courtsReferenceResource', () => {
   it('returns the reference content for valid params', async () => {
     const ctx = createMockContext();
-    const params = courtsReferenceResource.params.parse({});
+    const params = courtsReferenceResource.params!.parse({});
     const result = await courtsReferenceResource.handler(params, ctx);
     expect(typeof result).toBe('string');
     expect(result).toContain('CourtListener Court Reference');
@@ -18,7 +18,7 @@ describe('courtsReferenceResource', () => {
 
   it('includes jurisdiction type codes in the content', async () => {
     const ctx = createMockContext();
-    const params = courtsReferenceResource.params.parse({});
+    const params = courtsReferenceResource.params!.parse({});
     const result = await courtsReferenceResource.handler(params, ctx);
     expect(result).toContain('Federal Appellate');
     expect(result).toContain('scotus');
@@ -29,7 +29,7 @@ describe('courtsReferenceResource', () => {
   // 15-code table as the tool input, with the same four wrong labels.
   it("tabulates jurisdiction codes with upstream's own labels", async () => {
     const ctx = createMockContext();
-    const params = courtsReferenceResource.params.parse({});
+    const params = courtsReferenceResource.params!.parse({});
     const result = await courtsReferenceResource.handler(params, ctx);
 
     expect(result).toContain('| S | State Supreme |');
@@ -45,11 +45,33 @@ describe('courtsReferenceResource', () => {
     expect(result).not.toContain('| T |');
   });
 
+  // A build-time-constant document: 2026-07-28 clients may hold it for a day, and it
+  // carries nothing caller-specific, so a shared cache may hold it too.
+  it('declares a public day-long cache hint', () => {
+    expect(courtsReferenceResource.cacheHint).toEqual({
+      ttlMs: 86_400_000,
+      cacheScope: 'public',
+    });
+  });
+
   it('lists available resources via list()', async () => {
-    const listing = await courtsReferenceResource.list!();
+    // `list` receives the SDK's `ServerContext`, not a handler `Context`. This
+    // listing ignores it, so a minimal literal satisfies the signature.
+    const serverContext = {
+      mcpReq: {
+        id: 'test',
+        method: 'resources/list',
+        signal: new AbortController().signal,
+        requestState: () => undefined,
+        send: () => Promise.resolve({} as never),
+        notify: () => Promise.resolve(),
+        log: () => Promise.resolve(),
+      },
+    } as unknown as Parameters<NonNullable<typeof courtsReferenceResource.list>>[0];
+    const listing = await courtsReferenceResource.list!(serverContext);
     expect(listing.resources).toBeInstanceOf(Array);
     expect(listing.resources).toHaveLength(1);
-    const resource = listing.resources[0];
+    const resource = listing.resources[0]!;
     expect(resource).toHaveProperty('uri', 'courtlistener://reference/courts');
     expect(resource).toHaveProperty('name');
     expect(resource).toHaveProperty('mimeType', 'text/markdown');

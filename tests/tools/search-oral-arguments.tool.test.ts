@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { searchOralArgumentsTool } from '@/mcp-server/tools/definitions/search-oral-arguments.tool.js';
 import type { CourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
 import * as svcModule from '@/services/courtlistener/courtlistener-service.js';
+import { captureError } from '../helpers/capture-error.js';
 
 const mockSvc = {
   searchOralArguments: vi.fn(),
@@ -48,7 +49,7 @@ const baseAudioResult = {
 describe('searchOralArgumentsTool', () => {
   it('returns mapped oral argument records', async () => {
     mockSvc.searchOralArguments = vi.fn().mockResolvedValue(baseAudioResult);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchOralArgumentsTool.errors });
     const input = searchOralArgumentsTool.input.parse({ q: 'constitutional rights' });
     const result = await searchOralArgumentsTool.handler(input, ctx);
 
@@ -71,15 +72,15 @@ describe('searchOralArgumentsTool', () => {
   describe('local_path storage URL (#53)', () => {
     it('resolves a bare relative path to a fetchable storage URL', async () => {
       mockSvc.searchOralArguments = vi.fn().mockResolvedValue(baseAudioResult);
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: searchOralArgumentsTool.errors });
       const input = searchOralArgumentsTool.input.parse({ q: 'constitutional rights' });
       const result = await searchOralArgumentsTool.handler(input, ctx);
 
-      expect(result.results[0].local_path).toBe(
+      expect(result.results[0]!.local_path).toBe(
         'https://storage.courtlistener.com/mp3/2023/10/03/oral_argument_case_cl.mp3',
       );
       // download_url is the court's own copy and is never rewritten.
-      expect(result.results[0].download_url).toBe(
+      expect(result.results[0]!.download_url).toBe(
         'http://www.supremecourt.gov/media/audio/mp3files/22-1234.mp3',
       );
     });
@@ -94,11 +95,11 @@ describe('searchOralArgumentsTool', () => {
           },
         ],
       });
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: searchOralArgumentsTool.errors });
       const input = searchOralArgumentsTool.input.parse({ q: 'test' });
       const result = await searchOralArgumentsTool.handler(input, ctx);
 
-      expect(result.results[0].local_path).toBe(
+      expect(result.results[0]!.local_path).toBe(
         'https://storage.courtlistener.com/mp3/2023/10/03/already_absolute.mp3',
       );
     });
@@ -108,11 +109,11 @@ describe('searchOralArgumentsTool', () => {
         ...baseAudioResult,
         results: [{ ...baseAudioResult.results[0], local_path: null }],
       });
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: searchOralArgumentsTool.errors });
       const input = searchOralArgumentsTool.input.parse({ q: 'test' });
       const result = await searchOralArgumentsTool.handler(input, ctx);
 
-      expect(result.results[0].local_path).toBeNull();
+      expect(result.results[0]!.local_path).toBeNull();
     });
   });
 
@@ -120,7 +121,7 @@ describe('searchOralArgumentsTool', () => {
     mockSvc.searchOralArguments = vi
       .fn()
       .mockResolvedValue({ total: 0, results: [], nextCursor: null });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchOralArgumentsTool.errors });
     const input = searchOralArgumentsTool.input.parse({
       q: 'test',
       court: 'scotus',
@@ -135,7 +136,7 @@ describe('searchOralArgumentsTool', () => {
 
   it('throws when service throws', async () => {
     mockSvc.searchOralArguments = vi.fn().mockRejectedValue(new Error('rate limit'));
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchOralArgumentsTool.errors });
     const input = searchOralArgumentsTool.input.parse({ q: 'test' });
     await expect(searchOralArgumentsTool.handler(input, ctx)).rejects.toThrow();
   });
@@ -149,7 +150,7 @@ describe('searchOralArgumentsTool', () => {
       const input = searchOralArgumentsTool.input.parse({ q: '   ' });
       expect(input.q).toBe('');
 
-      const err = await searchOralArgumentsTool.handler(input, ctx).catch((e) => e);
+      const err = await captureError(() => searchOralArgumentsTool.handler(input, ctx));
       expect(err).toMatchObject({ data: { reason: 'empty_query' } });
       expect(err.message).toContain('q');
       expect(mockSvc.searchOralArguments).not.toHaveBeenCalled();
@@ -157,7 +158,7 @@ describe('searchOralArgumentsTool', () => {
 
     it('trims incidental padding from an otherwise-valid q', async () => {
       mockSvc.searchOralArguments = vi.fn().mockResolvedValue(baseAudioResult);
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: searchOralArgumentsTool.errors });
       const input = searchOralArgumentsTool.input.parse({ q: '  qualified immunity  ' });
       await searchOralArgumentsTool.handler(input, ctx);
       expect(mockSvc.searchOralArguments).toHaveBeenCalledWith(
@@ -175,7 +176,7 @@ describe('searchOralArgumentsTool', () => {
         const ctx = createMockContext({ errors: searchOralArgumentsTool.errors });
         const input = searchOralArgumentsTool.input.parse({ q: 'test', argued_after: bad });
 
-        const err = await searchOralArgumentsTool.handler(input, ctx).catch((e) => e);
+        const err = await captureError(() => searchOralArgumentsTool.handler(input, ctx));
         expect(err).toMatchObject({ data: { reason: 'invalid_date' } });
         expect(err.message).toContain('argued_after');
         expect(err.message).toContain('YYYY-MM-DD');
@@ -188,7 +189,7 @@ describe('searchOralArgumentsTool', () => {
       const ctx = createMockContext({ errors: searchOralArgumentsTool.errors });
       const input = searchOralArgumentsTool.input.parse({ q: 'test', argued_before: '2021-02-29' });
 
-      const err = await searchOralArgumentsTool.handler(input, ctx).catch((e) => e);
+      const err = await captureError(() => searchOralArgumentsTool.handler(input, ctx));
       expect(err).toMatchObject({ data: { reason: 'invalid_date' } });
       expect(err.message).toContain('argued_before');
       expect(mockSvc.searchOralArguments).not.toHaveBeenCalled();

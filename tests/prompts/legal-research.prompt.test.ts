@@ -7,11 +7,11 @@ import { describe, expect, it } from 'vitest';
 import { legalResearchPrompt } from '@/mcp-server/prompts/definitions/legal-research.prompt.js';
 
 describe('legalResearchPrompt', () => {
-  it('generates valid messages for valid args', () => {
+  it('generates valid messages for valid args', async () => {
     const args = legalResearchPrompt.args!.parse({
       topic: 'Fourth Amendment cell phone search',
     });
-    const messages = legalResearchPrompt.generate(args);
+    const messages = await legalResearchPrompt.generate(args);
     expect(messages).toBeInstanceOf(Array);
     expect(messages.length).toBeGreaterThan(0);
     for (const msg of messages) {
@@ -20,40 +20,40 @@ describe('legalResearchPrompt', () => {
     }
   });
 
-  it('includes the topic in the generated message', () => {
+  it('includes the topic in the generated message', async () => {
     const args = legalResearchPrompt.args!.parse({
       topic: 'qualified immunity Section 1983',
     });
-    const messages = legalResearchPrompt.generate(args);
-    const text = (messages[0].content as { text: string }).text;
+    const messages = await legalResearchPrompt.generate(args);
+    const text = (messages[0]!.content as { text: string }).text;
     expect(text).toContain('qualified immunity Section 1983');
   });
 
-  it('includes jurisdiction in the message when provided', () => {
+  it('includes jurisdiction in the message when provided', async () => {
     const args = legalResearchPrompt.args!.parse({
       topic: 'free speech',
       jurisdiction: 'ca9',
     });
-    const messages = legalResearchPrompt.generate(args);
-    const text = (messages[0].content as { text: string }).text;
+    const messages = await legalResearchPrompt.generate(args);
+    const text = (messages[0]!.content as { text: string }).text;
     expect(text).toContain('ca9');
   });
 
-  it('includes deep research steps when depth is deep', () => {
+  it('includes deep research steps when depth is deep', async () => {
     const args = legalResearchPrompt.args!.parse({
       topic: 'strict scrutiny',
       depth: 'deep',
     });
-    const messages = legalResearchPrompt.generate(args);
-    const text = (messages[0].content as { text: string }).text;
+    const messages = await legalResearchPrompt.generate(args);
+    const text = (messages[0]!.content as { text: string }).text;
     expect(text).toContain('courtlistener_get_citations');
     expect(text).toContain('courtlistener_get_judge');
   });
 
-  it('generates overview plan without deep steps by default', () => {
+  it('generates overview plan without deep steps by default', async () => {
     const args = legalResearchPrompt.args!.parse({ topic: 'due process' });
-    const messages = legalResearchPrompt.generate(args);
-    const text = (messages[0].content as { text: string }).text;
+    const messages = await legalResearchPrompt.generate(args);
+    const text = (messages[0]!.content as { text: string }).text;
     expect(text).toContain('courtlistener_search_opinions');
     // Deep steps should not appear in overview
     expect(text).not.toContain('courtlistener_get_citations');

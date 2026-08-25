@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { searchJudgesTool } from '@/mcp-server/tools/definitions/search-judges.tool.js';
 import type { CourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
 import * as svcModule from '@/services/courtlistener/courtlistener-service.js';
+import { captureError } from '../helpers/capture-error.js';
 
 const mockSvc = {
   searchJudges: vi.fn(),
@@ -75,7 +76,7 @@ const basePersonResult = {
 describe('searchJudgesTool', () => {
   it('returns mapped judge records and enriches total for valid input', async () => {
     mockSvc.searchJudges = vi.fn().mockResolvedValue(basePersonResult);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchJudgesTool.errors });
     const input = searchJudgesTool.input.parse({ q: 'Ginsburg' });
     const result = await searchJudgesTool.handler(input, ctx);
 
@@ -85,7 +86,7 @@ describe('searchJudgesTool', () => {
       name: 'Ruth Bader Ginsburg',
       gender: 'F',
     });
-    expect(result.results[0].current_position).toMatchObject({
+    expect(result.results[0]!.current_position).toMatchObject({
       court: 'Supreme Court of the United States',
       court_id: 'scotus',
       position_type: 'Associate Justice',
@@ -102,7 +103,7 @@ describe('searchJudgesTool', () => {
 
   it('passes optional filters to service', async () => {
     mockSvc.searchJudges = vi.fn().mockResolvedValue({ total: 0, results: [], nextCursor: null });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchJudgesTool.errors });
     const input = searchJudgesTool.input.parse({
       q: 'judge',
       appointer: 'Obama',
@@ -134,10 +135,10 @@ describe('searchJudgesTool', () => {
       ],
       nextCursor: null,
     });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchJudgesTool.errors });
     const input = searchJudgesTool.input.parse({ q: 'unknown' });
     const result = await searchJudgesTool.handler(input, ctx);
-    expect(result.results[0].current_position).toBeNull();
+    expect(result.results[0]!.current_position).toBeNull();
   });
 
   // #44 — current_position read court/position_type/appointer/date_start off the
@@ -193,7 +194,7 @@ describe('searchJudgesTool', () => {
         ],
         nextCursor: null,
       });
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: searchJudgesTool.errors });
       const input = searchJudgesTool.input.parse({ q: 'Sotomayor' });
       return searchJudgesTool.handler(input, ctx);
     }
@@ -201,7 +202,7 @@ describe('searchJudgesTool', () => {
     it('picks the un-terminated position from a multi-position history', async () => {
       const result = await runWith(sotomayorPositions);
 
-      expect(result.results[0].current_position).toEqual({
+      expect(result.results[0]!.current_position).toEqual({
         court: 'Supreme Court of the United States',
         court_id: 'scotus',
         position_type: 'Judge',
@@ -218,7 +219,7 @@ describe('searchJudgesTool', () => {
     it('falls back to the latest date_start when every position is terminated', async () => {
       const result = await runWith(sotomayorPositions.filter((p) => p.date_termination));
 
-      expect(result.results[0].current_position).toMatchObject({
+      expect(result.results[0]!.current_position).toMatchObject({
         court_id: 'ca2',
         date_start: '1998-10-07',
         date_termination: '2009-08-07',
@@ -232,13 +233,13 @@ describe('searchJudgesTool', () => {
         position({ court_exact: 'ca2', position_type: 'Judge', date_start: '1998-10-07' }),
       ]);
 
-      expect(result.results[0].current_position).toMatchObject({ court_id: 'ca2' });
+      expect(result.results[0]!.current_position).toMatchObject({ court_id: 'ca2' });
     });
 
     it('carries a non-judicial position through job_title and organization_name', async () => {
       const result = await runWith([sotomayorPositions[2]]);
 
-      expect(result.results[0].current_position).toMatchObject({
+      expect(result.results[0]!.current_position).toMatchObject({
         court: null,
         court_id: null,
         position_type: null,
@@ -250,12 +251,12 @@ describe('searchJudgesTool', () => {
     it('surfaces expanded affiliation and ABA labels, not codes', async () => {
       const result = await runWith(sotomayorPositions);
 
-      expect(result.results[0].political_affiliation).toEqual([
+      expect(result.results[0]!.political_affiliation).toEqual([
         'Republican',
         'Democratic',
         'Democratic',
       ]);
-      expect(result.results[0].aba_rating).toEqual(['Qualified', 'Well Qualified']);
+      expect(result.results[0]!.aba_rating).toEqual(['Qualified', 'Well Qualified']);
       expect(
         searchJudgesTool.output.shape.results.element.shape.political_affiliation.description,
       ).toMatch(/label/i);
@@ -264,7 +265,7 @@ describe('searchJudgesTool', () => {
 
   it('enriches notice on empty results', async () => {
     mockSvc.searchJudges = vi.fn().mockResolvedValue({ total: 0, results: [], nextCursor: null });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchJudgesTool.errors });
     const input = searchJudgesTool.input.parse({ q: 'xyz notajudge', appointer: 'Nonexistent' });
     const result = await searchJudgesTool.handler(input, ctx);
 
@@ -278,7 +279,7 @@ describe('searchJudgesTool', () => {
 
   it('throws when service throws', async () => {
     mockSvc.searchJudges = vi.fn().mockRejectedValue(new Error('service error'));
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchJudgesTool.errors });
     const input = searchJudgesTool.input.parse({ q: 'test' });
     await expect(searchJudgesTool.handler(input, ctx)).rejects.toThrow();
   });
@@ -292,7 +293,7 @@ describe('searchJudgesTool', () => {
       const input = searchJudgesTool.input.parse({ q: '   ' });
       expect(input.q).toBe('');
 
-      const err = await searchJudgesTool.handler(input, ctx).catch((e) => e);
+      const err = await captureError(() => searchJudgesTool.handler(input, ctx));
       expect(err).toMatchObject({ data: { reason: 'empty_query' } });
       expect(err.message).toContain('q');
       expect(mockSvc.searchJudges).not.toHaveBeenCalled();
@@ -300,7 +301,7 @@ describe('searchJudgesTool', () => {
 
     it('trims incidental padding from an otherwise-valid q', async () => {
       mockSvc.searchJudges = vi.fn().mockResolvedValue(basePersonResult);
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: searchJudgesTool.errors });
       const input = searchJudgesTool.input.parse({ q: '  Sotomayor  ' });
       await searchJudgesTool.handler(input, ctx);
       expect(mockSvc.searchJudges).toHaveBeenCalledWith(

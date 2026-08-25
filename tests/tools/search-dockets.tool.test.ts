@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { searchDocketsTool } from '@/mcp-server/tools/definitions/search-dockets.tool.js';
 import type { CourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
 import * as svcModule from '@/services/courtlistener/courtlistener-service.js';
+import { captureError } from '../helpers/capture-error.js';
 
 const mockSvc = {
   searchDockets: vi.fn(),
@@ -67,7 +68,7 @@ const baseDocketResult = {
 describe('searchDocketsTool', () => {
   it('returns mapped docket summaries and enriches total for valid input', async () => {
     mockSvc.searchDockets = vi.fn().mockResolvedValue(baseDocketResult);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchDocketsTool.errors });
     const input = searchDocketsTool.input.parse({ q: 'Apple Samsung patent' });
     const result = await searchDocketsTool.handler(input, ctx);
 
@@ -78,8 +79,8 @@ describe('searchDocketsTool', () => {
       court_id: 'cand',
       jury_demand: 'Both',
     });
-    expect(result.results[0].parties).toEqual(['Apple Inc.', 'Samsung Electronics']);
-    expect(result.results[0].sample_documents).toHaveLength(1);
+    expect(result.results[0]!.parties).toEqual(['Apple Inc.', 'Samsung Electronics']);
+    expect(result.results[0]!.sample_documents).toHaveLength(1);
     expect(result.coverage_note).toBeTruthy();
 
     const enrichment = getEnrichment(ctx);
@@ -92,26 +93,26 @@ describe('searchDocketsTool', () => {
   describe('v4 response key mapping (#42)', () => {
     it('reads parties from `party`, not the `party_name` input filter', async () => {
       mockSvc.searchDockets = vi.fn().mockResolvedValue(baseDocketResult);
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: searchDocketsTool.errors });
       const input = searchDocketsTool.input.parse({ q: 'Apple Samsung patent' });
       const result = await searchDocketsTool.handler(input, ctx);
 
-      expect(result.results[0].parties).toEqual(['Apple Inc.', 'Samsung Electronics']);
-      expect(result.results[0].parties).not.toEqual([]);
+      expect(result.results[0]!.parties).toEqual(['Apple Inc.', 'Samsung Electronics']);
+      expect(result.results[0]!.parties).not.toEqual([]);
     });
 
     it('reads a sample document date from `entry_date_filed`', async () => {
       mockSvc.searchDockets = vi.fn().mockResolvedValue(baseDocketResult);
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: searchDocketsTool.errors });
       const input = searchDocketsTool.input.parse({ q: 'Apple Samsung patent' });
       const result = await searchDocketsTool.handler(input, ctx);
 
-      expect(result.results[0].sample_documents[0].date_filed).toBe('2011-04-15');
+      expect(result.results[0]!.sample_documents[0]!.date_filed).toBe('2011-04-15');
     });
 
     it('drops document_count — no v4 field backs it, and 0 read as a real total', async () => {
       mockSvc.searchDockets = vi.fn().mockResolvedValue(baseDocketResult);
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: searchDocketsTool.errors });
       const input = searchDocketsTool.input.parse({ q: 'Apple Samsung patent' });
       const result = await searchDocketsTool.handler(input, ctx);
 
@@ -123,7 +124,7 @@ describe('searchDocketsTool', () => {
 
     it('surfaces attorneys, firms, and the remaining adjacent docket fields', async () => {
       mockSvc.searchDockets = vi.fn().mockResolvedValue(baseDocketResult);
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: searchDocketsTool.errors });
       const input = searchDocketsTool.input.parse({ q: 'Apple Samsung patent' });
       const result = await searchDocketsTool.handler(input, ctx);
 
@@ -135,7 +136,7 @@ describe('searchDocketsTool', () => {
         jurisdiction_type: 'Federal Question',
         referred_to: 'Judge Grewal',
       });
-      expect(result.results[0].sample_documents[0]).toMatchObject({
+      expect(result.results[0]!.sample_documents[0]).toMatchObject({
         entry_number: 1,
         page_count: 38,
         document_type: 'PACER Document',
@@ -144,11 +145,11 @@ describe('searchDocketsTool', () => {
 
     it('resolves a sample document filepath_local to a storage URL', async () => {
       mockSvc.searchDockets = vi.fn().mockResolvedValue(baseDocketResult);
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: searchDocketsTool.errors });
       const input = searchDocketsTool.input.parse({ q: 'Apple Samsung patent' });
       const result = await searchDocketsTool.handler(input, ctx);
 
-      expect(result.results[0].sample_documents[0].filepath_local).toBe(
+      expect(result.results[0]!.sample_documents[0]!.filepath_local).toBe(
         'https://storage.courtlistener.com/recap/gov.uscourts.cand.239768/gov.uscourts.cand.239768.1.0.pdf',
       );
     });
@@ -173,7 +174,7 @@ describe('searchDocketsTool', () => {
         ],
         nextCursor: null,
       });
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: searchDocketsTool.errors });
       const input = searchDocketsTool.input.parse({ q: 'sparse' });
       const result = await searchDocketsTool.handler(input, ctx);
 
@@ -194,7 +195,7 @@ describe('searchDocketsTool', () => {
 
   it('passes optional filters to service', async () => {
     mockSvc.searchDockets = vi.fn().mockResolvedValue({ total: 0, results: [], nextCursor: null });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchDocketsTool.errors });
     const input = searchDocketsTool.input.parse({
       q: 'test',
       court: 'deb',
@@ -224,15 +225,15 @@ describe('searchDocketsTool', () => {
       results: [{ ...baseDocketResult.results[0], recap_documents: manyDocs }],
       nextCursor: null,
     });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchDocketsTool.errors });
     const input = searchDocketsTool.input.parse({ q: 'test' });
     const result = await searchDocketsTool.handler(input, ctx);
-    expect(result.results[0].sample_documents).toHaveLength(3);
+    expect(result.results[0]!.sample_documents).toHaveLength(3);
   });
 
   it('enriches notice on empty results', async () => {
     mockSvc.searchDockets = vi.fn().mockResolvedValue({ total: 0, results: [], nextCursor: null });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchDocketsTool.errors });
     const input = searchDocketsTool.input.parse({ q: 'obscure case xyz', court: 'deb' });
     const result = await searchDocketsTool.handler(input, ctx);
 
@@ -246,7 +247,7 @@ describe('searchDocketsTool', () => {
 
   it('throws when service throws', async () => {
     mockSvc.searchDockets = vi.fn().mockRejectedValue(new Error('rate limit'));
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchDocketsTool.errors });
     const input = searchDocketsTool.input.parse({ q: 'test' });
     await expect(searchDocketsTool.handler(input, ctx)).rejects.toThrow();
   });
@@ -260,7 +261,7 @@ describe('searchDocketsTool', () => {
       const input = searchDocketsTool.input.parse({ q: '   ' });
       expect(input.q).toBe('');
 
-      const err = await searchDocketsTool.handler(input, ctx).catch((e) => e);
+      const err = await captureError(() => searchDocketsTool.handler(input, ctx));
       expect(err).toMatchObject({ data: { reason: 'empty_query' } });
       expect(err.message).toContain('q');
       expect(mockSvc.searchDockets).not.toHaveBeenCalled();
@@ -268,7 +269,7 @@ describe('searchDocketsTool', () => {
 
     it('trims incidental padding from an otherwise-valid q', async () => {
       mockSvc.searchDockets = vi.fn().mockResolvedValue(baseDocketResult);
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: searchDocketsTool.errors });
       const input = searchDocketsTool.input.parse({ q: '  Apple Inc  ' });
       await searchDocketsTool.handler(input, ctx);
       expect(mockSvc.searchDockets).toHaveBeenCalledWith(
@@ -286,7 +287,7 @@ describe('searchDocketsTool', () => {
         const ctx = createMockContext({ errors: searchDocketsTool.errors });
         const input = searchDocketsTool.input.parse({ q: 'patent', filed_after: bad });
 
-        const err = await searchDocketsTool.handler(input, ctx).catch((e) => e);
+        const err = await captureError(() => searchDocketsTool.handler(input, ctx));
         expect(err).toMatchObject({ data: { reason: 'invalid_date' } });
         expect(err.message).toContain('filed_after');
         expect(err.message).toContain('YYYY-MM-DD');
@@ -299,7 +300,7 @@ describe('searchDocketsTool', () => {
       const ctx = createMockContext({ errors: searchDocketsTool.errors });
       const input = searchDocketsTool.input.parse({ q: 'patent', filed_before: '2021-02-29' });
 
-      const err = await searchDocketsTool.handler(input, ctx).catch((e) => e);
+      const err = await captureError(() => searchDocketsTool.handler(input, ctx));
       expect(err).toMatchObject({ data: { reason: 'invalid_date' } });
       expect(err.message).toContain('filed_before');
       expect(mockSvc.searchDockets).not.toHaveBeenCalled();

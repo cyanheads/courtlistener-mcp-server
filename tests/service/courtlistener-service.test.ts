@@ -6,8 +6,8 @@
  * @module tests/service/courtlistener-service.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createMockContext, type MockContextLogger } from '@cyanheads/mcp-ts-core/testing';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Mock withRetry to execute the fn directly (no retries, no backoff) and fetchWithTimeout
 // to delegate to the mocked global fetch — throwing on non-2xx exactly as the real transport
@@ -577,7 +577,7 @@ describe('lookupCitation POST path', () => {
     expect(docketUrls).toHaveLength(4);
     expect(result.filter((m) => m.clusters[0]?.court_id === 'ca9')).toHaveLength(4);
     expect(result.filter((m) => m.clusters[0]?.court === null)).toHaveLength(2);
-    expect(ctx.log.calls).toContainEqual(
+    expect((ctx.log as MockContextLogger).calls).toContainEqual(
       expect.objectContaining({
         level: 'warning',
         data: expect.objectContaining({ dockets: 6, resolved: 4 }),
@@ -718,7 +718,7 @@ describe('lookupCitation POST path', () => {
       'over_budget',
       'over_budget',
     ]);
-    expect(ctx.log.calls).toContainEqual(
+    expect((ctx.log as MockContextLogger).calls).toContainEqual(
       expect.objectContaining({
         level: 'warning',
         data: expect.objectContaining({ resolved: 1 }),
@@ -1022,7 +1022,7 @@ describe('searchFinancialDisclosures', () => {
     const result = await svc.searchFinancialDisclosures({ person: 3045 }, ctx);
     expect(result.total).toBeNull();
     expect(result.results).toHaveLength(1);
-    expect(result.results[0].id).toBe(1);
+    expect(result.results[0]!.id).toBe(1);
   });
 
   it('reports a numeric total when the API provides one', async () => {
@@ -1139,11 +1139,11 @@ describe('getFinancialDisclosure', () => {
     expect(result.year).toBe(2022);
     // categories are inline arrays — the detail endpoint returns them in one call
     expect(result.investments).toHaveLength(1);
-    expect(result.investments[0].description).toBe('Citibank, N.A. Accounts');
-    expect(result.investments[0].gross_value_code).toBe('N');
-    expect(result.debts[0].value_code).toBe('N');
-    expect(result.positions[0].organization_name).toBe('iCivics');
-    expect(result.non_investment_incomes[0].income_amount).toBe('$10,116.00');
+    expect(result.investments[0]!.description).toBe('Citibank, N.A. Accounts');
+    expect(result.investments[0]!.gross_value_code).toBe('N');
+    expect(result.debts[0]!.value_code).toBe('N');
+    expect(result.positions[0]!.organization_name).toBe('iCivics');
+    expect(result.non_investment_incomes[0]!.income_amount).toBe('$10,116.00');
   });
 
   it('throws not_found with a recovery hint when the disclosure id is missing', async () => {
@@ -1169,7 +1169,10 @@ describe('getFinancialDisclosure', () => {
       disclosure_id: 34207,
       categories: ['investments', 'debts'],
     });
-    const result = await getFinancialDisclosureTool.handler(input, ctx);
+    const result = await getFinancialDisclosureTool.handler(
+      input,
+      createMockContext({ errors: getFinancialDisclosureTool.errors }),
+    );
 
     // Raw coded columns decode to readable ranges through the real handler.
     expect(() => getFinancialDisclosureTool.output.parse(result)).not.toThrow();
@@ -1352,8 +1355,8 @@ describe('getOpinionCluster sub-opinion pagination (#48)', () => {
     expect(cluster.sub_opinions).toHaveLength(35);
     expect(opinionUrls).toHaveLength(2);
     // The continuation carries the cursor token off the first page's `next`.
-    expect(new URL(opinionUrls[0]).searchParams.get('cursor')).toBeNull();
-    expect(new URL(opinionUrls[1]).searchParams.get('cursor')).toBe('20');
+    expect(new URL(opinionUrls[0]!).searchParams.get('cursor')).toBeNull();
+    expect(new URL(opinionUrls[1]!).searchParams.get('cursor')).toBe('20');
   });
 
   it('costs a single call for a cluster that fits on one page', async () => {
@@ -1372,7 +1375,7 @@ describe('getOpinionCluster sub-opinion pagination (#48)', () => {
 
     expect(opinionUrls).toHaveLength(5);
     expect(cluster.sub_opinions).toHaveLength(100);
-    expect(ctx.log.calls).toContainEqual(
+    expect((ctx.log as MockContextLogger).calls).toContainEqual(
       expect.objectContaining({
         level: 'warning',
         data: expect.objectContaining({ clusterId: 108713, fetched: 100 }),
@@ -1485,7 +1488,7 @@ describe('getPerson position pagination (#64)', () => {
     expect(person.positions).toHaveLength(100);
     // The flag is the caller-visible half — the log line never leaves the server.
     expect(person.positions_truncated).toBe(true);
-    expect(ctx.log.calls).toContainEqual(
+    expect((ctx.log as MockContextLogger).calls).toContainEqual(
       expect.objectContaining({
         level: 'warning',
         data: expect.objectContaining({ personId: 1234, fetched: 100 }),
@@ -1558,7 +1561,7 @@ describe('getCitedBy queries the cites index by opinion ID (#58)', () => {
 
     const result = await svc.getCitedBy({ clusterId: 8588094 }, ctx);
 
-    const q = new URL(searchUrls[0]).searchParams.get('q');
+    const q = new URL(searchUrls[0]!).searchParams.get('q');
     expect(q).toBe('cites:(8562940)');
     expect(q).not.toContain('8588094');
     expect(result.total).toBe(339);
@@ -1570,7 +1573,7 @@ describe('getCitedBy queries the cites index by opinion ID (#58)', () => {
 
     await svc.getCitedBy({ clusterId: 8588094 }, ctx);
 
-    expect(new URL(searchUrls[0]).searchParams.get('q')).toBe(
+    expect(new URL(searchUrls[0]!).searchParams.get('q')).toBe(
       'cites:(8562940) OR cites:(8562941) OR cites:(8562942)',
     );
   });
@@ -1582,7 +1585,7 @@ describe('getCitedBy queries the cites index by opinion ID (#58)', () => {
 
     // The third variant lives on the second cursor page — dropping it would ship a
     // confidently incomplete citation network.
-    expect(new URL(searchUrls[0]).searchParams.get('q')).toContain('cites:(8562942)');
+    expect(new URL(searchUrls[0]!).searchParams.get('q')).toContain('cites:(8562942)');
   });
 
   it('returns the source case name from the same fetch that resolved the IDs', async () => {
@@ -1616,7 +1619,7 @@ describe('getCitedBy queries the cites index by opinion ID (#58)', () => {
       ctx,
     );
 
-    const params = new URL(searchUrls[0]).searchParams;
+    const params = new URL(searchUrls[0]!).searchParams;
     expect(params.get('court')).toBe('scotus');
     expect(params.get('filed_after')).toBe('2010-01-01');
     expect(params.get('cursor')).toBe('cD0xMDA');
@@ -1679,8 +1682,8 @@ describe('getCiting cursor pagination (#24)', () => {
     expect(page2.nextCursor).toBe('4');
 
     // The cursored page queries DIFFERENT cited IDs — not the first page again.
-    const q1 = new URL(searchUrls[0]).searchParams.get('q') ?? '';
-    const q2 = new URL(searchUrls[1]).searchParams.get('q') ?? '';
+    const q1 = new URL(searchUrls[0]!).searchParams.get('q') ?? '';
+    const q2 = new URL(searchUrls[1]!).searchParams.get('q') ?? '';
     expect(q1).toContain('id:(101)');
     expect(q1).toContain('id:(102)');
     expect(q1).not.toContain('id:(103)');
@@ -1742,7 +1745,7 @@ describe('getCiting filters vs. total and cursor (#56)', () => {
       ctx,
     );
 
-    const params = new URL(searchUrls[0]).searchParams;
+    const params = new URL(searchUrls[0]!).searchParams;
     expect(params.get('court')).toBe('scotus');
     expect(params.get('filed_after')).toBe('2010-01-01');
     // Filtered out on this page, but three cited opinions remain to check.
@@ -1803,7 +1806,7 @@ describe('getDocket entries pagination (#32)', () => {
     const docket = await svc.getDocket(5578727, 20, 2, ctx);
 
     // entriesPage (2) reaches the upstream `page` query param — not hardcoded to page 1.
-    const entryUrl = new URL(entryUrls[0]);
+    const entryUrl = new URL(entryUrls[0]!);
     expect(entryUrl.searchParams.get('page')).toBe('2');
     expect(entryUrl.searchParams.get('docket')).toBe('5578727');
     // A non-null upstream `next` surfaces as the stringified next page number (2 → "3").
@@ -2049,7 +2052,7 @@ describe('getParties attorney scoping, detail, and role decoding (#45 #54 #59)',
     // The walk stops at the bound, so the tail keeps empty names — but it is announced.
     expect(attorneyUrls).toHaveLength(5);
     expect(resolved.filter((a) => a.name === '')).toHaveLength(100);
-    expect(ctx.log.calls).toContainEqual(
+    expect((ctx.log as MockContextLogger).calls).toContainEqual(
       expect.objectContaining({
         level: 'warning',
         data: expect.objectContaining({ docketId: DOCKET, unresolved: 100 }),
@@ -2079,11 +2082,8 @@ describe('getParties attorney scoping, detail, and role decoding (#45 #54 #59)',
 // declared output schema parses.
 
 describe('raw upstream payloads validate through the tool output schema', () => {
-  let ctx: ReturnType<typeof createMockContext>;
-
   beforeEach(() => {
     initCourtListenerService(makeMockConfig(), makeMockStorage());
-    ctx = createMockContext();
   });
 
   afterEach(() => {
@@ -2108,7 +2108,10 @@ describe('raw upstream payloads validate through the tool output schema', () => 
       }),
     );
 
-    await lookupCourtsTool.handler(lookupCourtsTool.input.parse({ status: 'any' }), ctx);
+    await lookupCourtsTool.handler(
+      lookupCourtsTool.input.parse({ status: 'any' }),
+      createMockContext({ errors: lookupCourtsTool.errors }),
+    );
 
     const query = new URL(urls[0] ?? '').searchParams;
     expect(query.get('page_size')).toBeNull();
@@ -2175,7 +2178,10 @@ describe('raw upstream payloads validate through the tool output schema', () => 
     );
 
     const input = getPartiesTool.input.parse({ docket_id: 5578727 });
-    const result = await getPartiesTool.handler(input, ctx);
+    const result = await getPartiesTool.handler(
+      input,
+      createMockContext({ errors: getPartiesTool.errors }),
+    );
 
     // The bug: total_parties (z.number) received a URL string and failed .parse().
     expect(() => getPartiesTool.output.parse(result)).not.toThrow();
@@ -2185,8 +2191,8 @@ describe('raw upstream payloads validate through the tool output schema', () => 
     expect(result.parties).toHaveLength(2);
     // #29 — role resolves from party_types even though pt.docket is a `.../dockets/<id>/` URL
     // (Number(url) is NaN, so the pre-fix find() never matched and role was always null).
-    expect(result.parties[0].role).toBe('Plaintiff');
-    expect(result.parties[1].role).toBe('Defendant');
+    expect(result.parties[0]!.role).toBe('Plaintiff');
+    expect(result.parties[1]!.role).toBe('Defendant');
   });
 
   // #61 — /parties/ is cursor-paginated: `next` carries a `cursor=` token, and upstream
@@ -2215,7 +2221,7 @@ describe('raw upstream payloads validate through the tool output schema', () => 
 
     const first = await getPartiesTool.handler(
       getPartiesTool.input.parse({ docket_id: 5578727, page_size: 1 }),
-      ctx,
+      createMockContext({ errors: getPartiesTool.errors }),
     );
 
     expect(() => getPartiesTool.output.parse(first)).not.toThrow();
@@ -2232,7 +2238,7 @@ describe('raw upstream payloads validate through the tool output schema', () => 
         page_size: 1,
         cursor: first.next_cursor ?? undefined,
       }),
-      ctx,
+      createMockContext({ errors: getPartiesTool.errors }),
     );
     const followUp = new URL(partyUrls[1] ?? '');
     expect(followUp.searchParams.get('cursor')).toBe('cD0xMDA=');
@@ -2259,7 +2265,7 @@ describe('raw upstream payloads validate through the tool output schema', () => 
 
     const result = await getPartiesTool.handler(
       getPartiesTool.input.parse({ docket_id: 5578727, cursor: 'cD0xMDA=' }),
-      ctx,
+      createMockContext({ errors: getPartiesTool.errors }),
     );
 
     // Last page, but not the first — the row count is a page tail, not the docket's total,
@@ -2322,16 +2328,19 @@ describe('raw upstream payloads validate through the tool output schema', () => 
     );
 
     const input = getDocketTool.input.parse({ docket_id: 5578727 });
-    const result = await getDocketTool.handler(input, ctx);
+    const result = await getDocketTool.handler(
+      input,
+      createMockContext({ errors: getDocketTool.errors }),
+    );
 
     // The bug: document_number (z.number) received "1"; total_entries received a URL string.
     expect(() => getDocketTool.output.parse(result)).not.toThrow();
-    expect(result.entries[0].documents[0].document_number).toBe('1');
+    expect(result.entries[0]!.documents[0]!.document_number).toBe('1');
     // URL-string count guarded → total_entries falls back to the fetched page length (a number).
     expect(typeof result.total_entries).toBe('number');
     expect(result.total_entries).toBe(1);
     // #26 — relative path becomes a directly fetchable storage URL.
-    expect(result.entries[0].documents[0].filepath_local).toBe(
+    expect(result.entries[0]!.documents[0]!.filepath_local).toBe(
       'https://storage.courtlistener.com/recap/gov.uscourts.nysd.458699/gov.uscourts.nysd.458699.1.0.pdf',
     );
   });
@@ -2376,7 +2385,7 @@ describe('raw upstream payloads validate through the tool output schema', () => 
     );
     const result = await getDocketTool.handler(
       getDocketTool.input.parse({ docket_id: 5578727 }),
-      ctx,
+      createMockContext({ errors: getDocketTool.errors }),
     );
     expect(result.total_entries).toBe(153);
   });
@@ -2427,11 +2436,14 @@ describe('raw upstream payloads validate through the tool output schema', () => 
     );
 
     const input = getDocketTool.input.parse({ docket_id: 5578727, entries_page: 1 });
-    const result = await getDocketTool.handler(input, ctx);
+    const result = await getDocketTool.handler(
+      input,
+      createMockContext({ errors: getDocketTool.errors }),
+    );
 
     expect(() => getDocketTool.output.parse(result)).not.toThrow();
     // page 1 requested; upstream reports a next page → next_cursor is the next page number.
-    expect(new URL(entryUrls[0]).searchParams.get('page')).toBe('1');
+    expect(new URL(entryUrls[0]!).searchParams.get('page')).toBe('1');
     expect(result.entries_page).toBe(1);
     expect(result.next_cursor).toBe('2');
   });

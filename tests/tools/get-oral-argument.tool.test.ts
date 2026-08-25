@@ -9,6 +9,7 @@ import { getOralArgumentTool } from '@/mcp-server/tools/definitions/get-oral-arg
 import type { CourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
 import * as svcModule from '@/services/courtlistener/courtlistener-service.js';
 import type { Audio } from '@/services/courtlistener/types.js';
+import { captureError } from '../helpers/capture-error.js';
 
 const mockSvc = {
   getOralArgument: vi.fn(),
@@ -41,7 +42,7 @@ const baseAudio: Audio = {
 describe('getOralArgumentTool', () => {
   it('returns full detail with transcript, panel, and docket id from URI', async () => {
     mockSvc.getOralArgument = vi.fn().mockResolvedValue(baseAudio);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getOralArgumentTool.errors });
     const input = getOralArgumentTool.input.parse({ id: 105162 });
     const result = await getOralArgumentTool.handler(input, ctx);
 
@@ -67,7 +68,7 @@ describe('getOralArgumentTool', () => {
         'https://www.courtlistener.com/api/rest/v4/people/8521/',
       ],
     });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getOralArgumentTool.errors });
     const input = getOralArgumentTool.input.parse({ id: 105162 });
     const result = await getOralArgumentTool.handler(input, ctx);
 
@@ -81,7 +82,7 @@ describe('getOralArgumentTool', () => {
       ...baseAudio,
       panel: ['https://www.courtlistener.com/api/rest/v4/people/77/', 'not-a-uri', ''],
     });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getOralArgumentTool.errors });
     const input = getOralArgumentTool.input.parse({ id: 105162 });
     const result = await getOralArgumentTool.handler(input, ctx);
     expect(result.panel_ids).toEqual([77]);
@@ -89,7 +90,7 @@ describe('getOralArgumentTool', () => {
 
   it('reports has_transcript false when transcript is empty', async () => {
     mockSvc.getOralArgument = vi.fn().mockResolvedValue({ ...baseAudio, stt_transcript: '' });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getOralArgumentTool.errors });
     const input = getOralArgumentTool.input.parse({ id: 105162 });
     const result = await getOralArgumentTool.handler(input, ctx);
     expect(result.has_transcript).toBe(false);
@@ -117,7 +118,7 @@ describe('getOralArgumentTool', () => {
       mockSvc.getOralArgument = vi
         .fn()
         .mockResolvedValue({ ...baseAudio, stt_transcript: longTranscript });
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: getOralArgumentTool.errors });
       const input = getOralArgumentTool.input.parse({ id: 105162 });
       const result = await getOralArgumentTool.handler(input, ctx);
 
@@ -143,7 +144,7 @@ describe('getOralArgumentTool', () => {
       mockSvc.getOralArgument = vi
         .fn()
         .mockResolvedValue({ ...baseAudio, stt_transcript: longTranscript });
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: getOralArgumentTool.errors });
       const input = getOralArgumentTool.input.parse({ id: 105162 });
       const result = await getOralArgumentTool.handler(input, ctx);
 
@@ -160,7 +161,7 @@ describe('getOralArgumentTool', () => {
       mockSvc.getOralArgument = vi
         .fn()
         .mockResolvedValue({ ...baseAudio, stt_transcript: longTranscript });
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: getOralArgumentTool.errors });
       const input = getOralArgumentTool.input.parse({ id: 105162 });
       const result = await getOralArgumentTool.handler(input, ctx);
 
@@ -177,7 +178,7 @@ describe('getOralArgumentTool', () => {
 
     it('inlines a transcript that fits the budget', async () => {
       mockSvc.getOralArgument = vi.fn().mockResolvedValue(baseAudio);
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: getOralArgumentTool.errors });
       const input = getOralArgumentTool.input.parse({ id: 105162 });
       const result = await getOralArgumentTool.handler(input, ctx);
 
@@ -190,7 +191,7 @@ describe('getOralArgumentTool', () => {
       mockSvc.getOralArgument = vi
         .fn()
         .mockResolvedValue({ ...baseAudio, stt_transcript: longTranscript });
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: getOralArgumentTool.errors });
       const input = getOralArgumentTool.input.parse({ id: 105162, sections: ['transcript'] });
       const result = await getOralArgumentTool.handler(input, ctx);
 
@@ -211,7 +212,7 @@ describe('getOralArgumentTool', () => {
       const ctx = createMockContext({ errors: getOralArgumentTool.errors });
       const input = getOralArgumentTool.input.parse({ id: 105162, sections: ['not_a_section'] });
 
-      const err = await getOralArgumentTool.handler(input, ctx).catch((e) => e);
+      const err = await captureError(() => getOralArgumentTool.handler(input, ctx));
       expect(err).toMatchObject({ data: { reason: 'unknown_section' } });
       expect(err.message).toContain('not_a_section');
       // the valid vocabulary is listed back to the caller
@@ -226,7 +227,7 @@ describe('getOralArgumentTool', () => {
         sections: ['transcript', 'nope'],
       });
 
-      const err = await getOralArgumentTool.handler(input, ctx).catch((e) => e);
+      const err = await captureError(() => getOralArgumentTool.handler(input, ctx));
       expect(err).toMatchObject({ data: { reason: 'unknown_section' } });
       expect(err.message).toContain('nope');
     });

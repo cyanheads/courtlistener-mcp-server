@@ -60,7 +60,7 @@ const baseDocket: Docket = {
 describe('getDocketTool', () => {
   it('returns full docket metadata and entries', async () => {
     mockSvc.getDocket = vi.fn().mockResolvedValue(baseDocket);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getDocketTool.errors });
     const input = getDocketTool.input.parse({ docket_id: 8000 });
     const result = await getDocketTool.handler(input, ctx);
 
@@ -73,13 +73,13 @@ describe('getDocketTool', () => {
     expect(result.court).toBe('District Court, N.D. California');
     expect(result.court).not.toContain('http');
     expect(result.entries).toHaveLength(1);
-    expect(result.entries[0].id).toBe(50001);
-    expect(result.entries[0].documents[0].id).toBe(90001);
-    expect(result.entries[0].documents[0].attachment_number).toBeNull();
+    expect(result.entries[0]!.id).toBe(50001);
+    expect(result.entries[0]!.documents[0]!.id).toBe(90001);
+    expect(result.entries[0]!.documents[0]!.attachment_number).toBeNull();
     // document_number is preserved as the string the upstream sends — not coerced (#23)
-    expect(result.entries[0].documents[0].document_number).toBe('1');
+    expect(result.entries[0]!.documents[0]!.document_number).toBe('1');
     // relative filepath_local is normalized to a directly fetchable storage URL (#26)
-    expect(result.entries[0].documents[0].filepath_local).toBe(
+    expect(result.entries[0]!.documents[0]!.filepath_local).toBe(
       'https://storage.courtlistener.com/recap/gov.uscourts.cand.123/doc1.pdf',
     );
     // the real upstream types validate against the declared output schema
@@ -92,7 +92,7 @@ describe('getDocketTool', () => {
       court_id: 'scotus',
       court: 'https://www.courtlistener.com/api/rest/v4/courts/scotus/',
     });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getDocketTool.errors });
     const input = getDocketTool.input.parse({ docket_id: 8000 });
     const result = await getDocketTool.handler(input, ctx);
     expect(result.court).toBe('Supreme Court of the United States');
@@ -113,7 +113,7 @@ describe('getDocketTool', () => {
 
   it('threads entries_page and entries_page_size through to the service', async () => {
     mockSvc.getDocket = vi.fn().mockResolvedValue(baseDocket);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getDocketTool.errors });
     const input = getDocketTool.input.parse({
       docket_id: 8000,
       entries_page: 3,
@@ -126,7 +126,7 @@ describe('getDocketTool', () => {
 
   it('defaults entries_page to 1 when omitted', async () => {
     mockSvc.getDocket = vi.fn().mockResolvedValue(baseDocket);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getDocketTool.errors });
     const input = getDocketTool.input.parse({ docket_id: 8000 });
     await getDocketTool.handler(input, ctx);
     expect(mockSvc.getDocket).toHaveBeenCalledWith(8000, 20, 1, ctx);
@@ -138,7 +138,7 @@ describe('getDocketTool', () => {
       docket_entries_count: 153,
       docket_entries_next_page: '3',
     });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getDocketTool.errors });
     const input = getDocketTool.input.parse({ docket_id: 8000, entries_page: 2 });
     const result = await getDocketTool.handler(input, ctx);
     expect(result.entries_page).toBe(2);
@@ -153,7 +153,7 @@ describe('getDocketTool', () => {
       ...baseDocket,
       docket_entries_next_page: null,
     });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getDocketTool.errors });
     const input = getDocketTool.input.parse({ docket_id: 8000 });
     const result = await getDocketTool.handler(input, ctx);
     expect(result.next_cursor).toBeNull();
@@ -183,11 +183,11 @@ describe('getDocketTool', () => {
         },
       ],
     });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getDocketTool.errors });
     const result = await getDocketTool.handler(getDocketTool.input.parse({ docket_id: 8000 }), ctx);
-    expect(result.entries[0].documents[0].document_number).toBe('70-1');
+    expect(result.entries[0]!.documents[0]!.document_number).toBe('70-1');
     // an already-absolute URL is passed through, never double-prefixed
-    expect(result.entries[0].documents[0].filepath_local).toBe(
+    expect(result.entries[0]!.documents[0]!.filepath_local).toBe(
       'https://storage.courtlistener.com/recap/already-absolute.pdf',
     );
     expect(() => getDocketTool.output.parse(result)).not.toThrow();

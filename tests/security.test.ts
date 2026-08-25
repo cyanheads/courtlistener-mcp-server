@@ -220,7 +220,7 @@ describe('injection inputs — handler must not crash or leak internal details',
       mockSvc.searchOpinions = vi
         .fn()
         .mockResolvedValue({ total: 0, results: [], nextCursor: null });
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: searchOpinionsTool.errors });
       // Zod only trims — long or special strings (including C0 control bytes,
       // which trim() does not strip) still pass the schema and reach the handler.
       const trimmed = injection.length > 0 ? injection : 'fallback';
@@ -234,7 +234,7 @@ describe('injection inputs — handler must not crash or leak internal details',
   it('searchDocketsTool handler forwards party_name injection string to service', async () => {
     const injection = "' OR 1=1--";
     mockSvc.searchDockets = vi.fn().mockResolvedValue({ total: 0, results: [], nextCursor: null });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchDocketsTool.errors });
     const input = searchDocketsTool.input.parse({ q: 'test', party_name: injection });
     await searchDocketsTool.handler(input, ctx);
     expect(mockSvc.searchDockets).toHaveBeenCalledWith(
@@ -271,7 +271,7 @@ describe('API token must not appear in tool output or format() text', () => {
       ],
       nextCursor: null,
     });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchOpinionsTool.errors });
     const input = searchOpinionsTool.input.parse({ q: 'test' });
     const result = await searchOpinionsTool.handler(input, ctx);
     // The fake token appearing in case_name is expected (it's upstream data),
@@ -291,7 +291,7 @@ describe('API token must not appear in tool output or format() text', () => {
         clusters: [],
       },
     ]);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: lookupCitationTool.errors });
     const input = lookupCitationTool.input.parse({ citation: '410 U.S. 113' });
     const result = await lookupCitationTool.handler(input, ctx);
     const resultStr = JSON.stringify(result);
@@ -300,7 +300,7 @@ describe('API token must not appear in tool output or format() text', () => {
 
   it('lookupCourtsTool output does not expose env var names', async () => {
     mockSvc.listCourts = vi.fn().mockResolvedValue({ total: 0, next_cursor: null, courts: [] });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: lookupCourtsTool.errors });
     const input = lookupCourtsTool.input.parse({});
     const result = await lookupCourtsTool.handler(input, ctx);
     const resultStr = JSON.stringify(result);
@@ -312,7 +312,7 @@ describe('API token must not appear in tool output or format() text', () => {
   // the generating machine if the generator ever emitted more than court records.
   it('lookupCourtsTool offline court ids carry nothing but court identifiers', async () => {
     mockSvc.listCourts = vi.fn().mockResolvedValue({ total: 0, next_cursor: null, courts: [] });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: lookupCourtsTool.errors });
     const input = lookupCourtsTool.input.parse({ status: 'active' });
     const result = await lookupCourtsTool.handler(input, ctx);
 
@@ -334,7 +334,7 @@ describe('API token must not appear in tool output or format() text', () => {
 describe('unicode and encoding edge cases', () => {
   it('searchOpinionsTool handles unicode multibyte characters in q', async () => {
     mockSvc.searchOpinions = vi.fn().mockResolvedValue({ total: 0, results: [], nextCursor: null });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchOpinionsTool.errors });
     const input = searchOpinionsTool.input.parse({ q: '法律研究 constitutional rights 🏛️' });
     const result = await searchOpinionsTool.handler(input, ctx);
     expect(result.results).toHaveLength(0);
@@ -364,7 +364,7 @@ describe('unicode and encoding edge cases', () => {
         ],
       },
     ]);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: lookupCitationTool.errors });
     // Non-breaking space in citation
     const input = lookupCitationTool.input.parse({ citation: '410 U.S. 113' });
     const result = await lookupCitationTool.handler(input, ctx);
@@ -373,7 +373,7 @@ describe('unicode and encoding edge cases', () => {
 
   it('searchJudgesTool handles unicode in judge name query', async () => {
     mockSvc.searchJudges = vi.fn().mockResolvedValue({ total: 0, results: [], nextCursor: null });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchJudgesTool.errors });
     const input = searchJudgesTool.input.parse({ q: 'Sotomayor Sofía Señoría' });
     const result = await searchJudgesTool.handler(input, ctx);
     expect(result.results).toHaveLength(0);
@@ -389,7 +389,7 @@ describe('pagination boundary — cursor propagation', () => {
       results: [],
       nextCursor: 'abc-cursor-xyz',
     });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchOpinionsTool.errors });
     const input = searchOpinionsTool.input.parse({ q: 'test' });
     const result = await searchOpinionsTool.handler(input, ctx);
     expect(result.next_cursor).toBe('abc-cursor-xyz');
@@ -401,7 +401,7 @@ describe('pagination boundary — cursor propagation', () => {
       results: [],
       nextCursor: 'docket-cursor',
     });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchDocketsTool.errors });
     const input = searchDocketsTool.input.parse({ q: 'test' });
     const result = await searchDocketsTool.handler(input, ctx);
     expect(result.next_cursor).toBe('docket-cursor');
@@ -409,7 +409,7 @@ describe('pagination boundary — cursor propagation', () => {
 
   it('searchOpinionsTool passes cursor param to service', async () => {
     mockSvc.searchOpinions = vi.fn().mockResolvedValue({ total: 0, results: [], nextCursor: null });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchOpinionsTool.errors });
     const input = searchOpinionsTool.input.parse({ q: 'test', cursor: 'page-2-cursor' });
     await searchOpinionsTool.handler(input, ctx);
     expect(mockSvc.searchOpinions).toHaveBeenCalledWith(
@@ -424,7 +424,7 @@ describe('pagination boundary — cursor propagation', () => {
       results: [],
       nextCursor: 'oral-cursor',
     });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchOralArgumentsTool.errors });
     const input = searchOralArgumentsTool.input.parse({ q: 'test' });
     const result = await searchOralArgumentsTool.handler(input, ctx);
     expect(result.next_cursor).toBe('oral-cursor');
@@ -436,7 +436,7 @@ describe('pagination boundary — cursor propagation', () => {
       results: [],
       nextCursor: 'citation-cursor',
     });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getCitationsTool.errors });
     const input = getCitationsTool.input.parse({ cluster_id: 100 });
     const result = await getCitationsTool.handler(input, ctx);
     expect(result.next_cursor).toBe('citation-cursor');
@@ -449,7 +449,7 @@ describe('empty result enrichment — all search tools surface a notice', () => 
   it('getCitationsTool sets notice on cited_by empty', async () => {
     const { getEnrichment } = await import('@cyanheads/mcp-ts-core/testing');
     mockSvc.getCitedBy = vi.fn().mockResolvedValue({ total: 0, results: [], nextCursor: null });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getCitationsTool.errors });
     const input = getCitationsTool.input.parse({ cluster_id: 100, direction: 'cited_by' });
     await getCitationsTool.handler(input, ctx);
     const enrichment = getEnrichment(ctx);
@@ -460,7 +460,7 @@ describe('empty result enrichment — all search tools surface a notice', () => 
   it('getCitationsTool sets notice on citing direction empty', async () => {
     const { getEnrichment } = await import('@cyanheads/mcp-ts-core/testing');
     mockSvc.getCiting = vi.fn().mockResolvedValue({ total: 0, results: [], nextCursor: null });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getCitationsTool.errors });
     const input = getCitationsTool.input.parse({ cluster_id: 100, direction: 'citing' });
     await getCitationsTool.handler(input, ctx);
     const enrichment = getEnrichment(ctx);
@@ -470,7 +470,7 @@ describe('empty result enrichment — all search tools surface a notice', () => 
   it('lookupCourtsTool enriches notice when empty', async () => {
     const { getEnrichment } = await import('@cyanheads/mcp-ts-core/testing');
     mockSvc.listCourts = vi.fn().mockResolvedValue({ total: 0, next_cursor: null, courts: [] });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: lookupCourtsTool.errors });
     const input = lookupCourtsTool.input.parse({ jurisdiction: 'I' });
     await lookupCourtsTool.handler(input, ctx);
     const enrichment = getEnrichment(ctx);
@@ -559,7 +559,7 @@ describe('sparse upstream payload handling', () => {
       ],
       nextCursor: null,
     });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchOpinionsTool.errors });
     const input = searchOpinionsTool.input.parse({ q: 'sparse' });
     const result = await searchOpinionsTool.handler(input, ctx);
     expect(result.results[0]).toMatchObject({
@@ -599,13 +599,13 @@ describe('sparse upstream payload handling', () => {
       ],
       nextCursor: null,
     });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchDocketsTool.errors });
     const input = searchDocketsTool.input.parse({ q: 'sparse' });
     const result = await searchDocketsTool.handler(input, ctx);
-    expect(result.results[0].sample_documents).toHaveLength(0);
-    expect(result.results[0].parties).toEqual([]);
-    expect(result.results[0].attorneys).toEqual([]);
-    expect(result.results[0].firms).toEqual([]);
+    expect(result.results[0]!.sample_documents).toHaveLength(0);
+    expect(result.results[0]!.parties).toEqual([]);
+    expect(result.results[0]!.attorneys).toEqual([]);
+    expect(result.results[0]!.firms).toEqual([]);
   });
 
   it('searchOralArgumentsTool handles sparse upstream with null fields', async () => {
@@ -630,7 +630,7 @@ describe('sparse upstream payload handling', () => {
       ],
       nextCursor: null,
     });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchOralArgumentsTool.errors });
     const input = searchOralArgumentsTool.input.parse({ q: 'sparse' });
     const result = await searchOralArgumentsTool.handler(input, ctx);
     expect(result.results[0]).toMatchObject({

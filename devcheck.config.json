@@ -12,10 +12,7 @@
     "ignorePatterns": []
   },
   "outdated": {
-    "allowlist": ["typescript"]
-  },
-  "skillVersions": {
-    "ignore": ["report-issue-local"]
+    "allowlist": []
   },
   "packaging": {
     "pluginManifests": true

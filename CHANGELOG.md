@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.7.1](changelog/0.7.x/0.7.1.md) — 2026-08-24
+
+The framework bump to mcp-ts-core ^0.12.3 tightens the wire: tool inputs reject undeclared argument keys, the advertised outputSchema declares the error envelope, schemas emit as JSON Schema 2020-12, and the HTTP endpoint serves protocol revision 2026-07-28 alongside the 2025 revisions.
+
 ## [0.7.0](changelog/0.7.x/0.7.0.md) — 2026-07-30 · ⚠️ Breaking
 
 courtlistener_lookup_courts's jurisdiction filter now mirrors CourtListener's own Court.JURISDICTIONS choices exactly, in place of the drifted 15-code enum.

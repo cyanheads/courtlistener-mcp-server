@@ -53,7 +53,7 @@ const baseCourtsResult = {
 describe('lookupCourtsTool', () => {
   it('returns mapped court records', async () => {
     mockSvc.listCourts = vi.fn().mockResolvedValue(baseCourtsResult);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: lookupCourtsTool.errors });
     const input = lookupCourtsTool.input.parse({});
     const result = await lookupCourtsTool.handler(input, ctx);
 
@@ -79,7 +79,7 @@ describe('lookupCourtsTool', () => {
     mockSvc.listCourts = vi
       .fn()
       .mockResolvedValue({ total: 472, next_cursor: '3', courts: baseCourtsResult.courts });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: lookupCourtsTool.errors });
     const input = lookupCourtsTool.input.parse({ page: 2 });
     const result = await lookupCourtsTool.handler(input, ctx);
 
@@ -100,7 +100,7 @@ describe('lookupCourtsTool', () => {
     });
 
     it("maps status='active' (the default) to in_use=true", async () => {
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: lookupCourtsTool.errors });
       const input = lookupCourtsTool.input.parse({ jurisdiction: 'F' });
       expect(input.status).toBe('active');
       await lookupCourtsTool.handler(input, ctx);
@@ -111,7 +111,7 @@ describe('lookupCourtsTool', () => {
     });
 
     it("maps status='inactive' to in_use=false", async () => {
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: lookupCourtsTool.errors });
       const input = lookupCourtsTool.input.parse({ status: 'inactive' });
       await lookupCourtsTool.handler(input, ctx);
       expect(mockSvc.listCourts).toHaveBeenCalledWith(
@@ -121,7 +121,7 @@ describe('lookupCourtsTool', () => {
     });
 
     it("maps status='any' to no in_use filter, making the full court list reachable", async () => {
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: lookupCourtsTool.errors });
       const input = lookupCourtsTool.input.parse({ status: 'any' });
       await lookupCourtsTool.handler(input, ctx);
       // The whole point of the tri-state: omitting the param is the only way upstream
@@ -131,7 +131,7 @@ describe('lookupCourtsTool', () => {
     });
 
     it("names status in the empty-result notice and points at 'any' rather than in_use=false", async () => {
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: lookupCourtsTool.errors });
       const input = lookupCourtsTool.input.parse({ jurisdiction: 'TT' });
       await lookupCourtsTool.handler(input, ctx);
 
@@ -143,7 +143,7 @@ describe('lookupCourtsTool', () => {
     });
 
     it("omits the 'any' suggestion once the caller is already searching both benches", async () => {
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: lookupCourtsTool.errors });
       const input = lookupCourtsTool.input.parse({ status: 'any', jurisdiction: 'TT' });
       await lookupCourtsTool.handler(input, ctx);
 
@@ -165,7 +165,7 @@ describe('lookupCourtsTool', () => {
     });
 
     it('returns every matching court id on the default bench, not just the 20 on this page', async () => {
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: lookupCourtsTool.errors });
       const input = lookupCourtsTool.input.parse({});
       const result = await lookupCourtsTool.handler(input, ctx);
 
@@ -178,7 +178,7 @@ describe('lookupCourtsTool', () => {
     });
 
     it('reaches the inactive bench per jurisdiction, previously unretrievable', async () => {
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: lookupCourtsTool.errors });
       const input = lookupCourtsTool.input.parse({ status: 'inactive', jurisdiction: 'F' });
       const result = await lookupCourtsTool.handler(input, ctx);
 
@@ -189,7 +189,7 @@ describe('lookupCourtsTool', () => {
     });
 
     it('applies the same jurisdiction and status filters the live call uses', async () => {
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: lookupCourtsTool.errors });
       const input = lookupCourtsTool.input.parse({ jurisdiction: 'F', status: 'active' });
       const result = await lookupCourtsTool.handler(input, ctx);
 
@@ -203,11 +203,11 @@ describe('lookupCourtsTool', () => {
     it('applies has_opinion_scraper offline as well', async () => {
       const withScraper = await lookupCourtsTool.handler(
         lookupCourtsTool.input.parse({ status: 'any', has_opinion_scraper: true }),
-        createMockContext(),
+        createMockContext({ errors: lookupCourtsTool.errors }),
       );
       const everything = await lookupCourtsTool.handler(
         lookupCourtsTool.input.parse({ status: 'active' }),
-        createMockContext(),
+        createMockContext({ errors: lookupCourtsTool.errors }),
       );
       expect(withScraper.all_matching_court_ids.length).toBeGreaterThan(0);
       expect(withScraper.all_matching_court_ids.length).toBeLessThan(
@@ -219,7 +219,7 @@ describe('lookupCourtsTool', () => {
     // content[]. Inlining it on every status:'any' call would crowd out the court records
     // the caller asked for, and a silent prefix would read as the complete set.
     it('withholds the id list whole when the matching set is too large to inline', async () => {
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: lookupCourtsTool.errors });
       const input = lookupCourtsTool.input.parse({ status: 'any' });
       const result = await lookupCourtsTool.handler(input, ctx);
 
@@ -243,7 +243,7 @@ describe('lookupCourtsTool', () => {
       mockSvc.listCourts = vi
         .fn()
         .mockResolvedValue({ total: 3359, next_cursor: null, courts: [] });
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: lookupCourtsTool.errors });
       const input = lookupCourtsTool.input.parse({ status: 'any', page: 400 });
       await lookupCourtsTool.handler(input, ctx);
 
@@ -315,7 +315,7 @@ describe('lookupCourtsTool', () => {
 
     it('reaches a bench the enum could not previously name', async () => {
       mockSvc.listCourts = vi.fn().mockResolvedValue({ total: 11, next_cursor: null, courts: [] });
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: lookupCourtsTool.errors });
       const input = lookupCourtsTool.input.parse({ jurisdiction: 'MA', status: 'any' });
       const result = await lookupCourtsTool.handler(input, ctx);
 
@@ -346,7 +346,7 @@ describe('lookupCourtsTool', () => {
 
   it('throws when service throws', async () => {
     mockSvc.listCourts = vi.fn().mockRejectedValue(new Error('rate limit'));
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: lookupCourtsTool.errors });
     const input = lookupCourtsTool.input.parse({});
     await expect(lookupCourtsTool.handler(input, ctx)).rejects.toThrow();
   });

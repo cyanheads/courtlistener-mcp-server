@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { lookupCitationTool } from '@/mcp-server/tools/definitions/lookup-citation.tool.js';
 import type { CourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
 import * as svcModule from '@/services/courtlistener/courtlistener-service.js';
+import { captureError } from '../helpers/capture-error.js';
 
 const mockSvc = {
   lookupCitation: vi.fn(),
@@ -47,7 +48,7 @@ describe('lookupCitationTool', () => {
         clusters: [cluster()],
       },
     ]);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: lookupCitationTool.errors });
     const input = lookupCitationTool.input.parse({ citation: '410 U.S. 113' });
     const result = await lookupCitationTool.handler(input, ctx);
 
@@ -79,7 +80,7 @@ describe('lookupCitationTool', () => {
         clusters: [cluster()],
       },
     ]);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: lookupCitationTool.errors });
     const input = lookupCitationTool.input.parse({ citation: '410 U.S. 113' });
     const result = await lookupCitationTool.handler(input, ctx);
 
@@ -105,7 +106,7 @@ describe('lookupCitationTool', () => {
         ],
       },
     ]);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: lookupCitationTool.errors });
     const input = lookupCitationTool.input.parse({ citation: '1 F.3d 1' });
     const result = await lookupCitationTool.handler(input, ctx);
 
@@ -166,7 +167,7 @@ describe('lookupCitationTool', () => {
         ],
       },
     ]);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: lookupCitationTool.errors });
     const input = lookupCitationTool.input.parse({ citation: 'a passage' });
     await lookupCitationTool.handler(input, ctx);
 
@@ -184,7 +185,7 @@ describe('lookupCitationTool', () => {
   // needed no court names still paid for four docket lookups.
   it('threads the caller-supplied court-lookup budget through to the service (#66)', async () => {
     mockSvc.lookupCitation = vi.fn().mockResolvedValue([]);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: lookupCitationTool.errors });
     const input = lookupCitationTool.input.parse({
       citation: '410 U.S. 113',
       max_court_lookups: 0,
@@ -222,7 +223,7 @@ describe('lookupCitationTool', () => {
         clusters: [cluster({ cluster_id: 105221, case_name: 'Brown v. Board of Education' })],
       },
     ]);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: lookupCitationTool.errors });
     const input = lookupCitationTool.input.parse({
       citation: 'See 410 U.S. 113 and 347 U.S. 483.',
     });
@@ -244,7 +245,7 @@ describe('lookupCitationTool', () => {
         clusters: [cluster({ cluster_id: 1, case_name: 'First Case' }), cluster({ cluster_id: 2 })],
       },
     ]);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: lookupCitationTool.errors });
     const input = lookupCitationTool.input.parse({ citation: '1 U.S. 1' });
     const result = await lookupCitationTool.handler(input, ctx);
 
@@ -264,7 +265,7 @@ describe('lookupCitationTool', () => {
         clusters: [],
       },
     ]);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: lookupCitationTool.errors });
     const input = lookupCitationTool.input.parse({ citation: '999 F.3d 1' });
     const result = await lookupCitationTool.handler(input, ctx);
 
@@ -285,7 +286,7 @@ describe('lookupCitationTool', () => {
         clusters: [],
       },
     ]);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: lookupCitationTool.errors });
     const input = lookupCitationTool.input.parse({ citation: '1 F.3d 1' });
     const result = await lookupCitationTool.handler(input, ctx);
     expect(result.matches[0]!.status_label).toBe('418');
@@ -313,7 +314,7 @@ describe('lookupCitationTool', () => {
         clusters: [],
       },
     ]);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: lookupCitationTool.errors });
     const input = lookupCitationTool.input.parse({ citation: '999 F.3d 1' });
     await lookupCitationTool.handler(input, ctx);
 
@@ -342,7 +343,7 @@ describe('lookupCitationTool', () => {
         clusters: [],
       },
     ]);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: lookupCitationTool.errors });
     const input = lookupCitationTool.input.parse({ citation: '410 U.S. 113; 999 F.3d 1' });
     await lookupCitationTool.handler(input, ctx);
     expect(getEnrichment(ctx).notice).toBeUndefined();
@@ -357,7 +358,7 @@ describe('lookupCitationTool', () => {
       const input = lookupCitationTool.input.parse({ citation: '   ' });
       expect(input.citation).toBe('');
 
-      const err = await lookupCitationTool.handler(input, ctx).catch((e) => e);
+      const err = await captureError(() => lookupCitationTool.handler(input, ctx));
       expect(err).toMatchObject({ data: { reason: 'empty_citation' } });
       expect(err.message).toContain('citation');
       expect(mockSvc.lookupCitation).not.toHaveBeenCalled();
@@ -370,7 +371,7 @@ describe('lookupCitationTool', () => {
       const ctx = createMockContext({ errors: lookupCitationTool.errors });
       const input = lookupCitationTool.input.parse({ citation: 'x'.repeat(64_001) });
 
-      const err = await lookupCitationTool.handler(input, ctx).catch((e) => e);
+      const err = await captureError(() => lookupCitationTool.handler(input, ctx));
       expect(err).toMatchObject({ data: { reason: 'citation_too_long' } });
       // The message names the actual ceiling so a caller can trim rather than guess.
       expect(err.message).toContain('64000');
@@ -396,7 +397,7 @@ describe('lookupCitationTool', () => {
           clusters: [cluster()],
         },
       ]);
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: lookupCitationTool.errors });
       const input = lookupCitationTool.input.parse({ citation: '  410 U.S. 113  ' });
       await lookupCitationTool.handler(input, ctx);
       expect(mockSvc.lookupCitation).toHaveBeenCalledWith('410 U.S. 113', 4, ctx);

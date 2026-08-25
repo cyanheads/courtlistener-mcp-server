@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { searchOpinionsTool } from '@/mcp-server/tools/definitions/search-opinions.tool.js';
 import type { CourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
 import * as svcModule from '@/services/courtlistener/courtlistener-service.js';
+import { captureError } from '../helpers/capture-error.js';
 
 const mockSvc = {
   searchOpinions: vi.fn(),
@@ -86,7 +87,7 @@ const baseResult = {
 describe('searchOpinionsTool', () => {
   it('returns mapped opinion summaries and enriches total + echo for valid input', async () => {
     mockSvc.searchOpinions = vi.fn().mockResolvedValue(baseResult);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchOpinionsTool.errors });
     const input = searchOpinionsTool.input.parse({ q: 'abortion rights' });
     const result = await searchOpinionsTool.handler(input, ctx);
 
@@ -111,12 +112,12 @@ describe('searchOpinionsTool', () => {
   describe('nested opinions[] mapping (#43)', () => {
     it('lifts snippet out of the nested variant', async () => {
       mockSvc.searchOpinions = vi.fn().mockResolvedValue(baseResult);
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: searchOpinionsTool.errors });
       const input = searchOpinionsTool.input.parse({ q: 'abortion rights' });
       const result = await searchOpinionsTool.handler(input, ctx);
 
-      expect(result.results[0].snippet).toBe('right of privacy');
-      expect(result.results[1].snippet).toBe('undue burden standard');
+      expect(result.results[0]!.snippet).toBe('right of privacy');
+      expect(result.results[1]!.snippet).toBe('undue burden standard');
     });
 
     it('picks the first variant that actually carries an excerpt', async () => {
@@ -133,11 +134,11 @@ describe('searchOpinionsTool', () => {
         ],
         nextCursor: null,
       });
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: searchOpinionsTool.errors });
       const input = searchOpinionsTool.input.parse({ q: 'test' });
       const result = await searchOpinionsTool.handler(input, ctx);
 
-      expect(result.results[0].snippet).toBe('dissenting excerpt');
+      expect(result.results[0]!.snippet).toBe('dissenting excerpt');
     });
 
     it('falls back to an empty snippet when no variant has one', async () => {
@@ -146,21 +147,21 @@ describe('searchOpinionsTool', () => {
         results: [{ ...baseResult.results[0], opinions: [] }],
         nextCursor: null,
       });
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: searchOpinionsTool.errors });
       const input = searchOpinionsTool.input.parse({ q: 'test' });
       const result = await searchOpinionsTool.handler(input, ctx);
 
-      expect(result.results[0].snippet).toBe('');
-      expect(result.results[0].opinions).toEqual([]);
+      expect(result.results[0]!.snippet).toBe('');
+      expect(result.results[0]!.opinions).toEqual([]);
     });
 
     it('surfaces the variants with local_path resolved to a storage URL', async () => {
       mockSvc.searchOpinions = vi.fn().mockResolvedValue(baseResult);
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: searchOpinionsTool.errors });
       const input = searchOpinionsTool.input.parse({ q: 'abortion rights' });
       const result = await searchOpinionsTool.handler(input, ctx);
 
-      expect(result.results[0].opinions).toEqual([
+      expect(result.results[0]!.opinions).toEqual([
         {
           id: 108713,
           type: 'combined-opinion',
@@ -172,14 +173,14 @@ describe('searchOpinionsTool', () => {
         },
       ]);
       // A null local_path stays null rather than becoming a bare-host URL.
-      expect(result.results[1].opinions[0]?.local_path).toBeNull();
-      expect(result.results[1].opinions[0]?.per_curiam).toBe(true);
+      expect(result.results[1]!.opinions[0]?.local_path).toBeNull();
+      expect(result.results[1]!.opinions[0]?.per_curiam).toBe(true);
     });
   });
 
   it('passes optional filters to service', async () => {
     mockSvc.searchOpinions = vi.fn().mockResolvedValue({ total: 0, results: [], nextCursor: null });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchOpinionsTool.errors });
     const input = searchOpinionsTool.input.parse({
       q: 'test query',
       court: 'scotus',
@@ -195,7 +196,7 @@ describe('searchOpinionsTool', () => {
 
   it('enriches notice on empty results', async () => {
     mockSvc.searchOpinions = vi.fn().mockResolvedValue({ total: 0, results: [], nextCursor: null });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchOpinionsTool.errors });
     const input = searchOpinionsTool.input.parse({ q: 'no match query xyz123' });
     const result = await searchOpinionsTool.handler(input, ctx);
 
@@ -209,7 +210,7 @@ describe('searchOpinionsTool', () => {
 
   it('throws when service throws', async () => {
     mockSvc.searchOpinions = vi.fn().mockRejectedValue(new Error('rate limit'));
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchOpinionsTool.errors });
     const input = searchOpinionsTool.input.parse({ q: 'test' });
     await expect(searchOpinionsTool.handler(input, ctx)).rejects.toThrow();
   });
@@ -223,7 +224,7 @@ describe('searchOpinionsTool', () => {
       const input = searchOpinionsTool.input.parse({ q: '   ' });
       expect(input.q).toBe('');
 
-      const err = await searchOpinionsTool.handler(input, ctx).catch((e) => e);
+      const err = await captureError(() => searchOpinionsTool.handler(input, ctx));
       expect(err).toMatchObject({ data: { reason: 'empty_query' } });
       expect(err.message).toContain('q');
       expect(mockSvc.searchOpinions).not.toHaveBeenCalled();
@@ -241,7 +242,7 @@ describe('searchOpinionsTool', () => {
 
     it('trims incidental padding from an otherwise-valid q', async () => {
       mockSvc.searchOpinions = vi.fn().mockResolvedValue(baseResult);
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: searchOpinionsTool.errors });
       const input = searchOpinionsTool.input.parse({ q: '  qualified immunity  ' });
       await searchOpinionsTool.handler(input, ctx);
       expect(mockSvc.searchOpinions).toHaveBeenCalledWith(
@@ -262,7 +263,7 @@ describe('searchOpinionsTool', () => {
         const ctx = createMockContext({ errors: searchOpinionsTool.errors });
         const input = searchOpinionsTool.input.parse({ q: 'qualified immunity', filed_after: bad });
 
-        const err = await searchOpinionsTool.handler(input, ctx).catch((e) => e);
+        const err = await captureError(() => searchOpinionsTool.handler(input, ctx));
         expect(err).toMatchObject({ data: { reason: 'invalid_date' } });
         // The message is the surface both content[] and structuredContent.error
         // carry, so the field name and accepted format must live in it.
@@ -278,7 +279,7 @@ describe('searchOpinionsTool', () => {
       const ctx = createMockContext({ errors: searchOpinionsTool.errors });
       const input = searchOpinionsTool.input.parse({ q: 'test', filed_before: '2021-02-29' });
 
-      const err = await searchOpinionsTool.handler(input, ctx).catch((e) => e);
+      const err = await captureError(() => searchOpinionsTool.handler(input, ctx));
       expect(err).toMatchObject({ data: { reason: 'invalid_date' } });
       expect(err.message).toContain('filed_before');
       expect(mockSvc.searchOpinions).not.toHaveBeenCalled();
@@ -333,7 +334,7 @@ describe('searchOpinionsTool', () => {
       next_cursor: null,
     });
     const blocks = searchOpinionsTool.format!(output);
-    expect(blocks[0].type).toBe('text');
+    expect(blocks[0]!.type).toBe('text');
     const text = (blocks[0] as { text: string }).text;
     expect(text).toContain('100');
     expect(text).toContain('Roe v. Wade');
@@ -384,6 +385,6 @@ describe('searchOpinionsTool', () => {
     });
     // Should not throw with empty/missing optional fields
     const blocks = searchOpinionsTool.format!(output);
-    expect(blocks[0].type).toBe('text');
+    expect(blocks[0]!.type).toBe('text');
   });
 });

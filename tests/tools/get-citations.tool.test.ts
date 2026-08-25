@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getCitationsTool } from '@/mcp-server/tools/definitions/get-citations.tool.js';
 import type { CourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
 import * as svcModule from '@/services/courtlistener/courtlistener-service.js';
+import { captureError } from '../helpers/capture-error.js';
 
 const mockSvc = {
   getCitedBy: vi.fn(),
@@ -79,7 +80,7 @@ const mockCitingResult = {
 describe('getCitationsTool', () => {
   it('fetches cited_by citations by default', async () => {
     mockSvc.getCitedBy = vi.fn().mockResolvedValue(mockCitingResult);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getCitationsTool.errors });
     const input = getCitationsTool.input.parse({ cluster_id: 100 });
     const result = await getCitationsTool.handler(input, ctx);
 
@@ -89,8 +90,8 @@ describe('getCitationsTool', () => {
     // opinion IDs — no separate name-only lookup (#58).
     expect(result.source_case_name).toBe('Landmark Case');
     expect(result.results).toHaveLength(2);
-    expect(result.results[0].cluster_id).toBe(200);
-    expect(result.results[0].case_name).toBe('Related Case One');
+    expect(result.results[0]!.cluster_id).toBe(200);
+    expect(result.results[0]!.case_name).toBe('Related Case One');
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.totalCount).toBe(2);
@@ -101,13 +102,13 @@ describe('getCitationsTool', () => {
   describe('nested snippet mapping (#43)', () => {
     it('lifts the excerpt out of the nested opinion variant', async () => {
       mockSvc.getCitedBy = vi.fn().mockResolvedValue(mockCitingResult);
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: getCitationsTool.errors });
       const input = getCitationsTool.input.parse({ cluster_id: 100 });
       const result = await getCitationsTool.handler(input, ctx);
 
-      expect(result.results[0].snippet).toBe('relevant excerpt');
+      expect(result.results[0]!.snippet).toBe('relevant excerpt');
       // A variant with no excerpt still yields an empty string, not undefined.
-      expect(result.results[1].snippet).toBe('');
+      expect(result.results[1]!.snippet).toBe('');
     });
 
     it('applies the same mapping on the citing direction', async () => {
@@ -117,11 +118,11 @@ describe('getCitationsTool', () => {
         nextCursor: null,
         sourceCaseName: 'Source Opinion',
       });
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: getCitationsTool.errors });
       const input = getCitationsTool.input.parse({ cluster_id: 100, direction: 'citing' });
       const result = await getCitationsTool.handler(input, ctx);
 
-      expect(result.results[0].snippet).toBe('relevant excerpt');
+      expect(result.results[0]!.snippet).toBe('relevant excerpt');
     });
 
     it('yields an empty snippet when upstream returns no variants', async () => {
@@ -130,17 +131,17 @@ describe('getCitationsTool', () => {
         results: [{ ...mockCitingResult.results[0], opinions: [] }],
         nextCursor: null,
       });
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: getCitationsTool.errors });
       const input = getCitationsTool.input.parse({ cluster_id: 100 });
       const result = await getCitationsTool.handler(input, ctx);
 
-      expect(result.results[0].snippet).toBe('');
+      expect(result.results[0]!.snippet).toBe('');
     });
   });
 
   it('falls back to the cluster-id placeholder when upstream carries no case name', async () => {
     mockSvc.getCitedBy = vi.fn().mockResolvedValue({ ...mockCitingResult, sourceCaseName: null });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getCitationsTool.errors });
     const input = getCitationsTool.input.parse({ cluster_id: 100 });
     const result = await getCitationsTool.handler(input, ctx);
     expect(result.source_case_name).toBe('(cluster 100)');
@@ -153,7 +154,7 @@ describe('getCitationsTool', () => {
       nextCursor: null,
       sourceCaseName: 'Source Opinion',
     });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getCitationsTool.errors });
     const input = getCitationsTool.input.parse({ cluster_id: 100, direction: 'citing' });
     const result = await getCitationsTool.handler(input, ctx);
 
@@ -168,7 +169,7 @@ describe('getCitationsTool', () => {
 
   it('passes court and filed_after filters', async () => {
     mockSvc.getCitedBy = vi.fn().mockResolvedValue({ total: 0, results: [], nextCursor: null });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getCitationsTool.errors });
     const input = getCitationsTool.input.parse({
       cluster_id: 100,
       court: 'scotus',
@@ -185,7 +186,7 @@ describe('getCitationsTool', () => {
     mockSvc.getCiting = vi
       .fn()
       .mockResolvedValue({ total: 0, results: [], nextCursor: null, sourceCaseName: 'Source' });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getCitationsTool.errors });
     const input = getCitationsTool.input.parse({
       cluster_id: 100,
       direction: 'citing',
@@ -210,7 +211,7 @@ describe('getCitationsTool', () => {
         nextCursor: '2',
         sourceCaseName: 'Source Opinion',
       });
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: getCitationsTool.errors });
       const input = getCitationsTool.input.parse({
         cluster_id: 100,
         direction: 'citing',
@@ -235,7 +236,7 @@ describe('getCitationsTool', () => {
         nextCursor: null,
         sourceCaseName: 'Source Opinion',
       });
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: getCitationsTool.errors });
       const input = getCitationsTool.input.parse({
         cluster_id: 100,
         direction: 'citing',
@@ -255,7 +256,7 @@ describe('getCitationsTool', () => {
         nextCursor: null,
         sourceCaseName: 'Landmark Case',
       });
-      const ctx = createMockContext();
+      const ctx = createMockContext({ errors: getCitationsTool.errors });
       const input = getCitationsTool.input.parse({ cluster_id: 100, court: 'scotus' });
       await getCitationsTool.handler(input, ctx);
 
@@ -270,7 +271,7 @@ describe('getCitationsTool', () => {
       nextCursor: '4',
       sourceCaseName: 'Source Opinion',
     });
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getCitationsTool.errors });
     const input = getCitationsTool.input.parse({
       cluster_id: 100,
       direction: 'citing',
@@ -287,7 +288,7 @@ describe('getCitationsTool', () => {
 
   it('throws when service throws', async () => {
     mockSvc.getCitedBy = vi.fn().mockRejectedValue(new Error('API error'));
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getCitationsTool.errors });
     const input = getCitationsTool.input.parse({ cluster_id: 100 });
     await expect(getCitationsTool.handler(input, ctx)).rejects.toThrow();
   });
@@ -302,7 +303,7 @@ describe('getCitationsTool', () => {
         const ctx = createMockContext({ errors: getCitationsTool.errors });
         const input = getCitationsTool.input.parse({ cluster_id: 100, filed_after: bad });
 
-        const err = await getCitationsTool.handler(input, ctx).catch((e) => e);
+        const err = await captureError(() => getCitationsTool.handler(input, ctx));
         expect(err).toMatchObject({ data: { reason: 'invalid_date' } });
         expect(err.message).toContain('filed_after');
         expect(err.message).toContain('YYYY-MM-DD');
