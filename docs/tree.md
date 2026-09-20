@@ -1,6 +1,6 @@
 # courtlistener-mcp-server - Directory Structure
 
-Generated on: 2026-08-25 05:13:45
+Generated on: 2026-09-20 14:41:23
 
 ```text
 courtlistener-mcp-server/
@@ -14,6 +14,8 @@ courtlistener-mcp-server/
 │   │   ├── bug_report.yml
 │   │   ├── config.yml
 │   │   └── feature_request.yml
+│   ├── workflows/
+│   │   └── codeql.yml
 │   ├── CODE_OF_CONDUCT.md
 │   ├── CONTRIBUTING.md
 │   ├── FUNDING.yml
@@ -33,24 +35,7 @@ courtlistener-mcp-server/
 ├── docs/
 │   ├── design.md
 │   └── idea.md
-├── scripts/
-│   ├── build-changelog.ts
-│   ├── build.ts
-│   ├── check-dependency-specifiers.ts
-│   ├── check-docs-sync.ts
-│   ├── check-framework-antipatterns.ts
-│   ├── check-skill-versions.ts
-│   ├── check-skills-sync.ts
-│   ├── clean-mcpb.ts
-│   ├── clean.ts
-│   ├── devcheck.ts
-│   ├── generate-court-names.ts
-│   ├── lint-mcp.ts
-│   ├── lint-packaging.ts
-│   ├── list-skills.ts
-│   ├── release-github.ts
-│   └── tree.ts
-├── skills/
+├── framework-skills/
 │   ├── add-app-tool/
 │   │   └── SKILL.md
 │   ├── add-prompt/
@@ -121,6 +106,8 @@ courtlistener-mcp-server/
 │   │   └── SKILL.md
 │   ├── release-and-publish/
 │   │   └── SKILL.md
+│   ├── release-pr-review/
+│   │   └── SKILL.md
 │   ├── report-issue-framework/
 │   │   └── SKILL.md
 │   ├── report-issue-local/
@@ -135,6 +122,23 @@ courtlistener-mcp-server/
 │   │   └── SKILL.md
 │   └── tool-defs-analysis/
 │       └── SKILL.md
+├── scripts/
+│   ├── build-changelog.ts
+│   ├── build.ts
+│   ├── check-dependency-specifiers.ts
+│   ├── check-docs-sync.ts
+│   ├── check-framework-antipatterns.ts
+│   ├── check-skill-versions.ts
+│   ├── check-skills-sync.ts
+│   ├── clean-mcpb.ts
+│   ├── clean.ts
+│   ├── devcheck.ts
+│   ├── generate-court-names.ts
+│   ├── lint-mcp.ts
+│   ├── lint-packaging.ts
+│   ├── list-skills.ts
+│   ├── release-github.ts
+│   └── tree.ts
 ├── src/
 │   ├── config/
 │   │   └── server-config.ts
@@ -173,6 +177,8 @@ courtlistener-mcp-server/
 │   │       └── uri.ts
 │   └── index.ts
 ├── tests/
+│   ├── config/
+│   │   └── server-config.test.ts
 │   ├── helpers/
 │   │   └── capture-error.ts
 │   ├── prompts/
@@ -182,6 +188,7 @@ courtlistener-mcp-server/
 │   ├── service/
 │   │   ├── codes.test.ts
 │   │   ├── court-names.test.ts
+│   │   ├── courtlistener-service.pacing.test.ts
 │   │   ├── courtlistener-service.retry.test.ts
 │   │   ├── courtlistener-service.test.ts
 │   │   ├── dates.test.ts
@@ -208,6 +215,7 @@ courtlistener-mcp-server/
 ├── .gitattributes
 ├── .gitignore
 ├── .mcpbignore
+├── AGENTS.md
 ├── biome.json
 ├── bun.lock
 ├── bunfig.toml
