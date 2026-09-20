@@ -144,14 +144,16 @@ export const getOpinionTool = tool('courtlistener_get_opinion', {
       when: 'Cluster ID does not exist in CourtListener.',
       recovery:
         'Verify the cluster ID from courtlistener_search_opinions or courtlistener_lookup_citation.',
+      thrownBy: 'service',
     },
     {
       reason: 'rate_limited',
       code: JsonRpcErrorCode.RateLimited,
-      when: '429 response from CourtListener.',
+      when: '429 from CourtListener, or no request slot opened within the wait budget.',
       retryable: false,
       recovery:
         'Wait out the Retry-After interval reported on the error before calling again. CourtListener throttles per minute, hour, and day, so an immediate retry fails.',
+      thrownBy: 'service',
     },
     {
       reason: 'unknown_section',
@@ -255,6 +257,7 @@ export const getOpinionTool = tool('courtlistener_get_opinion', {
         throw ctx.fail(
           'unknown_section',
           `Unknown sections value: ${unknown.join(', ')}. ${known}`,
+          ctx.recoveryFor('unknown_section'),
         );
       }
       const wanted = new Set(input.sections);

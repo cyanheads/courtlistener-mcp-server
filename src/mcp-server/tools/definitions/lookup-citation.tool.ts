@@ -158,14 +158,16 @@ export const lookupCitationTool = tool('courtlistener_lookup_citation', {
       when: 'CourtListener could not parse any citation out of the submitted text. A citation that parses but matches nothing is a result with status 404, not this error.',
       recovery:
         'Check the citation is in volume-reporter-page form, for example "410 U.S. 113". Try courtlistener_search_opinions with the case name instead.',
+      thrownBy: 'service',
     },
     {
       reason: 'rate_limited',
       code: JsonRpcErrorCode.RateLimited,
-      when: '429 response from CourtListener.',
+      when: '429 from CourtListener, or no request slot opened within the wait budget.',
       retryable: false,
       recovery:
         'Wait out the Retry-After interval reported on the error before calling again. CourtListener throttles per minute, hour, and day, so an immediate retry fails.',
+      thrownBy: 'service',
     },
     {
       reason: 'empty_citation',
@@ -190,12 +192,14 @@ export const lookupCitationTool = tool('courtlistener_lookup_citation', {
       throw ctx.fail(
         'empty_citation',
         'The citation parameter is empty or whitespace-only. Supply a citation string — e.g. citation: "410 U.S. 113".',
+        ctx.recoveryFor('empty_citation'),
       );
     }
     if (input.citation.length > MAX_CITATION_TEXT_CHARS) {
       throw ctx.fail(
         'citation_too_long',
         `The citation parameter is ${input.citation.length} characters; CourtListener accepts at most ${MAX_CITATION_TEXT_CHARS}. Trim the passage or split it and look up each part separately.`,
+        ctx.recoveryFor('citation_too_long'),
       );
     }
 

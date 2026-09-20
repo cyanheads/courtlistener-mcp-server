@@ -172,10 +172,11 @@ export const searchJudgesTool = tool('courtlistener_search_judges', {
     {
       reason: 'rate_limited',
       code: JsonRpcErrorCode.RateLimited,
-      when: '429 response from CourtListener.',
+      when: '429 from CourtListener, or no request slot opened within the wait budget.',
       retryable: false,
       recovery:
         'Wait out the Retry-After interval reported on the error before calling again. CourtListener throttles per minute, hour, and day, so an immediate retry fails.',
+      thrownBy: 'service',
     },
     {
       reason: 'empty_query',
@@ -195,6 +196,7 @@ export const searchJudgesTool = tool('courtlistener_search_judges', {
       throw ctx.fail(
         'empty_query',
         'The q parameter is empty or whitespace-only. Supply search terms — e.g. q: "Sotomayor".',
+        ctx.recoveryFor('empty_query'),
       );
     }
 

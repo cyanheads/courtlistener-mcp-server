@@ -47,7 +47,7 @@ Built on [Free Law Project's](https://free.law/) open-access infrastructure. Opi
 |:--------|:------|:--------|
 | `CourtListenerService` | CourtListener REST API v4 | All tools |
 
-Single service, single base URL. Auth via `Authorization: Token <token>` header. Resilience: retry with exponential backoff on 429 (respect Retry-After if present) and 5xx; parse-failure detection for HTML error pages. Rate limit awareness: track whether 429s are minute vs. hour vs. day window and surface which throttle triggered in error messages.
+Single service, single base URL. Auth via `Authorization: Token <token>` header. Resilience: every request is metered through one process-wide pacer holding the minute and hour windows, so a multi-request tool call and two concurrent calls draw from the same budget; a 429 closes that gate for the interval upstream reported, and the call waits it out when the interval fits its remaining budget and fails fast with the reset time when it does not. A call that can open no slot inside its wait budget is refused before a request is spent. 5xx retries with exponential backoff; HTML error pages are detected at parse.
 
 ---
 
@@ -648,6 +648,8 @@ cursor: z.string().optional()
 - No "fetch related data" enrichment in responses that would auto-trigger extra calls
 - `courtlistener_get_citations` uses the search endpoint rather than paginating the `/opinions-cited/` REST endpoint across multiple pages; both directions first resolve the source cluster's opinion IDs, since the `cites:` index is keyed by opinion, not cluster
 - Deep citation traversal (multi-hop: "what cites X, then what cites those 10 cases") burns through daily budget in one session. The server exposes the tool correctly but the rate-limit constraint is a free-tier reality. Free Law Project membership ($10/mo) unlocks higher limits for research use.
+
+**Pace in the server, not in the agent.** Keeping per-call request counts low is not enough on its own — two tool calls in parallel, or one tool spending several upstream requests, trip the minute window with no request budget actually exhausted. A single process-wide queue in front of the client is what makes the window a property of the server rather than something each caller has to reason about, so the minute and hour windows are enforced there and a 429's `Retry-After` closes the gate for everyone queued behind it. Pacing deliberately stops at the minute and hour: the daily ceiling cannot be stretched by waiting, so a queue in front of it would trade a fast, honest failure for a slow one. Both windows are env-configurable because the published free-tier figures are a floor — actual limits vary by token tier.
 
 **Citation network via search, not dedicated endpoint.** The `/opinions-cited/` REST endpoint requires auth and consumes daily quota per page. The search API's `cites:(id)` filter returns rich metadata for the whole network from one search call. That search is not free-standing, though: `cites:` keys on opinion IDs, and the `citing` direction reads the cluster's inline `cites[]`, so both directions resolve the cluster's opinion variants first — three calls per invocation, not one.
 

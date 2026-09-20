@@ -7,12 +7,19 @@
 import type { Context } from '@cyanheads/mcp-ts-core';
 import {
   JsonRpcErrorCode,
+  McpError,
   notFound,
   rateLimited,
   serviceUnavailable,
 } from '@cyanheads/mcp-ts-core/errors';
 import type { StorageService } from '@cyanheads/mcp-ts-core/storage';
-import { fetchWithTimeout, withRetry } from '@cyanheads/mcp-ts-core/utils';
+import type { Pacer, RequestContext } from '@cyanheads/mcp-ts-core/utils';
+import {
+  createPacer,
+  defaultIsTransient,
+  fetchWithTimeout,
+  withRetry,
+} from '@cyanheads/mcp-ts-core/utils';
 import { expandCode } from './codes.js';
 import { resolveCourtName } from './court-names.js';
 import type {
@@ -41,6 +48,39 @@ import type {
 import { idFromUri } from './uri.js';
 
 const REQUEST_TIMEOUT_MS = 30_000;
+
+/**
+ * How long one upstream request may wait for a pacer slot, and — once CourtListener
+ * has named a `Retry-After` — how long the retry ladder may sleep it out inside the
+ * call. Past this the caller is better served by a rate-limit error carrying the
+ * reset time than by a request that finishes after it has stopped caring.
+ */
+const WAIT_BUDGET_MS = 45_000;
+
+/**
+ * Wall-clock ceiling on one upstream request: the queue wait, the request itself,
+ * and any honored `Retry-After` together. `maxRetries` and the per-request timeout
+ * cannot express it between them — four 30 s attempts plus backoff outlast any
+ * client that is still waiting.
+ */
+const REQUEST_DEADLINE_MS = 90_000;
+
+/**
+ * Shaved off the deadline's remaining budget when sizing the queue wait cap. Both
+ * clocks start from the same `remainingMs`, and the deadline's timer is armed first,
+ * so without a margin an exhausted budget always surfaces as the deadline's bare
+ * `Timeout` instead of the pacer's shed — which names the window and carries a
+ * `retryAfter` the agent can act on.
+ */
+const SHED_MARGIN_MS = 500;
+
+/**
+ * Back-off applied to the shared gate after a 429. `maxMs` caps both the doubling
+ * and an honored `Retry-After`, so an hour- or day-window reset cannot park the
+ * queue indefinitely: callers are shed with the real reset time instead of waiting
+ * inside a call that has no chance of completing.
+ */
+const PACER_COOLDOWN = { baseMs: 5_000, maxMs: 120_000 } as const;
 
 /**
  * Cursor pages walked while resolving attorney detail. CourtListener paginates
@@ -119,6 +159,15 @@ const ATTORNEY_ROLE_LABELS: Record<string, string> = {
   10: 'Unknown',
 };
 
+/**
+ * A handler `Context` carries everything `RequestContext` does, but the framework
+ * declares neither as extending the other — so the logging and network helpers need
+ * the widening at every boundary. One place to assert it beats a cast per call site.
+ */
+function asRequestContext(ctx: Context): RequestContext {
+  return ctx as unknown as RequestContext;
+}
+
 /** Extract cursor token from a CourtListener next URL. */
 function extractCursor(nextUrl: string | null): string | null {
   if (!nextUrl) return null;
@@ -143,15 +192,23 @@ function toDocketId(docket: number | string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-/** Classify the rate-limit window from headers or response body. */
+/** Closing sentence shared by every rate-limit message — upstream refusal or local shed. */
+const RATE_LIMIT_WINDOWS_NOTE =
+  'CourtListener throttles per minute, hour, and day. Check courtlistener.com for membership options.';
+
+/** Message for a 429 CourtListener actually returned. */
 function buildRateLimitMessage(retryAfter: string | null): string {
-  const base = 'CourtListener rate limit reached.';
-  const hint =
-    'CourtListener throttles per minute, hour, and day. Check courtlistener.com for membership options.';
-  if (retryAfter) {
-    return `${base} Retry-After: ${retryAfter}s. ${hint}`;
-  }
-  return `${base} ${hint}`;
+  const wait = retryAfter ? ` Retry-After: ${retryAfter}s.` : '';
+  return `CourtListener rate limit reached.${wait} ${RATE_LIMIT_WINDOWS_NOTE}`;
+}
+
+/**
+ * Message for a request the pacer refused a slot to. Says no request was sent, so
+ * the agent knows its per-day budget is untouched and the wait is local bookkeeping
+ * rather than a fresh refusal from upstream.
+ */
+function buildPacedOutMessage(retryAfter: string): string {
+  return `CourtListener rate limit reached — no request slot opened within this call's wait budget, so no request was sent. Retry-After: ${retryAfter}s. ${RATE_LIMIT_WINDOWS_NOTE}`;
 }
 
 /**
@@ -194,13 +251,15 @@ function notFoundForPath(path: string) {
 
 /**
  * `fetchWithTimeout` throws an McpError on every non-2xx response BEFORE the
- * manual status checks below can run — carrying `data.status` (not the
- * machine-readable `data.reason` consumers route on) and leaking the full request
- * URL in its message. Remap the not-found and rate-limit cases to domain errors
- * with a reason + recovery hint and a path-only message; pass everything else
- * (already-classified domain errors, 5xx, timeouts) through untouched.
+ * manual status checks below can run — carrying `data.status` rather than the
+ * machine-readable `data.reason` consumers route on, the upstream response body,
+ * and a message naming the origin and path (the query string is masked, and no
+ * request URL reaches client-facing `data`). Remap the not-found and rate-limit
+ * cases to domain errors with a reason, the contract's recovery hint, and a
+ * message carrying the path alone; pass everything else (already-classified
+ * domain errors, 5xx, timeouts) through untouched.
  */
-function classifyFetchError(err: unknown, path: string): unknown {
+function classifyFetchError(err: unknown, path: string, ctx: Context): unknown {
   const e = err as {
     code?: number;
     data?: { status?: number; reason?: string; retryAfter?: string };
@@ -212,15 +271,62 @@ function classifyFetchError(err: unknown, path: string): unknown {
     // fetchWithTimeout already read CourtListener's Retry-After off the response and put it
     // on the error — carry it through instead of making the agent guess the wait.
     const retryAfter = e?.data?.retryAfter ?? null;
-    // retryable: false — CourtListener's free-tier windows are per-minute/hour/day; withRetry's
-    // 2/4/8s backoff can never clear them, so fail fast and let the agent honor Retry-After.
-    return rateLimited(buildRateLimitMessage(retryAfter), {
-      reason: 'rate_limited',
-      retryable: false,
-      ...(retryAfter && { retryAfter }),
-    });
+    return rateLimited(buildRateLimitMessage(retryAfter), rateLimitData(retryAfter, ctx));
   }
   return err;
+}
+
+/**
+ * `data` for a `rate_limited` error, shared by the upstream 429 and the pacer shed
+ * so both reach the caller in one shape.
+ *
+ * `retryable: false` matches every tool's declared contract entry: the windows are
+ * per-minute/hour/day, so an immediate client-side retry cannot clear them. The
+ * recovery hint is resolved from the *calling* definition rather than restated
+ * here — `courtlistener_get_parties` advertises a longer one because it spends two
+ * requests a call, and a service-local copy would publish the wrong text for it.
+ */
+function rateLimitData(retryAfter: string | null, ctx: Context): Record<string, unknown> {
+  return {
+    reason: 'rate_limited',
+    retryable: false,
+    ...(retryAfter && { retryAfter }),
+    ...ctx.recoveryFor('rate_limited'),
+  };
+}
+
+/**
+ * Whether the retry ladder may sleep a 429 out inside the call.
+ *
+ * Only when CourtListener named a wait. `withRetry` then sleeps exactly that
+ * interval — bounded by `maxDelayMs` and by what is left of the deadline — rather
+ * than the blind 2/4/8 s backoff removed in #25, which could never clear a minute
+ * window and coordinated nothing across concurrent calls. A 429 with no
+ * `Retry-After` still fails fast on `retryable: false`.
+ */
+function isWaitableRateLimit(error: unknown): boolean {
+  if (!(error instanceof McpError) || error.data?.reason !== 'rate_limited') return false;
+  const retryAfter = error.data.retryAfter;
+  return typeof retryAfter === 'string' && retryAfter.trim() !== '';
+}
+
+/**
+ * Remaps a pacer shed onto the advertised `rate_limited` reason. A shed and a 429
+ * ask the same thing of the agent — wait the reported interval, then call again —
+ * so publishing a second reason for it would widen every tool's contract without
+ * widening what the agent can do about it. `retryAfter` is stringified to match the
+ * raw header value the 429 path carries, so one shape reaches the client either way.
+ *
+ * Anything else passes through: a caller abort, a deadline expiry, and the 429
+ * itself are already what they should be.
+ */
+function classifyPacerShed(err: unknown, ctx: Context): unknown {
+  if (!(err instanceof McpError) || err.data?.reason !== 'pacer_shed') return err;
+  // The pacer always dates its shed — `retryAfter` is the seconds until a slot opens.
+  const retryAfter = String(err.data.retryAfter);
+  return rateLimited(buildPacedOutMessage(retryAfter), rateLimitData(retryAfter, ctx), {
+    cause: err,
+  });
 }
 
 /**
@@ -235,10 +341,15 @@ export interface CourtListenerServiceConfig {
   baseUrl?: string;
   /** Running server version — `core.config.mcpServerVersion` in `setup()`. */
   mcpServerVersion: string;
+  /** Requests the pacer will start within any rolling hour. */
+  rateLimitPerHour: number;
+  /** Requests the pacer will start within any rolling minute. */
+  rateLimitPerMinute: number;
 }
 
 export class CourtListenerService {
   private readonly baseUrl: string;
+  private readonly pacer: Pacer;
   private readonly token: string;
   private readonly userAgent: string;
 
@@ -248,6 +359,29 @@ export class CourtListenerService {
     // Read from the running server's version so a release bump reaches the outbound
     // User-Agent — the value an upstream maintainer attributes traffic by.
     this.userAgent = `courtlistener-mcp-server/${config.mcpServerVersion}`;
+    /**
+     * One queue for every request this process sends CourtListener. The windows
+     * meter what the token is actually allowed, so a tool that spends several
+     * requests per call draws from the same budget as every other in-flight call
+     * rather than from a private allowance that adds up to more than the token has.
+     */
+    this.pacer = createPacer({
+      name: 'courtlistener',
+      limits: [
+        { requests: config.rateLimitPerMinute, perMs: 60_000 },
+        { requests: config.rateLimitPerHour, perMs: 3_600_000 },
+      ],
+      cooldown: PACER_COOLDOWN,
+    });
+  }
+
+  /**
+   * Releases the pacer's dispatch timer and rejects whatever is still queued.
+   * Wired to `createApp({ teardown })` so shutdown closes the queue instead of
+   * cutting it.
+   */
+  dispose(): void {
+    this.pacer.dispose();
   }
 
   private headers(): Record<string, string> {
@@ -258,7 +392,45 @@ export class CourtListenerService {
     };
   }
 
-  /** Generic GET with retry, rate-limit detection, and JSON parse. */
+  /**
+   * Runs one upstream call: queued behind the shared pacer, retried under a single
+   * wall-clock deadline. Retry outside, pacer inside, so a retried attempt re-queues
+   * and is re-paced — and because the cooldown gate is an absolute instant rather
+   * than a duration counted from dequeue, an honored `Retry-After` and the gate
+   * overlap in wall-clock instead of summing.
+   *
+   * A 429 the task throws closes the gate for every queued caller, which is what
+   * keeps concurrent calls from each discovering the same closed window one wasted
+   * request at a time.
+   */
+  private async paced<T>(
+    operation: string,
+    ctx: Context,
+    task: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await withRetry(
+        ({ signal, remainingMs }) =>
+          this.pacer.run(task, {
+            signal,
+            maxWaitMs: Math.min(WAIT_BUDGET_MS, Math.max(0, remainingMs - SHED_MARGIN_MS)),
+          }),
+        {
+          operation,
+          context: asRequestContext(ctx),
+          baseDelayMs: 2000,
+          maxDelayMs: WAIT_BUDGET_MS,
+          deadlineMs: REQUEST_DEADLINE_MS,
+          signal: ctx.signal,
+          isTransient: (error) => isWaitableRateLimit(error) || defaultIsTransient(error),
+        },
+      );
+    } catch (err) {
+      throw classifyPacerShed(err, ctx);
+    }
+  }
+
+  /** Generic GET with pacing, retry, rate-limit detection, and JSON parse. */
   private get<T>(
     path: string,
     params: Record<string, string | number | boolean | undefined>,
@@ -272,41 +444,32 @@ export class CourtListenerService {
     const fullUrl = url.toString();
     ctx.log.debug('CourtListener GET', { url: fullUrl });
 
-    // biome-ignore lint/suspicious/noExplicitAny: Context satisfies RequestContext at runtime
-    const reqCtx = ctx as unknown as any;
+    return this.paced('CourtListenerService.get', ctx, async (signal) => {
+      let response: Response;
+      try {
+        response = await fetchWithTimeout(fullUrl, REQUEST_TIMEOUT_MS, asRequestContext(ctx), {
+          // The pacer hands back the retry deadline's signal, so an expiry stops a
+          // request already in flight rather than only the one after it.
+          signal,
+          headers: this.headers(),
+          // A 404 is a routine outcome of an agent-supplied ID, not a server fault —
+          // log it at debug. The thrown, status-mapped error is unchanged.
+          expectedStatuses: [404],
+        });
+      } catch (err) {
+        // fetchWithTimeout throws on non-2xx (status, no reason, upstream body) — remap it.
+        throw classifyFetchError(err, path, ctx);
+      }
 
-    return withRetry(
-      async () => {
-        let response: Response;
-        try {
-          response = await fetchWithTimeout(fullUrl, REQUEST_TIMEOUT_MS, reqCtx, {
-            signal: ctx.signal,
-            headers: this.headers(),
-            // A 404 is a routine outcome of an agent-supplied ID, not a server fault —
-            // log it at debug. The thrown, status-mapped error is unchanged.
-            expectedStatuses: [404],
-          });
-        } catch (err) {
-          // fetchWithTimeout throws on non-2xx (status, no reason, leaks URL) — remap it.
-          throw classifyFetchError(err, path);
-        }
-
-        // Only 2xx reaches here; a non-2xx already threw above.
-        const text = await response.text();
-        if (/^\s*<(!DOCTYPE|html)/i.test(text)) {
-          throw serviceUnavailable(
-            'CourtListener returned HTML instead of JSON — likely a maintenance window (Thursdays 21:00–23:59 PT).',
-          );
-        }
-        return JSON.parse(text) as T;
-      },
-      {
-        operation: 'CourtListenerService.get',
-        context: reqCtx,
-        baseDelayMs: 2000,
-        signal: ctx.signal,
-      },
-    );
+      // Only 2xx reaches here; a non-2xx already threw above.
+      const text = await response.text();
+      if (/^\s*<(!DOCTYPE|html)/i.test(text)) {
+        throw serviceUnavailable(
+          'CourtListener returned HTML instead of JSON — likely a maintenance window (Thursdays 21:00–23:59 PT).',
+        );
+      }
+      return JSON.parse(text) as T;
+    });
   }
 
   /** POST with JSON body. */
@@ -314,38 +477,27 @@ export class CourtListenerService {
     const fullUrl = `${this.baseUrl}${path}`;
     ctx.log.debug('CourtListener POST', { url: fullUrl });
 
-    // biome-ignore lint/suspicious/noExplicitAny: Context satisfies RequestContext at runtime
-    const reqCtx = ctx as unknown as any;
+    return this.paced('CourtListenerService.post', ctx, async (signal) => {
+      let response: Response;
+      try {
+        response = await fetchWithTimeout(fullUrl, REQUEST_TIMEOUT_MS, asRequestContext(ctx), {
+          method: 'POST',
+          signal,
+          headers: { ...this.headers(), 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          // A 404 here means the citation isn't in the corpus — an expected lookup
+          // outcome, so log it at debug. The thrown error is unchanged.
+          expectedStatuses: [404],
+        });
+      } catch (err) {
+        // fetchWithTimeout throws on non-2xx (status, no reason, upstream body) — remap it.
+        throw classifyFetchError(err, path, ctx);
+      }
 
-    return withRetry(
-      async () => {
-        let response: Response;
-        try {
-          response = await fetchWithTimeout(fullUrl, REQUEST_TIMEOUT_MS, reqCtx, {
-            method: 'POST',
-            signal: ctx.signal,
-            headers: { ...this.headers(), 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-            // A 404 here means the citation isn't in the corpus — an expected lookup
-            // outcome, so log it at debug. The thrown error is unchanged.
-            expectedStatuses: [404],
-          });
-        } catch (err) {
-          // fetchWithTimeout throws on non-2xx (status, no reason, leaks URL) — remap it.
-          throw classifyFetchError(err, path);
-        }
-
-        // Only 2xx reaches here; a non-2xx already threw above.
-        const text = await response.text();
-        return JSON.parse(text) as T;
-      },
-      {
-        operation: 'CourtListenerService.post',
-        context: reqCtx,
-        baseDelayMs: 2000,
-        signal: ctx.signal,
-      },
-    );
+      // Only 2xx reaches here; a non-2xx already threw above.
+      const text = await response.text();
+      return JSON.parse(text) as T;
+    });
   }
 
   // ── Opinions ──────────────────────────────────────────────────────────────
@@ -1127,7 +1279,18 @@ export function initCourtListenerService(
   config: CourtListenerServiceConfig,
   storage: StorageService,
 ): void {
+  _service?.dispose();
   _service = new CourtListenerService(config, storage);
+}
+
+/**
+ * Closes the service's request queue. Wired to `createApp({ teardown })`, which runs
+ * after the transport stops and before the logger closes, so queued callers are
+ * rejected rather than left holding a timer the process is about to drop.
+ */
+export function disposeCourtListenerService(): void {
+  _service?.dispose();
+  _service = undefined;
 }
 
 export function getCourtListenerService(): CourtListenerService {

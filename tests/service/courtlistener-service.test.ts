@@ -13,13 +13,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // to delegate to the mocked global fetch — throwing on non-2xx exactly as the real transport
 // does, so the service's classifyFetchError path is the one under test. (A mock that returned
 // the raw Response on an error status routed every non-2xx case into the service's manual
-// fallback branches, which production never reaches.)
+// fallback branches, which production never reaches.) The pacer is NOT mocked — it stays in
+// the request path; these configs simply set limits high enough that nothing queues.
 vi.mock('@cyanheads/mcp-ts-core/utils', async (importOriginal) => {
   const original = await importOriginal<typeof import('@cyanheads/mcp-ts-core/utils')>();
   const { McpError, JsonRpcErrorCode } = await import('@cyanheads/mcp-ts-core/errors');
   return {
     ...original,
-    withRetry: async (fn: () => Promise<unknown>) => fn(),
+    // One attempt, unbounded budget — the real signature, so the pacer still receives
+    // a signal and a wait cap rather than tripping over an undefined attempt handle.
+    withRetry: async (
+      fn: (attempt: import('@cyanheads/mcp-ts-core/utils').RetryAttempt) => unknown,
+    ) => fn({ signal: new AbortController().signal, remainingMs: Number.POSITIVE_INFINITY }),
     fetchWithTimeout: async (url: string, _timeout: number, _ctx: unknown, opts?: RequestInit) => {
       const response = await fetch(url, opts);
       if (response.ok) return response;
@@ -52,8 +57,18 @@ import {
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
+/**
+ * Rate limits high enough that the pacer never queues — this suite asserts error
+ * classification and response normalization, and pacing has its own suite
+ * (`courtlistener-service.pacing.test.ts`).
+ */
 function makeMockConfig(token = 'secret-token-abc123'): CourtListenerServiceConfig {
-  return { apiToken: token, mcpServerVersion: '0.0.0-test' };
+  return {
+    apiToken: token,
+    mcpServerVersion: '0.0.0-test',
+    rateLimitPerHour: 100_000,
+    rateLimitPerMinute: 10_000,
+  };
 }
 
 function makeMockStorage() {
@@ -107,7 +122,7 @@ describe('outbound headers', () => {
 
   it('derives the User-Agent version from the server config, not a literal (#55)', async () => {
     const svc = new CourtListenerService(
-      { apiToken: 'tok', mcpServerVersion: '9.8.7' },
+      { ...makeMockConfig('tok'), mcpServerVersion: '9.8.7' },
       makeMockStorage(),
     );
     mockFetchResponse();

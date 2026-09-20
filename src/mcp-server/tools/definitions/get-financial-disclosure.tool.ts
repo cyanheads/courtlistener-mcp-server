@@ -384,14 +384,16 @@ export const getFinancialDisclosureTool = tool('courtlistener_get_financial_disc
       code: JsonRpcErrorCode.NotFound,
       when: 'Disclosure ID does not exist in CourtListener.',
       recovery: 'Verify the disclosure ID from courtlistener_search_financial_disclosures.',
+      thrownBy: 'service',
     },
     {
       reason: 'rate_limited',
       code: JsonRpcErrorCode.RateLimited,
-      when: '429 response from CourtListener.',
+      when: '429 from CourtListener, or no request slot opened within the wait budget.',
       retryable: false,
       recovery:
         'Wait out the Retry-After interval reported on the error before calling again. CourtListener throttles per minute, hour, and day, so an immediate retry fails.',
+      thrownBy: 'service',
     },
   ],
 

@@ -25,11 +25,18 @@ import { searchJudgesTool } from './mcp-server/tools/definitions/search-judges.t
 // Tool definitions
 import { searchOpinionsTool } from './mcp-server/tools/definitions/search-opinions.tool.js';
 import { searchOralArgumentsTool } from './mcp-server/tools/definitions/search-oral-arguments.tool.js';
-import { initCourtListenerService } from './services/courtlistener/courtlistener-service.js';
+import {
+  disposeCourtListenerService,
+  initCourtListenerService,
+} from './services/courtlistener/courtlistener-service.js';
 
 await createApp({
   name: 'courtlistener-mcp-server',
   title: 'courtlistener-mcp-server',
+  // No handler calls ctx.requestInput, so nothing needs a session to answer a
+  // mid-call prompt. Declared here rather than left to MCP_SESSION_MODE, which
+  // still wins in a deployment that sets it.
+  sessionMode: 'stateless',
   tools: [
     searchOpinionsTool,
     getOpinionTool,
@@ -52,7 +59,7 @@ await createApp({
   instructions:
     'CourtListener MCP server — access 9M+ US court opinions, RECAP federal dockets, judge records, citation networks, and oral arguments.\n' +
     '- Start with courtlistener_lookup_courts to discover court IDs before filtering searches\n' +
-    '- CourtListener publishes free-tier limits of 5 req/min, 50/hr, 125/day, but actual limits vary by token tier — pace multi-hop workflows and honor the Retry-After returned on a 429\n' +
+    '- CourtListener publishes free-tier limits of 5 req/min, 50/hr, 125/day, but actual limits vary by token tier. This server queues its own requests to the minute and hour windows, so a short burst waits rather than failing; a rate-limit error means the wait outlasted the call — honor its Retry-After\n' +
     '- courtlistener_lookup_citation resolves citation strings (e.g., "410 U.S. 113") to cluster IDs\n' +
     '- courtlistener_get_citations traces precedent networks (direction="cited_by" for downstream influence)',
   setup(core) {
@@ -60,5 +67,10 @@ await createApp({
       { ...getServerConfig(), mcpServerVersion: core.config.mcpServerVersion },
       core.storage,
     );
+  },
+  // The service holds a request queue with its own dispatch timer. Close it here so
+  // shutdown rejects whatever is still waiting instead of dropping the handle.
+  teardown() {
+    disposeCourtListenerService();
   },
 });

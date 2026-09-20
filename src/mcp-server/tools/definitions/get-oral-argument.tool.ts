@@ -92,14 +92,16 @@ export const getOralArgumentTool = tool('courtlistener_get_oral_argument', {
       code: JsonRpcErrorCode.NotFound,
       when: 'Audio ID does not exist in CourtListener.',
       recovery: 'Verify the audio ID from courtlistener_search_oral_arguments.',
+      thrownBy: 'service',
     },
     {
       reason: 'rate_limited',
       code: JsonRpcErrorCode.RateLimited,
-      when: '429 response from CourtListener.',
+      when: '429 from CourtListener, or no request slot opened within the wait budget.',
       retryable: false,
       recovery:
         'Wait out the Retry-After interval reported on the error before calling again. CourtListener throttles per minute, hour, and day, so an immediate retry fails.',
+      thrownBy: 'service',
     },
     {
       reason: 'unknown_section',
@@ -123,6 +125,7 @@ export const getOralArgumentTool = tool('courtlistener_get_oral_argument', {
         throw ctx.fail(
           'unknown_section',
           `Unknown sections value: ${unknown.join(', ')}. Valid sections: ${SECTION_NAMES.join(', ')}.`,
+          ctx.recoveryFor('unknown_section'),
         );
       }
     }

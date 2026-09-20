@@ -184,16 +184,11 @@ export const searchOpinionsTool = tool('courtlistener_search_opinions', {
     {
       reason: 'rate_limited',
       code: JsonRpcErrorCode.RateLimited,
-      when: '429 response from CourtListener — minute, hour, or day throttle hit.',
+      when: '429 from CourtListener, or no request slot opened within the wait budget.',
       retryable: false,
       recovery:
         'Wait out the Retry-After interval reported on the error before calling again. CourtListener throttles per minute, hour, and day, so an immediate retry fails.',
-    },
-    {
-      reason: 'invalid_query',
-      code: JsonRpcErrorCode.ValidationError,
-      when: 'Query uses invalid field syntax or unsupported operators.',
-      recovery: 'Simplify the query, remove field-syntax prefixes, and retry with plain text.',
+      thrownBy: 'service',
     },
     {
       reason: 'empty_query',
@@ -220,6 +215,7 @@ export const searchOpinionsTool = tool('courtlistener_search_opinions', {
       throw ctx.fail(
         'empty_query',
         'The q parameter is empty or whitespace-only. Supply search terms — e.g. q: "qualified immunity" or q: caseName:"roe v wade".',
+        ctx.recoveryFor('empty_query'),
       );
     }
 
@@ -231,6 +227,7 @@ export const searchOpinionsTool = tool('courtlistener_search_opinions', {
       throw ctx.fail(
         'invalid_date',
         `Invalid date filter: ${invalidDates.join(', ')}. ${ISO_DATE_HINT}`,
+        ctx.recoveryFor('invalid_date'),
       );
     }
 

@@ -111,14 +111,16 @@ export const getCitationsTool = tool('courtlistener_get_citations', {
       when: 'Cluster ID does not exist in CourtListener. Both directions resolve the source cluster before searching, so a bad ID fails here rather than returning an empty network.',
       recovery:
         'Verify the cluster ID from courtlistener_search_opinions or courtlistener_lookup_citation.',
+      thrownBy: 'service',
     },
     {
       reason: 'rate_limited',
       code: JsonRpcErrorCode.RateLimited,
-      when: '429 response from CourtListener.',
+      when: '429 from CourtListener, or no request slot opened within the wait budget.',
       retryable: false,
       recovery:
         'Wait out the Retry-After interval reported on the error before calling again. CourtListener throttles per minute, hour, and day, so an immediate retry fails.',
+      thrownBy: 'service',
     },
     {
       reason: 'invalid_date',
@@ -141,6 +143,7 @@ export const getCitationsTool = tool('courtlistener_get_citations', {
       throw ctx.fail(
         'invalid_date',
         `Invalid date filter: ${invalidDates.join(', ')}. ${ISO_DATE_HINT}`,
+        ctx.recoveryFor('invalid_date'),
       );
     }
 

@@ -130,14 +130,16 @@ export const getPartiesTool = tool('courtlistener_get_parties', {
       when: 'Docket ID does not exist in CourtListener or has no RECAP party data.',
       recovery:
         'Verify the docket ID via courtlistener_search_dockets. Parties data requires RECAP coverage for the docket.',
+      thrownBy: 'service',
     },
     {
       reason: 'rate_limited',
       code: JsonRpcErrorCode.RateLimited,
-      when: '429 response from CourtListener. Each call to this tool makes at least two upstream requests.',
+      when: '429 from CourtListener, or no request slot opened within the wait budget. Each call to this tool makes at least two upstream requests.',
       retryable: false,
       recovery:
         'Wait out the Retry-After interval reported on the error before calling again. CourtListener throttles per minute, hour, and day, so an immediate retry fails; this tool costs at least 2 requests per call.',
+      thrownBy: 'service',
     },
   ],
 

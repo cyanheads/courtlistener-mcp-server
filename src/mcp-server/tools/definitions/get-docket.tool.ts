@@ -131,14 +131,16 @@ export const getDocketTool = tool('courtlistener_get_docket', {
       when: 'Docket ID does not exist in CourtListener.',
       recovery:
         'Verify the docket ID from courtlistener_search_dockets. The docket may not be in RECAP coverage.',
+      thrownBy: 'service',
     },
     {
       reason: 'rate_limited',
       code: JsonRpcErrorCode.RateLimited,
-      when: '429 response from CourtListener.',
+      when: '429 from CourtListener, or no request slot opened within the wait budget.',
       retryable: false,
       recovery:
         'Wait out the Retry-After interval reported on the error before calling again. CourtListener throttles per minute, hour, and day, so an immediate retry fails.',
+      thrownBy: 'service',
     },
   ],
 
