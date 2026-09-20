@@ -3,8 +3,8 @@
     "command": "npx",
     "args": ["-y", "@cyanheads/courtlistener-mcp-server"],
     "env": {
-      "MCP_TRANSPORT_TYPE": "stdio",
-      "COURTLISTENER_API_TOKEN": "your-api-token"
-    }
+      "MCP_TRANSPORT_TYPE": "stdio"
+    },
+    "env_vars": ["COURTLISTENER_API_TOKEN"]
   }
 }

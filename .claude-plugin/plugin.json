@@ -1,20 +1,41 @@
 {
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "courtlistener-mcp-server",
   "version": "0.7.1",
   "description": "Search and retrieve US court opinions, federal dockets, judge records, citation networks, and oral arguments from CourtListener's 9M+ opinion corpus via MCP. STDIO or Streamable HTTP.",
   "author": {
-    "name": "cyanheads"
+    "name": "cyanheads",
+    "email": "casey@caseyjhand.com",
+    "url": "https://caseyjhand.com"
   },
   "homepage": "https://github.com/cyanheads/courtlistener-mcp-server#readme",
   "repository": "https://github.com/cyanheads/courtlistener-mcp-server",
   "license": "Apache-2.0",
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "court-opinions",
+    "legal-research",
+    "case-law",
+    "courtlistener"
+  ],
+  "userConfig": {
+    "courtlistener_api_token": {
+      "type": "string",
+      "title": "CourtListener API token",
+      "description": "Required. Free token from your account settings at courtlistener.com/sign-in. Free-tier limits are 5 req/min, 50/hr, 125/day; actual limits vary by token tier.",
+      "sensitive": true,
+      "required": true
+    }
+  },
   "mcpServers": {
     "courtlistener-mcp-server": {
       "command": "npx",
       "args": ["-y", "@cyanheads/courtlistener-mcp-server"],
       "env": {
         "MCP_TRANSPORT_TYPE": "stdio",
-        "COURTLISTENER_API_TOKEN": "your-api-token"
+        "COURTLISTENER_API_TOKEN": "${user_config.courtlistener_api_token}"
       }
     }
   }
