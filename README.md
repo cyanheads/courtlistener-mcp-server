@@ -1,13 +1,13 @@
 <div align="center">
   <h1>@cyanheads/courtlistener-mcp-server</h1>
   <p><b>Search and retrieve US court opinions, federal dockets, judge records, citation networks, and oral arguments from CourtListener's 9M+ opinion corpus via MCP. STDIO or Streamable HTTP.</b>
-  <div>14 Tools</div>
+  <div>14 Tools • 1 Resource • 1 Prompt</div>
   </p>
 </div>
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.7.2-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/courtlistener-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.0.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/courtlistener-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/courtlistener-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.0-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.7.2-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/courtlistener-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.1.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/courtlistener-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/courtlistener-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.2-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -29,186 +29,155 @@
 
 ## Overview
 
-US court opinions, federal dockets, judge records, and oral arguments from CourtListener's 9M+ opinion corpus and its RECAP mirror of federal PACER filings. Search opinions and dockets, trace citation networks and precedent chains, look up judges and courts, and pull judicial financial disclosures from any MCP client. Runs as a stdio process, a local Streamable HTTP server, or the public hosted endpoint above.
+US case law and federal court records from CourtListener's 9M+ opinion corpus and its RECAP mirror of PACER. Search opinions and dockets, trace citation networks, resolve citations, look up judges and courts, and read oral argument transcripts and judicial financial disclosures. Runs as a stdio process, a local Streamable HTTP server, or the public hosted endpoint above.
 
 ### Tools
 
 | Tool | Description |
 |:---|:---|
-| `courtlistener_search_opinions` | Full-text search across 9M+ written court opinions with field-level filtering, date ranges, status, and sort |
-| `courtlistener_get_opinion` | Fetch full text and metadata for an opinion cluster — returns all opinion variants (majority, concurrence, dissent) |
-| `courtlistener_get_citations` | Retrieve the citation network for an opinion: opinions cited by it (`citing`) or that cite it (`cited_by`) |
-| `courtlistener_lookup_citation` | Resolve legal citations (e.g., "410 U.S. 113") to cluster IDs and case metadata — one entry per citation found in the input |
-| `courtlistener_search_dockets` | Search RECAP federal court dockets by party name, attorney, court, and date |
-| `courtlistener_get_docket` | Fetch docket metadata and entry list for a single federal case |
-| `courtlistener_get_parties` | Fetch all parties and attorneys of record for a RECAP federal docket by docket ID |
-| `courtlistener_search_judges` | Search judge records by name, appointing president, court, and political affiliation |
-| `courtlistener_get_judge` | Fetch full biographical profile, appointment history, and education for a single judge |
-| `courtlistener_lookup_courts` | List courts filtered by jurisdiction type, active/inactive status, and scraper coverage |
-| `courtlistener_search_oral_arguments` | Search appellate oral argument audio recordings by case name, court, and date argued |
-| `courtlistener_get_oral_argument` | Fetch full detail for a single oral argument — panel, duration, MP3 link, and speech-to-text transcript |
-| `courtlistener_search_financial_disclosures` | Search federal judicial financial disclosure filings by judge and year — category counts, itemized gifts, and source PDF |
-| `courtlistener_get_financial_disclosure` | Fetch one disclosure's parsed line items — investments, debts, positions, income, gifts — with coded values decoded to dollar ranges; selectable by category |
+| `courtlistener_search_opinions` | Full-text search across 9M+ court opinions with field syntax, court, date, and status filters |
+| `courtlistener_get_opinion` | Fetch an opinion cluster's metadata and the full text of every variant (majority, concurrence, dissent) |
+| `courtlistener_get_citations` | Trace a cluster's citation network: opinions it cites (`citing`) or that cite it (`cited_by`) |
+| `courtlistener_lookup_citation` | Resolve every citation in a text (e.g. "410 U.S. 113") to cluster IDs and case metadata |
+| `courtlistener_search_dockets` | Search RECAP federal dockets by case name, party, attorney, court, and filing date |
+| `courtlistener_get_docket` | Fetch a federal docket's metadata and paged entry list with document availability |
+| `courtlistener_get_parties` | Fetch the parties and attorneys of record on a RECAP docket |
+| `courtlistener_search_judges` | Search judges by name, appointing president, court, and political affiliation |
+| `courtlistener_get_judge` | Fetch a judge's positions, education, political affiliations, and ABA ratings |
+| `courtlistener_lookup_courts` | List courts by jurisdiction type, active/inactive status, and scraper coverage |
+| `courtlistener_search_oral_arguments` | Search appellate oral argument recordings by case name, transcript text, court, and argument date |
+| `courtlistener_get_oral_argument` | Fetch one oral argument's panel, duration, MP3 link, and speech-to-text transcript |
+| `courtlistener_search_financial_disclosures` | Search judicial financial disclosure filings by judge and year |
+| `courtlistener_get_financial_disclosure` | Fetch one disclosure's line items with coded values decoded to dollar ranges |
 
 ### Resources
 
 | Resource | Description |
 |:---|:---|
-| `courtlistener://reference/courts` | Jurisdiction type codes, common court IDs, search type codes, and rate-limit reference |
+| `courtlistener://reference/courts` | Jurisdiction codes, common court IDs, search type codes, rate limits, and the maintenance window |
+
+The jurisdiction codes are also listed on the `jurisdiction` parameter of `courtlistener_lookup_courts`, for clients that don't surface resources.
 
 ### Prompts
 
 | Prompt | Description |
 |:---|:---|
-| `courtlistener_research_topic` | Generate a structured legal research plan for a given legal topic or question |
+| `courtlistener_research_topic` | Generate a structured legal research plan for a topic or question |
 
 ## Capability reference
 
 ### `courtlistener_search_opinions` <sub>tool</sub>
 
-- Free-text field syntax (`caseName:`, `court_id:`, `judge:`, `docketNumber:`, `cites:(id)`) and boolean `AND / OR / NOT`; filter by court, date range, and publication status (Published / Unpublished / In-chambers, etc.)
-- Sort by relevance score (default), filing date, or citation count; cursor-based pagination, up to 20 results per call
-- Results include `cluster_id` (for `courtlistener_get_opinion`) and `docket_id` (for `courtlistener_get_docket`) for chaining
-- Each cluster carries its `opinions[]` variants — per-variant opinion ID, type, author, outbound cites, and a CourtListener-hosted `local_path` copy of the source document
-- `snippet` is the matched excerpt from the first variant that carries one; CourtListener does not mark which variant the search matched
+- `q` is required and takes CourtListener field syntax (`caseName:"roe v wade"`, `court_id:scotus`, `judge:"Alito"`) and `AND` / `OR` / `NOT`; filter by `court`, `filed_after` / `filed_before`, and `status`, and sort with `order_by` (`score desc` default, `dateFiled desc`, `dateFiled asc`, `citeCount desc`); 20 results per page, continued with `next_cursor`
+- Each result carries `cluster_id` (for `courtlistener_get_opinion` and `courtlistener_get_citations`), `docket_id`, `cite_count`, a `snippet`, and `opinions[]` variants with opinion ID, `type`, `author_id`, and `local_path`; `totalCount` and `effectiveQuery` report the match
 
 ---
 
 ### `courtlistener_get_opinion` <sub>tool</sub>
 
-- A cluster groups all opinions filed in a case: majority, concurrence, dissent, per curiam
-- Returns `html_text` and `plain_text` for each opinion variant; surfaces `download_url` when local text is absent
-- Each variant carries `type_label` — the same value `courtlistener_search_opinions` reports (`lead-opinion`, `concurrence-opinion`, `dissent`) — beside the stored `type` code, whose numeric prefix is a sort key
-- Includes `cites[]` (outbound citation IDs), `cite_count`, syllabus, posture, and docket link
-- Three upstream requests — the cluster, its opinion variants, and the linked docket for court and docket number — kept within the tight free-tier rate limit
+- `cluster_id` is required; after an outline response, `sections: ["opinion_<id>", ...]` pulls specific variants, and a name the cluster doesn't have fails as `unknown_section`
+- Cluster metadata (case name, `court_id`, citations, `cite_count`, `precedential_status`, syllabus, posture, `docket_id`) plus each variant's `html_text`, `plain_text`, `cites[]`, `download_url`, and `type_label`, the same label `courtlistener_search_opinions` reports
+- `kind` is `full`, or `outline` when the variants overflow the inline budget: the response then lists them as retrievable `opinion_<id>` sections and keeps the cluster metadata
 
 ---
 
 ### `courtlistener_get_citations` <sub>tool</sub>
 
-- `cited_by` (default): opinions that cite this one — measures precedential influence and downstream adoption
-- `citing`: opinions this one cites — reveals the authority chain the court relied on
-- Optional court and date filters; up to 20 results per call
-- Pagination differs by direction: `cited_by` follows CourtListener's own cursor with the filters applied, so its total and its pages describe the same set; `citing` walks the cited-opinion list and filters each page as it goes, so a filtered page can come back empty with matches still ahead — the response distinguishes that from an exhausted network
-- Rate-limit note: three upstream requests per call in either direction; the free tier supports 1–2 hops on a single case, and deep multi-hop traversal exhausts the daily budget quickly
+- `cluster_id` is required; `direction` is `cited_by` (default, opinions that cite this one) or `citing` (opinions it cites); optional `court` and `filed_after` filters; up to 20 results per page, continued with `cursor`
+- Rows carry `cluster_id`, `court_id`, `date_filed`, `cite_count`, and `snippet`; for `citing`, `totalCount` counts the unfiltered cited-opinion list, and a filtered page can come back empty while `next_cursor` is still set
 
 ---
 
 ### `courtlistener_lookup_citation` <sub>tool</sub>
 
-- Accepts standard reporter formats: "410 U.S. 113", "347 U.S. 483", "93 S. Ct. 705"
-- Returns `matches`, one entry per citation CourtListener extracted from the input — pass a passage and every citation in it resolves, each with its own `status` (200 one case, 300 several candidates, 400 unrecognized reporter, 404 no match) and decoded `status_label`
-- Each match carries the cases it resolved to: `cluster_id`, `case_name`, `court` / `court_id`, `court_resolution`, `docket_id`, `date_filed`, all known citation strings, `cite_count`, `precedential_status`, and `judges`
-- An unresolved or ambiguous citation comes back inside `matches`, not as an error — only text carrying no parseable citation at all fails
-- `court` is absent from the citation-lookup payload (the court lives on the linked docket), so it is resolved from `docket_id` — one extra request per distinct docket, bounded by `max_court_lookups` (default 4, up to 20; 0 skips court resolution). `court_resolution` (`resolved` / `no_docket` / `lookup_failed` / `over_budget`) says why a court is or isn't populated — only `over_budget` is worth retrying with a larger budget
-- One upstream POST to `/citation-lookup/` plus those court lookups, issued sequentially and stopped early on the first rate-limited response. The endpoint requires authentication and has no unauthenticated path
+- `citation` takes one citation or a passage of up to 64,000 characters, and every citation in it resolves; `max_court_lookups` (default 4, max 20, `0` to skip) caps the docket requests spent on court names
+- One `matches[]` entry per citation, with `status` (200 one case, 300 several candidates, 400 unrecognized reporter, 404 no match, 429 past the per-request citation cap) and `status_label`; each of its `clusters[]` carries `cluster_id`, `docket_id`, `court_id`, and `court_resolution` (`resolved`, `no_docket`, `lookup_failed`, `over_budget`, only the last worth retrying with a larger budget)
+- Unresolved citations come back as entries, not errors; only text with no parseable citation fails, as `not_found`. CourtListener meters this endpoint per citation submitted, separately from the per-request limits
 
 ---
 
 ### `courtlistener_search_dockets` <sub>tool</sub>
 
-- Query matched against case name, docket number, party names, and attorney names
-- `party_name` filter applies in addition to (AND with) the `q` query — more precise than embedding party names in the query
-- Returns the docket's `parties`, `attorneys`, and `firms`, plus nature of suit, jurisdiction type, and the referred magistrate judge
-- Returns up to 3 sample document entries per docket — a search excerpt, not the full filing list — each with `is_available` status, page count, and a fully-qualified RECAP storage URL when a copy is stored
-- `coverage_note` in every response — RECAP is crowd-sourced from PACER; completeness varies by court
+- `q` is required and matches case name, docket number, party, and attorney names; `party_name` (ANDed with `q`), `court`, and `filed_after` / `filed_before` narrow it; 20 results per page, continued with `next_cursor`
+- Each docket carries `docket_id`, `parties`, `attorneys`, `firms`, `suit_nature`, `assigned_to` / `referred_to`, and up to 3 `sample_documents` with `is_available` and a RECAP `filepath_local` URL; every response adds a `coverage_note` on RECAP's partial PACER coverage
 
 ---
 
 ### `courtlistener_get_docket` <sub>tool</sub>
 
-- Returns all available docket entries with document availability, page count, and RECAP file path
-- `entries_page_size` controls how many entries are returned (1–50); large cases have hundreds
-- Documents with `is_available: false` require a PACER account or CourtListener RECAP filing — document retrieval is not exposed
+- `docket_id` is required; entries come 20 per page (CourtListener ignores `entries_page_size`), walked with `entries_page`
+- Returns docket metadata, `total_entries`, `next_cursor` (the next `entries_page` number), and `entries[]` whose `documents[]` carry `is_available`, `page_count`, and `filepath_local`; documents with `is_available: false` need PACER, and fetching them is not exposed
 
 ---
 
 ### `courtlistener_get_parties` <sub>tool</sub>
 
-- Returns each party's name, docket-scoped role (Plaintiff, Defendant, Petitioner, Respondent, etc.), and the attorneys of record on this docket with contact information
-- Attorney roles are decoded to labels (`Lead attorney`, `Terminated`, …) alongside the raw code, with the date a relationship ended
-- Attorney names and contact details are resolved from the docket's attorney roster — 2 upstream requests per invocation, plus one for each extra roster page on a docket with a large attorney list
-- Paginate large party lists by passing a response's `next_cursor` back as `cursor` — this endpoint is cursor-paginated, so there is no page number to increment; `page_size` (max 10) is a request only, and CourtListener paginates at a fixed size that can return more parties than asked for
-- Obtain docket IDs from `courtlistener_search_dockets` or `courtlistener_get_docket`
+- `docket_id` is required; `cursor` takes the opaque `next_cursor` token, not a page number; `page_size` (max 10) is a request CourtListener may not honor
+- Each party carries `name`, its docket-scoped `role`, and `attorneys[]` with `name`, `contact_raw`, `role_code` / `role` (codes 5–9 mean no longer of record), and `date_action`; `total_parties` uses the upstream total when supplied, otherwise counts a single-page result or stays null
 
 ---
 
 ### `courtlistener_search_judges` <sub>tool</sub>
 
-- Filter by appointing president's last name, court ID, or political affiliation (`d/r/i/l/g/u`)
-- Returns `person_id` for chaining to `courtlistener_get_judge`, plus a `current_position` summary — court, position type, appointer, selection method, and start date — selected as the position with no termination date, or the latest-starting one when several or none qualify
-- Political affiliations and ABA ratings come back as expanded labels ("Democratic", "Well Qualified"), not the codes the `political_affiliation` filter takes
-- Court IDs from `courtlistener_lookup_courts` can be passed directly
+- `q` is required; filter by `appointer` (the president's last name), `court`, and `political_affiliation` (`d`, `r`, `i`, `l`, `g`, `u`); 20 results per page, continued with `next_cursor`
+- Results carry `person_id` (for `courtlistener_get_judge`), `political_affiliation` and `aba_rating` as labels rather than codes, and a `current_position`: the one with no termination date, or the latest-starting when several or none qualify
 
 ---
 
 ### `courtlistener_get_judge` <sub>tool</sub>
 
-- Position history: all courts served, position type, appointer, nomination date, confirmation date, termination reason — plus non-judicial roles, which carry no court and describe themselves in `job_title` and `organization_name`. `/positions/` is cursor-walked under a page bound; a `truncated` notice and `positionsShown`/`truncated` fields report when a long career ran past it
-- Position type, termination reason, and degree level come back decoded (`position_type_label`, `termination_reason_label`, `degree_label`) alongside the raw codes CourtListener's own filters take
-- Birth, death, and position dates carry the precision CourtListener recorded — `dob_granularity` and the per-position `date_start_granularity` read `year`, `month`, or `day`, and a year-only record renders as the year rather than the stored `YYYY-01-01` placeholder
-- Education records with school, degree, and year
-- Political affiliations with date ranges; ABA ratings; Federal Judicial Center ID for cross-referencing
+- `person_id` is required; positions are fetched up to a page bound, and `truncated` with `positionsShown` reports when a long record ran past it
+- Positions (judicial, plus non-judicial roles described by `job_title` and `organization_name`), education, political affiliations, ABA ratings, and `fjc_id`; coded fields keep the raw code beside a label (`position_type_label`, `termination_reason_label`, `degree_label`)
+- Dates carry the precision CourtListener recorded in `dob_granularity`, `dod_granularity`, `date_start_granularity`, and `date_termination_granularity` (`year`, `month`, or `day`)
 
 ---
 
 ### `courtlistener_lookup_courts` <sub>tool</sub>
 
-- Jurisdiction codes mirror CourtListener's own `Court.JURISDICTIONS` — federal appellate (`F`), federal district (`FD`), federal bankruptcy (`FB`), state supreme (`S`), state appellate (`SA`), plus the tribal, territory, and military benches. The full table is in the `courtlistener://reference/courts` resource
-- `status` selects which bench to return: `active` (the default) only the courts CourtListener still scrapes, `inactive` only the historical and defunct ones, `any` both. Upstream filters these as disjoint sets, so `any` is the only value that reaches the whole list
-- `has_opinion_scraper` filter useful for planning opinion searches — courts without scrapers have sparse coverage
-- Returns `id` (the `court_id` string for use in all search and filter parameters), citation string (e.g., "9th Cir."), and jurisdiction code
-- Page-number paginated at a **fixed 20 rows per page** — `/courts/` ignores any requested page size, so there is no way to pull a larger page. Enumerating a whole bench costs one call per 20 courts against a rate-limited free tier, and the inactive bench is several times larger than the active one: `status: 'any'` makes the full set reachable, not cheap
-- `all_matching_court_ids` returns the complete filtered id set from a bundled snapshot of every CourtListener court, at no request cost — covers the default bench and every jurisdiction filter. Empty (not a truncated prefix) when more than 1,000 courts match; check `all_matching_court_ids_complete` before reading emptiness as "no courts match"
+- Filter by `jurisdiction` (one of 22 CourtListener codes such as `F`, `FD`, `FB`, `S`, `SA`; the full table is in `courtlistener://reference/courts`), `status` (`active` default, `inactive`, or `any`), and `has_opinion_scraper`; live records come 20 per page, walked with `page`
+- `courts[]` carry `id` (the court ID every other tool filters on), `citation_string`, `jurisdiction`, and scraper flags; `all_matching_court_ids` lists every match from a bundled snapshot at no request cost, and is empty when more than 1,000 match, so check `all_matching_court_ids_complete`
 
 ---
 
 ### `courtlistener_search_oral_arguments` <sub>tool</sub>
 
-- Query matched against case name and transcribed argument text (where available)
-- Filters by court, argued-after, and argued-before date
-- Returns two MP3 links per recording — `download_url` at the originating court, and `local_path`, CourtListener's durable hosted copy — plus `duration_seconds`, `panel_ids` (chaining to `courtlistener_get_judge`), and transcript `snippet`
+- `q` is required and matches case name and transcript text; filter by `court` and `argued_after` / `argued_before`; 20 results per page, continued with `next_cursor`
+- Results carry `audio_id` (for `courtlistener_get_oral_argument`), `panel_ids` (for `courtlistener_get_judge`), `duration_seconds`, `snippet`, and two MP3 links: `download_url` at the originating court and `local_path`, CourtListener's durable copy
 
 ---
 
 ### `courtlistener_get_oral_argument` <sub>tool</sub>
 
-- Returns the speech-to-text `transcript` when transcription has completed, plus `panel_ids`, `duration_seconds`, MP3 `download_url`, and the linked `docket_id`
-- Audio IDs come from `courtlistener_search_oral_arguments` results
-- The argument date is not on this record — take it from the search result or the linked docket
+- `id` (an `audio_id` from a search) is required; `sections: ["transcript"]` pulls a transcript that an outline response withheld
+- Returns `panel_ids`, `duration_seconds`, `download_url`, `docket_id`, `has_transcript`, and `transcript`; `kind` is `outline` when the transcript overflows the inline budget. The argument date is not on this record; take it from the search result or the docket
 
 ---
 
 ### `courtlistener_search_financial_disclosures` <sub>tool</sub>
 
-- Filter by `judge_id` (a `person_id` from `courtlistener_search_judges`) and/or filing `year`
-- The `year` filter is applied to the fetched page only — CourtListener has no server-side year filter, so filings for that year on later pages are not included; page through with `cursor` (the response returns `next_cursor` even when the current page has no year match)
-- Returns per-filing category counts (investments, gifts, debts, positions, reimbursements, income), itemized gifts, and a link to the source PDF
-- Line-item investments — often hundreds per filing, with coded values — are summarized as counts; the linked PDF carries the full itemization
+- Filter by `judge_id` (a `person_id`) and `year`; 20 filings per page, continued with `cursor`. `year` filters only the fetched page, because CourtListener has no server-side year filter, so keep paging when a page comes back empty with `next_cursor` set
+- Each filing carries `disclosure_id`, `report_type`, `has_been_extracted`, `is_amended`, `pdf_url`, per-category `counts` (investments, gifts, debts, positions, reimbursements, agreements, non-investment and spouse income), and itemized `gifts`
 
 ---
 
 ### `courtlistener_get_financial_disclosure` <sub>tool</sub>
 
-- Keyed by `disclosure_id` (from a `courtlistener_search_financial_disclosures` result); one upstream call returns every category inline
-- Returns filing metadata, per-category counts, and the requested line-item rows — investments, debts, positions, reimbursements, non-investment and spouse income, agreements, and gifts
-- Coded income/value columns are decoded to readable dollar ranges (e.g. `N` → `$250,001 - $500,000`)
-- Pass `categories: [...]` to select specific categories; omit for all. When the full itemization is too large to inline, the response returns an outline of categories by size — re-call with `categories: [...]` to pull specific ones in full
+- `disclosure_id` is required; `categories` selects from `investments`, `debts`, `positions`, `reimbursements`, `non_investment_incomes`, `spouse_incomes`, `agreements`, and `gifts` (omit for all)
+- Returns filing metadata, `counts`, and the requested line-item rows, with coded value and income columns decoded to dollar ranges (`N` → `$250,001 - $500,000`); `kind` is `outline` when the full itemization overflows, listing categories by size for a `categories` re-call
 
 ---
 
 ### `courtlistener://reference/courts` <sub>resource</sub>
 
-- Static markdown reference: jurisdiction type codes, common court IDs, search type codes, the free-tier rate-limit reference, and the weekly maintenance window (Thursdays 21:00–23:59 PT)
-- Rendered from the same jurisdiction code set the `jurisdiction` filter on `courtlistener_lookup_courts` validates against, so the two cannot disagree
-- Compiled at build time and cached publicly for 24 hours — nothing here is tenant- or caller-specific
+- Markdown reference: the 22 jurisdiction codes (rendered from the set `courtlistener_lookup_courts` validates against), common court IDs, search type codes, the published free-tier rate limits, and the weekly maintenance window (Thursdays 21:00–23:59 PT)
+- Static content, cacheable publicly for 24 hours
 
 ---
 
 ### `courtlistener_research_topic` <sub>prompt</sub>
 
-- Arguments: `topic` required; `jurisdiction` optional (e.g. `"scotus"`, `"ca9"`); `depth` optional, `"overview"` (default, 3–5 key cases) or `"deep"` (adds citation-network traversal and judge lookup)
-- Returns a single user-role message laying out a step-by-step CourtListener research workflow and a findings template (key cases, precedent trajectory, research gaps)
+- Arguments: `topic` required; `jurisdiction` optional (a court ID such as `scotus` or `ca9`); `depth` optional, `overview` (default, 3–5 key cases) or `deep` (adds citation-network traversal and judge lookup)
+- Returns one user message laying out the research workflow and a findings template: key cases, precedent trajectory, research gaps
 
 ## Features
 
@@ -216,17 +185,17 @@ Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core): s
 
 CourtListener-specific:
 
-- Complete CourtListener REST API v4 integration — opinions, dockets, judges, courts, oral arguments, citation network
-- Rate-limit-aware client: 429 responses classified by window (minute / hour / day) with actionable error messages; retry with Retry-After respect
-- Pagination matched to each endpoint's own paginator — cursor-based on the `/search/`-backed tools and on parties/attorneys, page-number on the courts and docket-entry lists — with continuation surfaced on every response
-- RECAP coverage note surfaced on every docket search result — sets expectations on partial PACER mirror completeness
-- Tight upstream-call budget — most tools make 1–2 calls; opinion detail and citation traversal make three (resolving the linked docket, or the source cluster's opinion variants), plus one per extra page of variants on a case that filed many. Citation lookup is the ceiling at five, resolving up to four distinct dockets for their courts
+- CourtListener REST API v4: search, opinions and clusters, dockets and entries, parties and attorneys, people and positions, courts, audio, financial disclosures, and citation lookup
+- One request queue for the whole process, paced to `COURTLISTENER_RATE_LIMIT_PER_MINUTE` and `COURTLISTENER_RATE_LIMIT_PER_HOUR`, so a burst waits instead of failing; a 429 pauses the queue for every waiting call, and a `Retry-After` is honored within a 45-second wait budget
+- Request cost per call: one for most tools; two for `courtlistener_get_docket`; two or more for `courtlistener_get_parties` and `courtlistener_get_judge` (one per extra page of a long roster or career); three for `courtlistener_get_opinion` and `courtlistener_get_citations` (plus one per extra page of opinion variants); and for `courtlistener_lookup_citation`, the lookup plus up to `max_court_lookups` docket requests
+- Input that can't succeed (an empty `q`, a malformed date, a citation over 64,000 characters, an unknown oral argument section) is rejected before a request is spent
 
 Agent-friendly output:
 
-- Chaining IDs on every response — `cluster_id`, `docket_id`, and `person_id` fields are present wherever they enable a logical follow-up call, with field-level descriptions naming which tool to pass them to
-- Discriminated rate-limit errors — minute / hour / day throttle identified in structured error so agents can reason about retry timing, not just "try again later"
-- Coverage caveats inline — RECAP `coverage_note` and oral argument transcript `snippet` availability explicitly signaled so agents can communicate limitations to users rather than silently omitting them
+- Chaining IDs: `cluster_id`, `docket_id`, `person_id`, `audio_id`, and `disclosure_id` appear wherever they feed a follow-up call, with field descriptions naming the tool that takes each
+- Typed rate-limit errors: `reason: "rate_limited"` with `retryAfter` in seconds, whether CourtListener returned the 429 or the queue gave up before sending, in which case the message says no request was spent
+- Outlines instead of oversized payloads: `courtlistener_get_opinion`, `courtlistener_get_oral_argument`, and `courtlistener_get_financial_disclosure` return `kind: "outline"` with named sections to re-call for
+- Coverage caveats inline: RECAP `coverage_note`, `court_resolution` on citation lookups, `truncated` on position history, and notices when a page-local filter empties a page that has more pages behind it
 
 ## Getting started
 
@@ -247,7 +216,7 @@ A public instance is available at `https://courtlistener.caseyjhand.com/mcp` —
 
 ### Self-Hosted / Local
 
-Add the following to your MCP client configuration file. See [CourtListener account settings](https://www.courtlistener.com/profile/settings/) to generate a free API token.
+Add the following to your MCP client configuration file. Generate a free API token in your [CourtListener account settings](https://www.courtlistener.com/profile/settings/).
 
 ```json
 {
@@ -314,7 +283,7 @@ MCP_TRANSPORT_TYPE=http MCP_HTTP_PORT=3010 COURTLISTENER_API_TOKEN=... bun run s
 ### Prerequisites
 
 - [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+).
-- A CourtListener API token — free account at [courtlistener.com](https://www.courtlistener.com/sign-in/). CourtListener publishes free-tier limits of 5 req/min, 50 req/hr, 125 req/day; actual limits vary by token tier. [Free Law Project membership](https://free.law/donate/) unlocks higher limits.
+- A CourtListener API token from a free account at [courtlistener.com](https://www.courtlistener.com/sign-in/). The published free-tier limits are 5 requests per minute, 50 per hour, and 125 per day; actual limits vary by token tier, and [Free Law Project membership](https://free.law/donate/) raises them.
 
 ### Installation
 
@@ -345,25 +314,24 @@ cp .env.example .env
 
 ## Configuration
 
-All configuration is validated at startup via Zod schemas in `src/config/server-config.ts`. Key environment variables:
-
 | Variable | Description | Default |
-|:---------|:------------|:--------|
-| `COURTLISTENER_API_TOKEN` | **Required.** API token from your CourtListener account settings. CourtListener's published free-tier limits are 5 req/min, 50/hr, 125/day; actual limits vary by token tier. | — |
+|:---|:---|:---|
+| `COURTLISTENER_API_TOKEN` | **Required.** API token from your CourtListener account settings. | — |
 | `COURTLISTENER_BASE_URL` | API base URL override. | `https://www.courtlistener.com/api/rest/v4` |
-| `COURTLISTENER_RATE_LIMIT_PER_MINUTE` | Requests the server starts against CourtListener per rolling minute. Past the window, requests queue for a slot; a call whose wait would run past ~45s fails with the reset time instead of spending a request. Defaults track the published free tier — raise them to match a higher token tier. | `5` |
-| `COURTLISTENER_RATE_LIMIT_PER_HOUR` | Requests the server starts against CourtListener per rolling hour. | `50` |
+| `COURTLISTENER_RATE_LIMIT_PER_MINUTE` | Requests the server starts per rolling minute. Past it, requests queue; one that can't start within about 45 s fails with the reset time. Raise it to match a higher token tier. | `5` |
+| `COURTLISTENER_RATE_LIMIT_PER_HOUR` | Requests the server starts per rolling hour. | `50` |
 | `MCP_TRANSPORT_TYPE` | Transport: `stdio` or `http`. | `stdio` |
-| `MCP_SESSION_MODE` | HTTP session handling: `stateless`, `stateful`, or `auto` (resolves to `stateful`). The server declares `stateless` in `src/index.ts`; setting this overrides it. | `stateless` |
 | `MCP_HTTP_PORT` | HTTP server port. | `3010` |
-| `MCP_HTTP_ENDPOINT_PATH` | HTTP endpoint path. | `/mcp` |
-| `MCP_PUBLIC_URL` | Public origin for TLS-terminating reverse-proxy deployments. | — |
-| `MCP_AUTH_MODE` | Auth mode: `none`, `jwt`, or `oauth`. | `none` |
+| `MCP_SESSION_MODE` | HTTP session mode: `stateless`, `stateful`, or `auto`. The server declares `stateless`; setting this overrides it. | `stateless` |
+| `MCP_AUTH_MODE` | Authentication: `none`, `jwt`, or `oauth`. | `none` |
 | `MCP_LOG_LEVEL` | Log level (`debug`, `info`, `warning`, `error`, etc.). | `info` |
-| `MCP_GC_PRESSURE_INTERVAL_MS` | Opt-in Bun-only forced-GC pressure loop (ms). Try `60000` if RSS grows under sustained HTTP load. | `0` |
 | `LOGS_DIR` | Directory for log files (Node.js only). | `<project-root>/logs` |
 | `STORAGE_PROVIDER_TYPE` | Storage backend: `in-memory`, `filesystem`, `supabase`, `cloudflare-kv/r2/d1`. | `in-memory` |
-| `OTEL_ENABLED` | Enable [OpenTelemetry instrumentation](https://github.com/cyanheads/mcp-ts-core/tree/main/docs/telemetry). | `false` |
+| `OTEL_ENABLED` | Enable [OpenTelemetry](https://github.com/cyanheads/mcp-ts-core/tree/main/docs/telemetry). | `false` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Base endpoint for traces and metrics; appends `/v1/traces` and `/v1/metrics`. Without an endpoint, neither exports. | — |
+| `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` | Explicit endpoint for redacted OTLP logs; the base endpoint does not enable log export. | — |
+| `LOG_TOOL_FAILURE_PAYLOADS` | Log failed-call inputs and results with key-based redaction. | `false` |
+| `LOG_TOOL_FAILURE_PAYLOAD_MAX_BYTES` | Size cap for each logged failed-call payload. | `16384` |
 
 See [`.env.example`](./.env.example) for the full list of optional overrides.
 
@@ -403,13 +371,13 @@ The Dockerfile defaults to HTTP transport, stateless session mode, and logs to `
 ## Project structure
 
 | Directory | Purpose |
-|:----------|:--------|
-| `src/index.ts` | `createApp()` entry point — registers tools, resources, and prompts, and inits services. |
+|:---|:---|
+| `src/index.ts` | `createApp()` entry point: registers tools, resources, and prompts, and inits the service. |
 | `src/config` | Server-specific environment variable parsing and validation with Zod. |
-| `src/mcp-server/tools` | Tool definitions (`*.tool.ts`). 14 tools across opinions, citations, dockets, parties, judges, financial disclosures, courts, and oral arguments. |
-| `src/mcp-server/resources` | Resource definitions (`*.resource.ts`). |
-| `src/mcp-server/prompts` | Prompt definitions (`*.prompt.ts`). |
-| `src/services/courtlistener` | CourtListener REST API client — auth, retry, rate-limit error classification. |
+| `src/mcp-server/tools` | Tool definitions (`*.tool.ts`). 14 tools across opinions, citations, dockets, parties, judges, courts, oral arguments, and financial disclosures. |
+| `src/mcp-server/resources` | Resource definitions (`*.resource.ts`). Court reference resource. |
+| `src/mcp-server/prompts` | Prompt definitions (`*.prompt.ts`). Legal research prompt. |
+| `src/services/courtlistener` | CourtListener API client (request pacing, retry, error classification), code tables, and the bundled court snapshot (`bun run courts:snapshot` regenerates it). |
 | `tests/` | Unit and integration tests mirroring `src/`. |
 
 ## Development guide
@@ -418,7 +386,7 @@ See [`CLAUDE.md`](./CLAUDE.md) for development guidelines and architectural rule
 
 - Handlers throw, framework catches — no `try/catch` in tool logic
 - Use `ctx.log` for request-scoped logging, `ctx.state` for tenant-scoped storage
-- Register new tools, resources, and prompts by importing them in `src/index.ts` and adding to the `createApp({ tools, resources, prompts })` arrays
+- Register new tools, resources, and prompts by importing them in `src/index.ts` and adding them to the `createApp({ tools, resources, prompts })` arrays
 - Wrap CourtListener API calls: validate raw → normalize to domain type → return output schema; never fabricate missing fields
 
 ## Contributing
