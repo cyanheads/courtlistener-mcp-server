@@ -29,5 +29,6 @@ export function expandCode(
 ): string {
   if (code === null || code === undefined || code === '') return '';
   const key = String(code);
-  return labels[key.toLowerCase()] ?? key;
+  const normalized = key.toLowerCase();
+  return Object.hasOwn(labels, normalized) ? (labels[normalized] ?? key) : key;
 }

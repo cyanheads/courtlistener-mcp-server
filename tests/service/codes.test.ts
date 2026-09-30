@@ -34,4 +34,24 @@ describe('expandCode', () => {
     expect(expandCode(LABELS, null)).toBe('');
     expect(expandCode(LABELS, undefined)).toBe('');
   });
+
+  it.each(['constructor', 'CONSTRUCTOR', '__proto__', '__PROTO__', 'toString', 'hasOwnProperty'])(
+    'preserves the spelling of unmapped prototype name %s',
+    (code) => {
+      expect(expandCode(LABELS, code)).toBe(code);
+    },
+  );
+
+  it('ignores custom inherited labels after case normalization', () => {
+    const labels: Record<string, string> = Object.create({ newcode: 'Inherited label' });
+    labels.jud = 'Judge';
+    expect(expandCode(labels, 'NEWCODE')).toBe('NEWCODE');
+    expect(expandCode(labels, 'JUD')).toBe('Judge');
+  });
+
+  it('resolves legitimate own special-name labels without a blacklist', () => {
+    const labels = { constructor: 'Own constructor', ['__proto__']: 'Own prototype' };
+    expect(expandCode(labels, 'CONSTRUCTOR')).toBe('Own constructor');
+    expect(expandCode(labels, '__PROTO__')).toBe('Own prototype');
+  });
 });
