@@ -80,8 +80,7 @@ FROM oven/bun:1.4.2-slim AS production
 
 WORKDIR /usr/src/app
 
-# Set the environment to production for performance and to ensure only
-# production dependencies are installed.
+# Set the environment to production for performance.
 ENV NODE_ENV=production
 
 # OCI image metadata (https://github.com/opencontainers/image-spec/blob/main/annotations.md)
