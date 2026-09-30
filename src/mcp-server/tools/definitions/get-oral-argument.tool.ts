@@ -125,7 +125,6 @@ export const getOralArgumentTool = tool('courtlistener_get_oral_argument', {
         throw ctx.fail(
           'unknown_section',
           `Unknown sections value: ${unknown.join(', ')}. Valid sections: ${SECTION_NAMES.join(', ')}.`,
-          ctx.recoveryFor('unknown_section'),
         );
       }
     }

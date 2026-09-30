@@ -3,7 +3,7 @@
  * @module tests/tools/search-opinions.tool.test
  */
 
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { searchOpinionsTool } from '@/mcp-server/tools/definitions/search-opinions.tool.js';
 import type { CourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
@@ -85,6 +85,50 @@ const baseResult = {
 };
 
 describe('searchOpinionsTool', () => {
+  it('preserves nested opinion data on both contract response surfaces', async () => {
+    mockSvc.searchOpinions = vi.fn().mockResolvedValue(baseResult);
+    const result = await runToolContract(searchOpinionsTool, { q: 'abortion rights' });
+
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      results: [
+        { opinions: [{ id: 108713, cites: [105879, 106021] }] },
+        { opinions: [{ id: 112786, cites: [108713] }] },
+      ],
+      next_cursor: null,
+    });
+    const text = result.content
+      .filter((block) => block.type === 'text')
+      .map((block) => block.text)
+      .join('\n');
+    expect(text).toContain('108713');
+    expect(text).toContain('105879');
+    expect(text).toContain('106021');
+    expect(text).toContain('right of privacy');
+  });
+
+  it.each([
+    { q: ' ', reason: 'empty_query' },
+    { q: 'test', filed_after: '2020-02-31', reason: 'invalid_date' },
+  ])(
+    'renders the declared $reason recovery on both error surfaces',
+    async ({ reason, ...input }) => {
+      const result = await runToolContract(searchOpinionsTool, input);
+      const hint = searchOpinionsTool.errors!.find((entry) => entry.reason === reason)!.recovery;
+
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        error: { code: -32007, data: { reason, recovery: { hint } } },
+      });
+      expect(result.content).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ type: 'text', text: expect.stringContaining(hint) }),
+        ]),
+      );
+      expect(mockSvc.searchOpinions).not.toHaveBeenCalled();
+    },
+  );
+
   it('returns mapped opinion summaries and enriches total + echo for valid input', async () => {
     mockSvc.searchOpinions = vi.fn().mockResolvedValue(baseResult);
     const ctx = createMockContext({ errors: searchOpinionsTool.errors });

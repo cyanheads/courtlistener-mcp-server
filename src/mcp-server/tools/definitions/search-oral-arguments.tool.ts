@@ -104,6 +104,15 @@ export const searchOralArgumentsTool = tool('courtlistener_search_oral_arguments
 
   errors: [
     {
+      reason: 'invalid_query',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'CourtListener rejects caller-authored query or filter syntax with a recognized diagnostic.',
+      retryable: false,
+      recovery:
+        'Correct the query or filter syntax described by the diagnostic before searching again; check parentheses, quotes, proximity operators, wildcard patterns, and relative dates.',
+      thrownBy: 'service',
+    },
+    {
       reason: 'rate_limited',
       code: JsonRpcErrorCode.RateLimited,
       when: '429 from CourtListener, or no request slot opened within the wait budget.',
@@ -136,7 +145,6 @@ export const searchOralArgumentsTool = tool('courtlistener_search_oral_arguments
       throw ctx.fail(
         'empty_query',
         'The q parameter is empty or whitespace-only. Supply search terms — e.g. q: "qualified immunity".',
-        ctx.recoveryFor('empty_query'),
       );
     }
 
@@ -148,7 +156,6 @@ export const searchOralArgumentsTool = tool('courtlistener_search_oral_arguments
       throw ctx.fail(
         'invalid_date',
         `Invalid date filter: ${invalidDates.join(', ')}. ${ISO_DATE_HINT}`,
-        ctx.recoveryFor('invalid_date'),
       );
     }
 

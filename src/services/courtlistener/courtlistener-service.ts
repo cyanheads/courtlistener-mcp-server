@@ -11,6 +11,7 @@ import {
   notFound,
   rateLimited,
   serviceUnavailable,
+  validationError,
 } from '@cyanheads/mcp-ts-core/errors';
 import type { StorageService } from '@cyanheads/mcp-ts-core/storage';
 import type { Pacer, RequestContext } from '@cyanheads/mcp-ts-core/utils';
@@ -48,6 +49,43 @@ import type {
 import { idFromUri } from './uri.js';
 
 const REQUEST_TIMEOUT_MS = 30_000;
+const ERROR_BODY_LIMIT = 500;
+
+/** Exact query-validation messages from CourtListener's cl/search/exception.py. */
+const QUERY_VALIDATION_DETAILS = new Set([
+  'The query contains unbalanced parentheses.',
+  'The query contains unbalanced quotes.',
+  'The query contains an unrecognized proximity token.',
+  'The query contains a disallowed wildcard pattern.',
+  'The date entered has an invalid format.',
+]);
+
+/** Recognize only complete, bounded query diagnostics, never arbitrary backend errors. */
+function queryValidationDetail(body: unknown): string | undefined {
+  /**
+   * The fetch capture adds elision markers beyond its byte cap. Eliding inside a
+   * JSON string can leave parseable JSON, so parsing alone cannot establish completeness.
+   */
+  if (typeof body !== 'string' || new TextEncoder().encode(body).byteLength > ERROR_BODY_LIMIT) {
+    return;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return;
+  }
+  if (
+    !parsed ||
+    typeof parsed !== 'object' ||
+    Array.isArray(parsed) ||
+    !Object.hasOwn(parsed, 'detail')
+  ) {
+    return;
+  }
+  const { detail } = parsed as { detail: unknown };
+  return typeof detail === 'string' && QUERY_VALIDATION_DETAILS.has(detail) ? detail : undefined;
+}
 
 /**
  * How long one upstream request may wait for a pacer slot, and — once CourtListener
@@ -254,18 +292,38 @@ function notFoundForPath(path: string) {
  * manual status checks below can run — carrying `data.status` rather than the
  * machine-readable `data.reason` consumers route on, the upstream response body,
  * and a message naming the origin and path (the query string is masked, and no
- * request URL reaches client-facing `data`). Remap the not-found and rate-limit
- * cases to domain errors with a reason, the contract's recovery hint, and a
- * message carrying the path alone; pass everything else (already-classified
+ * request URL reaches client-facing `data`). Remap recognized caller-query,
+ * not-found and rate-limit cases to domain errors with a reason and a safe
+ * message; pass everything else (already-classified
  * domain errors, 5xx, timeouts) through untouched.
  */
-function classifyFetchError(err: unknown, path: string, ctx: Context): unknown {
+function classifyFetchError(
+  err: unknown,
+  path: string,
+  ctx: Context,
+  queryOrigin?: 'caller',
+): unknown {
   const e = err as {
     code?: number;
-    data?: { status?: number; reason?: string; retryAfter?: string };
+    data?: { status?: number; reason?: string; retryAfter?: string; body?: unknown };
   } | null;
   if (e?.data?.reason) return err; // already a domain error carrying a reason
   const status = e?.data?.status;
+  if (status === 400 && path === '/search/' && queryOrigin === 'caller') {
+    const detail = queryValidationDetail(e?.data?.body);
+    if (detail) {
+      return validationError(
+        `CourtListener rejected the search query: ${detail}`,
+        {
+          reason: 'invalid_query',
+          retryable: false,
+          status,
+          detail,
+        },
+        { cause: err },
+      );
+    }
+  }
   if (status === 404 || e?.code === JsonRpcErrorCode.NotFound) return notFoundForPath(path);
   if (status === 429 || e?.code === JsonRpcErrorCode.RateLimited) {
     // fetchWithTimeout already read CourtListener's Retry-After off the response and put it
@@ -435,6 +493,7 @@ export class CourtListenerService {
     path: string,
     params: Record<string, string | number | boolean | undefined>,
     ctx: Context,
+    queryOrigin?: 'caller',
   ): Promise<T> {
     const url = new URL(`${this.baseUrl}${path}`);
     for (const [k, v] of Object.entries(params)) {
@@ -455,10 +514,11 @@ export class CourtListenerService {
           // A 404 is a routine outcome of an agent-supplied ID, not a server fault —
           // log it at debug. The thrown, status-mapped error is unchanged.
           expectedStatuses: [404],
+          errorBodyLimit: ERROR_BODY_LIMIT,
         });
       } catch (err) {
         // fetchWithTimeout throws on non-2xx (status, no reason, upstream body) — remap it.
-        throw classifyFetchError(err, path, ctx);
+        throw classifyFetchError(err, path, ctx, queryOrigin);
       }
 
       // Only 2xx reaches here; a non-2xx already threw above.
@@ -541,7 +601,12 @@ export class CourtListenerService {
       if (key) query[key] = 'on';
     }
 
-    const data = await this.get<CourtListenerPage<OpinionSearchResult>>('/search/', query, ctx);
+    const data = await this.get<CourtListenerPage<OpinionSearchResult>>(
+      '/search/',
+      query,
+      ctx,
+      'caller',
+    );
 
     return {
       total: data.count,
@@ -614,7 +679,12 @@ export class CourtListenerService {
       cursor: params.cursor,
     };
 
-    const data = await this.get<CourtListenerPage<DocketSearchResult>>('/search/', query, ctx);
+    const data = await this.get<CourtListenerPage<DocketSearchResult>>(
+      '/search/',
+      query,
+      ctx,
+      'caller',
+    );
 
     return {
       total: data.count,
@@ -698,7 +768,12 @@ export class CourtListenerService {
       cursor: params.cursor,
     };
 
-    const data = await this.get<CourtListenerPage<PersonSearchResult>>('/search/', query, ctx);
+    const data = await this.get<CourtListenerPage<PersonSearchResult>>(
+      '/search/',
+      query,
+      ctx,
+      'caller',
+    );
 
     return {
       total: data.count,
@@ -803,7 +878,12 @@ export class CourtListenerService {
       cursor: params.cursor,
     };
 
-    const data = await this.get<CourtListenerPage<AudioSearchResult>>('/search/', query, ctx);
+    const data = await this.get<CourtListenerPage<AudioSearchResult>>(
+      '/search/',
+      query,
+      ctx,
+      'caller',
+    );
 
     return {
       total: data.count,

@@ -170,6 +170,15 @@ export const searchJudgesTool = tool('courtlistener_search_judges', {
 
   errors: [
     {
+      reason: 'invalid_query',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'CourtListener rejects caller-authored query or filter syntax with a recognized diagnostic.',
+      retryable: false,
+      recovery:
+        'Correct the query or filter syntax described by the diagnostic before searching again; check parentheses, quotes, proximity operators, wildcard patterns, and relative dates.',
+      thrownBy: 'service',
+    },
+    {
       reason: 'rate_limited',
       code: JsonRpcErrorCode.RateLimited,
       when: '429 from CourtListener, or no request slot opened within the wait budget.',
@@ -196,7 +205,6 @@ export const searchJudgesTool = tool('courtlistener_search_judges', {
       throw ctx.fail(
         'empty_query',
         'The q parameter is empty or whitespace-only. Supply search terms — e.g. q: "Sotomayor".',
-        ctx.recoveryFor('empty_query'),
       );
     }
 

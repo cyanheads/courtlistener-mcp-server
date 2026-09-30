@@ -143,7 +143,6 @@ export const getCitationsTool = tool('courtlistener_get_citations', {
       throw ctx.fail(
         'invalid_date',
         `Invalid date filter: ${invalidDates.join(', ')}. ${ISO_DATE_HINT}`,
-        ctx.recoveryFor('invalid_date'),
       );
     }
 

@@ -257,7 +257,6 @@ export const getOpinionTool = tool('courtlistener_get_opinion', {
         throw ctx.fail(
           'unknown_section',
           `Unknown sections value: ${unknown.join(', ')}. ${known}`,
-          ctx.recoveryFor('unknown_section'),
         );
       }
       const wanted = new Set(input.sections);

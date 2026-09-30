@@ -192,14 +192,12 @@ export const lookupCitationTool = tool('courtlistener_lookup_citation', {
       throw ctx.fail(
         'empty_citation',
         'The citation parameter is empty or whitespace-only. Supply a citation string — e.g. citation: "410 U.S. 113".',
-        ctx.recoveryFor('empty_citation'),
       );
     }
     if (input.citation.length > MAX_CITATION_TEXT_CHARS) {
       throw ctx.fail(
         'citation_too_long',
         `The citation parameter is ${input.citation.length} characters; CourtListener accepts at most ${MAX_CITATION_TEXT_CHARS}. Trim the passage or split it and look up each part separately.`,
-        ctx.recoveryFor('citation_too_long'),
       );
     }
 
