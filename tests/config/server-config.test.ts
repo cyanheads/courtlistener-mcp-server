@@ -7,6 +7,12 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+/**
+ * Loads the module's dependency graph while the file is collected, so no case pays
+ * the cold framework import inside its own timeout. `loadConfig()` still re-imports
+ * the module itself for a fresh memo.
+ */
+import '@/config/server-config.js';
 
 /** Re-imports the module so the memoized config is re-parsed against the stubbed env. */
 async function loadConfig() {
