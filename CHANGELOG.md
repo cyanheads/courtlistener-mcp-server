@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.7.3](changelog/0.7.x/0.7.3.md) — 2026-09-30
+
+Search queries CourtListener rejects for their syntax now fail as invalid_query with the upstream diagnostic and a recovery hint, and a coded value named like an inherited object property no longer fails courtlistener_get_judge or courtlistener_get_opinion.
+
 ## [0.7.2](changelog/0.7.x/0.7.2.md) — 2026-09-20
 
 Requests to CourtListener are now paced against the minute and hour rate-limit windows so a short burst waits instead of failing, rate_limited errors carry the tool's recovery hint, and both plugin manifests wire the API token through to the server.

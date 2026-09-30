@@ -1,6 +1,6 @@
 # courtlistener-mcp-server - Directory Structure
 
-Generated on: 2026-09-20 14:41:23
+Generated on: 2026-09-30 09:33:09
 
 ```text
 courtlistener-mcp-server/
@@ -134,6 +134,7 @@ courtlistener-mcp-server/
 │   ├── clean.ts
 │   ├── devcheck.ts
 │   ├── generate-court-names.ts
+│   ├── install-otel.ts
 │   ├── lint-mcp.ts
 │   ├── lint-packaging.ts
 │   ├── list-skills.ts
@@ -195,6 +196,8 @@ courtlistener-mcp-server/
 │   │   ├── jurisdictions.test.ts
 │   │   └── uri.test.ts
 │   ├── tools/
+│   │   ├── code-normalization-contracts.test.ts
+│   │   ├── error-recovery-contracts.test.ts
 │   │   ├── get-citations.tool.test.ts
 │   │   ├── get-docket.tool.test.ts
 │   │   ├── get-financial-disclosure.tool.test.ts
@@ -208,7 +211,8 @@ courtlistener-mcp-server/
 │   │   ├── search-financial-disclosures.tool.test.ts
 │   │   ├── search-judges.tool.test.ts
 │   │   ├── search-opinions.tool.test.ts
-│   │   └── search-oral-arguments.tool.test.ts
+│   │   ├── search-oral-arguments.tool.test.ts
+│   │   └── search-query-contracts.test.ts
 │   └── security.test.ts
 ├── .dockerignore
 ├── .env.example
