@@ -644,9 +644,9 @@ cursor: z.string().optional()
 ## Design Decisions
 
 **Rate limits drive everything.** At the published free-tier windows (5 req/min, 50/hr, 125/day), a single complex agent session can exhaust the daily budget. Consequences:
-- No workflow tool spends more than three upstream requests, plus one per extra page of opinion variants a cluster needs
+- Request costs are bounded per tool; party resolution spends one party request plus up to five attorney pages, subject to the local request budget
 - Page sizes accept positive requests but bound outgoing sizes (search/citations 20, parties 10, entries 50); metadata discloses requested, bounded and actual counts without trimming upstream pages
-- No "fetch related data" enrichment in responses that would auto-trigger extra calls
+- Optional docket and attorney enrichment reports completion separately from source availability
 - `courtlistener_get_citations` uses the search endpoint rather than paginating the `/opinions-cited/` REST endpoint across multiple pages; both directions first resolve the source cluster's opinion IDs, since the `cites:` index is keyed by opinion, not cluster
 - Deep citation traversal (multi-hop: "what cites X, then what cites those 10 cases") burns through daily budget in one session. The server exposes the tool correctly but the rate-limit constraint is a free-tier reality. Free Law Project membership ($10/mo) unlocks higher limits for research use.
 
@@ -654,11 +654,11 @@ cursor: z.string().optional()
 
 **Citation network via search, not dedicated endpoint.** The `/opinions-cited/` REST endpoint requires auth and consumes daily quota per page. The search API's `cites:(id)` filter returns rich metadata for the whole network from one search call. Both directions first resolve the cluster's opinion variants: `cites:` keys on opinion IDs, and `citing` reads the variants' `opinions_cited` lists. A normal invocation therefore costs three calls, plus any extra variant pages; exhausted outbound offsets skip the search.
 
-**No financial disclosures tool in v1.** The endpoint is public and interesting, but requires traversing a person ID → disclosure ID → investment/income sub-resources chain (3–4 calls minimum) with low structured-data density. Deferred to a future `courtlistener_get_financial_disclosure` tool.
+**Financial disclosure retrieval.** `courtlistener_search_financial_disclosures` supplies disclosure IDs; `courtlistener_get_financial_disclosure` fetches typed line items, decodes form codes, and pages oversized selected categories through bounded retrieval.
 
 **Clusters vs. opinions distinction.** The search API returns `cluster_id` (the grouping of all opinions in a case), not individual opinion IDs. The `get_opinion` tool returns the full cluster with all opinion variants (majority, dissent, concurrence). This matches user mental model — "get me Obergefell" means the whole decision, not one opinion type.
 
-**No oral argument detail tool.** Audio recordings return download URLs directly in search results — including `duration_seconds`, panel judge IDs, and `snippet` transcript text. A separate `get_oral_argument` tool would cost one request per recording with minimal additional data over what search already returns. Unlike opinions or dockets, there is no analysis workflow that needs to fetch an audio record's full details after discovery; the download URL is the deliverable. Deferred to v2 if demand arises.
+**Oral argument detail retrieval.** `courtlistener_get_oral_argument` takes an audio ID from search and returns recording metadata and the available transcript. Long transcripts and metadata follow the same bounded retrieval contract as opinions and disclosures.
 
 **Document retrieval not exposed.** RECAP documents with `is_available: true` have a `filepath_local` URL pointing to a stored PDF. Fetching and parsing PDFs adds significant handler complexity (binary fetch, format conversion) and is gated on PACER account status for unavailable documents. The tool surface surfaces document metadata and availability so agents know what exists — actual retrieval is left to the user.
 
