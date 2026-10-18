@@ -7,6 +7,12 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getCourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
 import { findInvalidDates, ISO_DATE_HINT } from '@/services/courtlistener/dates.js';
+import {
+  formatPageSizing,
+  PageSizing,
+  pageSizing,
+} from '@/services/courtlistener/page-metadata.js';
+import { escapeText, readableText } from '@/services/courtlistener/readable-text.js';
 import { toStorageUrl } from '@/services/courtlistener/uri.js';
 
 export const searchOpinionsTool = tool('courtlistener_search_opinions', {
@@ -52,7 +58,7 @@ export const searchOpinionsTool = tool('courtlistener_search_opinions', {
       ])
       .optional()
       .describe(
-        'Opinion publication status. "Published": precedential. "Unpublished": not citable as precedent in most jurisdictions. "Errata": corrections. "Separate": separate opinion filed outside main cluster. "In-chambers": single-justice order. "Relating-to": companion or related-case order. Omit to search all statuses.',
+        'Opinion publication status. "Published": precedential. "Unpublished": not citable as precedent in most jurisdictions. "Errata": corrections. "Separate": separate opinion filed outside main cluster. "In-chambers": single-justice order. "Relating-to": companion or related-case order. Omit to use CourtListener’s Published default.',
       ),
     order_by: z
       .enum(['score desc', 'dateFiled desc', 'dateFiled asc', 'citeCount desc'])
@@ -65,11 +71,10 @@ export const searchOpinionsTool = tool('courtlistener_search_opinions', {
       .number()
       .int()
       .min(1)
-      .max(20)
       .optional()
       .default(20)
       .describe(
-        'Number of results to request (default 20). CourtListener search enforces a minimum of 20 results per page regardless of the value passed — you will always receive at least 20 results. Each search costs one request against the rate limit.',
+        'Positive requested page size (default 20), bounded to 20 before retrieval. Upstream search has a 20-row minimum; empty and final pages can be smaller. Full upstream pages and continuation are preserved; page_sizing reports requested, bounded and actual sizes.',
       ),
     cursor: z
       .string()
@@ -80,6 +85,7 @@ export const searchOpinionsTool = tool('courtlistener_search_opinions', {
   }),
 
   output: z.object({
+    page_sizing: PageSizing.optional(),
     results: z
       .array(
         z
@@ -248,7 +254,7 @@ export const searchOpinionsTool = tool('courtlistener_search_opinions', {
         filed_before: input.filed_before,
         status: input.status,
         order_by: input.order_by,
-        page_size: input.page_size,
+        page_size: Math.min(input.page_size, 20),
         cursor: input.cursor,
       },
       ctx,
@@ -271,7 +277,7 @@ export const searchOpinionsTool = tool('courtlistener_search_opinions', {
         status: r.status ?? '',
         // v4 carries the matched excerpt per opinion variant, never on the cluster row.
         // Nothing marks which variant matched, so take the first that has one.
-        snippet: variants.find((o) => o.snippet)?.snippet ?? '',
+        snippet: readableText(variants.find((o) => o.snippet)?.snippet ?? ''),
         opinions: variants.map((o) => ({
           id: o.id,
           type: o.type ?? '',
@@ -303,12 +309,17 @@ export const searchOpinionsTool = tool('courtlistener_search_opinions', {
       );
     }
 
-    return { results, next_cursor: data.nextCursor };
+    return {
+      results,
+      next_cursor: data.nextCursor,
+      page_sizing: pageSizing(input.page_size, 20, results.length, 'minimum_20'),
+    };
   },
 
   format: (result) => {
     const lines: string[] = [
       `## CourtListener Opinion Search`,
+      formatPageSizing(result.page_sizing),
       `**Returned:** ${result.results.length}`,
     ];
 
@@ -334,7 +345,7 @@ export const searchOpinionsTool = tool('courtlistener_search_opinions', {
         lines.push(`**Citation strings:** ${r.citations.join(', ')}`);
       }
       if (r.judges) lines.push(`**Judges:** ${r.judges}`);
-      if (r.snippet) lines.push(`*${r.snippet}*`);
+      if (r.snippet) lines.push(`*${escapeText(r.snippet)}*`);
 
       if (r.opinions.length > 0) {
         lines.push('**Opinions in this cluster:**');

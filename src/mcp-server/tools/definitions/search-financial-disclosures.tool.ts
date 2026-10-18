@@ -6,6 +6,11 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getCourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
+import {
+  formatPageSizing,
+  PageSizing,
+  pageSizing,
+} from '@/services/courtlistener/page-metadata.js';
 import { personIdFromUri } from '@/services/courtlistener/uri.js';
 
 /** Disclosure report-type codes from CourtListener. */
@@ -42,11 +47,10 @@ export const searchFinancialDisclosuresTool = tool('courtlistener_search_financi
       .number()
       .int()
       .min(1)
-      .max(20)
       .optional()
       .default(20)
       .describe(
-        'Number of filings to request (default 20). CourtListener enforces a minimum of 20 results per page regardless of the value passed — you will always receive at least 20 filings.',
+        'Positive requested page size (default 20), bounded to 20. Upstream has a minimum of 20; final pages and page-local year filtering can return fewer. Full fetched pages and continuation are preserved; page_sizing reports returned sizes.',
       ),
     cursor: z
       .string()
@@ -55,6 +59,7 @@ export const searchFinancialDisclosuresTool = tool('courtlistener_search_financi
   }),
 
   output: z.object({
+    page_sizing: PageSizing.optional(),
     results: z
       .array(
         z
@@ -155,7 +160,7 @@ export const searchFinancialDisclosuresTool = tool('courtlistener_search_financi
     const data = await svc.searchFinancialDisclosures(
       {
         person: input.judge_id,
-        page_size: input.page_size,
+        page_size: Math.min(input.page_size, 20),
         cursor: input.cursor,
       },
       ctx,
@@ -216,11 +221,19 @@ export const searchFinancialDisclosuresTool = tool('courtlistener_search_financi
       }
     }
 
-    return { results, next_cursor: data.nextCursor };
+    return {
+      results,
+      next_cursor: data.nextCursor,
+      page_sizing: pageSizing(input.page_size, 20, results.length, 'minimum_20'),
+    };
   },
 
   format: (result) => {
-    const lines: string[] = [`## Financial Disclosures`, `**Returned:** ${result.results.length}`];
+    const lines: string[] = [
+      `## Financial Disclosures`,
+      formatPageSizing(result.page_sizing),
+      `**Returned:** ${result.results.length}`,
+    ];
 
     if (result.results.length === 0) {
       lines.push('\n> No financial disclosure filings matched the filters.');

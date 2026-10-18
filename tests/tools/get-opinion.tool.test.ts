@@ -3,7 +3,8 @@
  * @module tests/tools/get-opinion.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
+import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getOpinionTool } from '@/mcp-server/tools/definitions/get-opinion.tool.js';
 import type { CourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
@@ -57,6 +58,95 @@ const baseCluster: OpinionCluster = {
 };
 
 describe('getOpinionTool', () => {
+  it('carries capped completion through selection and text output', async () => {
+    mockSvc.getOpinionCluster = vi.fn().mockResolvedValue({
+      ...baseCluster,
+      variants_completion: { complete: false, next_cursor: 'variant-next' },
+    });
+    const result = await getOpinionTool.handler(
+      getOpinionTool.input.parse({ cluster_id: 100, sections: ['opinion_1000'] }),
+      createMockContext({ errors: getOpinionTool.errors }),
+    );
+    expect(result.variants_completion).toEqual({ complete: false, next_cursor: 'variant-next' });
+    expect(
+      getOpinionTool.format!(result)
+        .map((block) => (block.type === 'text' ? block.text : ''))
+        .join('\n'),
+    ).toContain('variant\\-next');
+    const response = await runToolContract(getOpinionTool, { cluster_id: 100 });
+    expect(response.structuredContent).toMatchObject({
+      variants_completion: { complete: false, next_cursor: 'variant-next' },
+      docket_enrichment: { status: 'resolved' },
+    });
+    expect(
+      response.content.map((block) => (block.type === 'text' ? block.text : '')).join('\n'),
+    ).toContain('upstream variant cursor=variant\\-next');
+  });
+
+  it.each([
+    [null, 'resolved', 'resolved'],
+    [{ court_id: '', docket_number: '' }, 'source_fields_absent', 'source\\_fields\\_absent'],
+  ] as const)('reports successful docket lookup state %s', async (summary, status, displayed) => {
+    mockSvc.getOpinionCluster = vi.fn().mockResolvedValue(baseCluster);
+    if (summary) mockSvc.getDocketSummary = vi.fn().mockResolvedValue(summary);
+    const result = await getOpinionTool.handler(
+      getOpinionTool.input.parse({ cluster_id: 100 }),
+      createMockContext({ errors: getOpinionTool.errors }),
+    );
+    expect(result.docket_enrichment?.status).toBe(status);
+    expect(
+      getOpinionTool.format!(result)
+        .map((block) => (block.type === 'text' ? block.text : ''))
+        .join('\n'),
+    ).toContain(displayed);
+  });
+
+  it('reports absent docket links without requesting a summary', async () => {
+    mockSvc.getOpinionCluster = vi
+      .fn()
+      .mockResolvedValue({ ...baseCluster, docket_id: 0, docket: '' });
+    const result = await getOpinionTool.handler(
+      getOpinionTool.input.parse({ cluster_id: 100 }),
+      createMockContext({ errors: getOpinionTool.errors }),
+    );
+    expect(result.docket_enrichment?.status).toBe('not_linked');
+    expect(mockSvc.getDocketSummary).not.toHaveBeenCalled();
+  });
+
+  it.each([JsonRpcErrorCode.NotFound, JsonRpcErrorCode.ServiceUnavailable])(
+    'sanitizes docket failure %s and preserves source court',
+    async (code) => {
+      mockSvc.getOpinionCluster = vi
+        .fn()
+        .mockResolvedValue({ ...baseCluster, court: 'Source court' });
+      mockSvc.getDocketSummary = vi
+        .fn()
+        .mockRejectedValue(new McpError(code, 'credential=PRIVATE', { body: 'PRIVATE' }));
+      const result = await getOpinionTool.handler(
+        getOpinionTool.input.parse({ cluster_id: 100 }),
+        createMockContext({ errors: getOpinionTool.errors }),
+      );
+      expect(result.court).toBe('Source court');
+      expect(result.docket_enrichment).toEqual({
+        status: 'lookup_failed',
+        error_code: code,
+        reason: code === JsonRpcErrorCode.NotFound ? 'not_found' : 'lookup_failed',
+      });
+      expect(JSON.stringify([result, getOpinionTool.format!(result)])).not.toContain('PRIVATE');
+    },
+  );
+
+  it('propagates cancellation from optional docket lookup', async () => {
+    mockSvc.getOpinionCluster = vi.fn().mockResolvedValue(baseCluster);
+    const failure = new McpError(JsonRpcErrorCode.RequestCancelled, 'Cancelled');
+    mockSvc.getDocketSummary = vi.fn().mockRejectedValue(failure);
+    await expect(
+      getOpinionTool.handler(
+        getOpinionTool.input.parse({ cluster_id: 100 }),
+        createMockContext({ errors: getOpinionTool.errors }),
+      ),
+    ).rejects.toBe(failure);
+  });
   it('returns full cluster metadata for valid cluster_id', async () => {
     mockSvc.getOpinionCluster = vi.fn().mockResolvedValue(baseCluster);
     const ctx = createMockContext({ errors: getOpinionTool.errors });
@@ -197,7 +287,7 @@ describe('getOpinionTool', () => {
       const result = await getOpinionTool.handler(input, ctx);
       const text = (getOpinionTool.format!(result)[0] as { text: string }).text;
 
-      expect(text).toContain('### Opinion (concurrence-opinion)');
+      expect(text).toContain('### Opinion (concurrence\\-opinion)');
       expect(text).not.toContain('### Opinion (030concurrence)');
       expect(text).toContain('**Type code:** 030concurrence');
     });
@@ -262,8 +352,7 @@ describe('getOpinionTool', () => {
     expect(result.opinions?.[1]?.html_text).toBe('<opinion>dissent via harvard</opinion>');
     // combined: both html and html_with_citations present → citation-linked variant preferred
     expect(result.opinions?.[2]?.html_text).toBe('<p>combined via citations</p>');
-    // plain_text stays its own (empty) field, not backfilled from the HTML variants
-    expect(result.opinions?.[0]?.plain_text).toBe('');
+    expect(result.opinions?.[0]?.plain_text).toBe('lead opinion via citations');
   });
 
   it('extracts docket_id from docket URI when not directly provided', async () => {
@@ -341,7 +430,7 @@ describe('getOpinionTool', () => {
       // one section per opinion variant, named opinion_<id>
       const names = (result.sections ?? []).map((s) => s.name);
       expect(names).toEqual(expect.arrayContaining(['opinion_111', 'opinion_222']));
-      expect(result.retrieval_notice).toContain('opinion_');
+      expect(result.retrieval_notice).toContain('retrieval.next_cursor');
       // cheap cluster metadata survives overflow — present in every response
       expect(result.cluster_id).toBe(100);
       expect(result.case_name).toBe('Roe v. Wade');
@@ -352,16 +441,16 @@ describe('getOpinionTool', () => {
       expect(() => getOpinionTool.output.parse(result)).not.toThrow();
     });
 
-    it('returns a selected opinion variant in full on a section re-call', async () => {
+    it('bounds a selected opinion variant on a section re-call', async () => {
       mockSvc.getOpinionCluster = vi.fn().mockResolvedValue(overflowCluster);
       const ctx = createMockContext({ errors: getOpinionTool.errors });
       const input = getOpinionTool.input.parse({ cluster_id: 100, sections: ['opinion_222'] });
       const result = await getOpinionTool.handler(input, ctx);
 
-      expect(result.kind).toBe('full');
-      expect(result.opinions).toHaveLength(1);
-      expect(result.opinions?.[0]?.id).toBe(222);
-      expect(result.opinions?.[0]?.html_text).toContain('opinion body text');
+      expect(result.kind).toBe('outline');
+      expect(result.opinions).toBeUndefined();
+      expect(result.sections?.map((section) => section.name)).toContain('opinion_222');
+      expect(result.retrieval?.next_cursor).toEqual(expect.any(String));
       // cheap metadata still present alongside the selected variant
       expect(result.case_name).toBe('Roe v. Wade');
       expect(() => getOpinionTool.output.parse(result)).not.toThrow();
@@ -440,10 +529,10 @@ describe('getOpinionTool', () => {
     const blocks = getOpinionTool.format!(output);
     const text = (blocks[0] as { text: string }).text;
     expect(text).toContain('100');
-    expect(text).toContain('Roe v. Wade');
+    expect(text).toContain('Roe v\\. Wade');
     expect(text).toContain('scotus');
     // case_name_full must be rendered
-    expect(text).toContain('Roe v. Wade (Full Title)');
+    expect(text).toContain('Roe v\\. Wade \\(Full Title\\)');
     // html_text must be rendered when plain_text is empty
     expect(text).toContain('HTML opinion text here');
     // #38 — the kind discriminator must reach content[], not just structuredContent
@@ -588,12 +677,12 @@ describe('getOpinionTool', () => {
     const blocks = getOpinionTool.format!(output);
     const text = blocks.map((b) => (b as { text: string }).text).join('\n');
     // cheap metadata rendered even in outline mode (survives overflow on content[] too)
-    expect(text).toContain('Roe v. Wade');
-    expect(text).toContain('410 U.S. 113');
+    expect(text).toContain('Roe v\\. Wade');
+    expect(text).toContain('410 U\\.S\\. 113');
     // outline section list + notice rendered
-    expect(text).toContain('opinion_9425157');
+    expect(text).toContain('opinion\\_9425157');
     expect(text).toContain('sections available');
-    expect(text).toContain('Re-call with sections');
+    expect(text).toContain('Re\\-call with sections');
     // #38 — the outline arm must label its mode too
     expect(text).toContain('**Response mode:** outline');
   });

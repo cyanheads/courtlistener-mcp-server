@@ -19,8 +19,10 @@ import {
   createPacer,
   defaultIsTransient,
   fetchWithTimeout,
+  withExtra,
   withRetry,
 } from '@cyanheads/mcp-ts-core/utils';
+import { citingOffset } from './citing-offset.js';
 import { expandCode } from './codes.js';
 import { resolveCourtName } from './court-names.js';
 import type {
@@ -291,7 +293,7 @@ function notFoundForPath(path: string) {
  * `fetchWithTimeout` throws an McpError on every non-2xx response BEFORE the
  * manual status checks below can run — carrying `data.status` rather than the
  * machine-readable `data.reason` consumers route on, the upstream response body,
- * and a message naming the origin and path (the query string is masked, and no
+ * and a message naming only the origin (the path and query are masked, and no
  * request URL reaches client-facing `data`). Remap recognized caller-query,
  * not-found and rate-limit cases to domain errors with a reason and a safe
  * message; pass everything else (already-classified
@@ -501,21 +503,26 @@ export class CourtListenerService {
       url.searchParams.set(k, String(v));
     }
     const fullUrl = url.toString();
-    ctx.log.debug('CourtListener GET', { url: fullUrl });
+    ctx.log.debug('CourtListener GET', { endpoint: path });
 
     return this.paced('CourtListenerService.get', ctx, async (signal) => {
       let response: Response;
       try {
-        response = await fetchWithTimeout(fullUrl, REQUEST_TIMEOUT_MS, asRequestContext(ctx), {
-          // The pacer hands back the retry deadline's signal, so an expiry stops a
-          // request already in flight rather than only the one after it.
-          signal,
-          headers: this.headers(),
-          // A 404 is a routine outcome of an agent-supplied ID, not a server fault —
-          // log it at debug. The thrown, status-mapped error is unchanged.
-          expectedStatuses: [404],
-          errorBodyLimit: ERROR_BODY_LIMIT,
-        });
+        response = await fetchWithTimeout(
+          fullUrl,
+          REQUEST_TIMEOUT_MS,
+          withExtra(asRequestContext(ctx), { endpoint: path }),
+          {
+            // The pacer hands back the retry deadline's signal, so an expiry stops a
+            // request already in flight rather than only the one after it.
+            signal,
+            headers: this.headers(),
+            // A 404 is a routine outcome of an agent-supplied ID, not a server fault —
+            // log it at debug. The thrown, status-mapped error is unchanged.
+            expectedStatuses: [404],
+            errorBodyLimit: ERROR_BODY_LIMIT,
+          },
+        );
       } catch (err) {
         // fetchWithTimeout throws on non-2xx (status, no reason, upstream body) — remap it.
         throw classifyFetchError(err, path, ctx, queryOrigin);
@@ -535,20 +542,25 @@ export class CourtListenerService {
   /** POST with JSON body. */
   private post<T>(path: string, body: unknown, ctx: Context): Promise<T> {
     const fullUrl = `${this.baseUrl}${path}`;
-    ctx.log.debug('CourtListener POST', { url: fullUrl });
+    ctx.log.debug('CourtListener POST', { endpoint: path });
 
     return this.paced('CourtListenerService.post', ctx, async (signal) => {
       let response: Response;
       try {
-        response = await fetchWithTimeout(fullUrl, REQUEST_TIMEOUT_MS, asRequestContext(ctx), {
-          method: 'POST',
-          signal,
-          headers: { ...this.headers(), 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-          // A 404 here means the citation isn't in the corpus — an expected lookup
-          // outcome, so log it at debug. The thrown error is unchanged.
-          expectedStatuses: [404],
-        });
+        response = await fetchWithTimeout(
+          fullUrl,
+          REQUEST_TIMEOUT_MS,
+          withExtra(asRequestContext(ctx), { endpoint: path }),
+          {
+            method: 'POST',
+            signal,
+            headers: { ...this.headers(), 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+            // A 404 here means the citation isn't in the corpus — an expected lookup
+            // outcome, so log it at debug. The thrown error is unchanged.
+            expectedStatuses: [404],
+          },
+        );
       } catch (err) {
         // fetchWithTimeout throws on non-2xx (status, no reason, upstream body) — remap it.
         throw classifyFetchError(err, path, ctx);
@@ -593,8 +605,8 @@ export class CourtListenerService {
         Unpublished: 'stat_Unpublished',
         Errata: 'stat_Errata',
         Separate: 'stat_Separate',
-        'In-chambers': 'stat_In_chambers',
-        'Relating-to': 'stat_Relating_to_cases',
+        'In-chambers': 'stat_In-chambers',
+        'Relating-to': 'stat_Relating-to',
         Unknown: 'stat_Unknown',
       };
       const key = statusMap[params.status];
@@ -651,6 +663,7 @@ export class CourtListenerService {
       });
     }
     data.sub_opinions = subOpinions;
+    data.variants_completion = { complete: cursor === null, next_cursor: cursor };
     return data;
   }
 
@@ -715,13 +728,9 @@ export class CourtListenerService {
       ctx,
     );
     data.docket_entries = entries.results;
-    // /docket-entries/ returns `count` as a URL string when its count isn't cached (like
-    // /parties/) — keep only a numeric count so total_entries stays a number; the tool falls
-    // back to the fetched page length otherwise.
+    // A count URL or absent count leaves the total unknown, independently of page length.
     const rawCount: unknown = entries.count;
-    if (typeof rawCount === 'number') {
-      data.docket_entries_count = rawCount;
-    }
+    data.docket_entries_count = typeof rawCount === 'number' ? rawCount : null;
     // `next` is a `...&page=N` URL (no cursor token), so signal the next page by number when
     // upstream reports more entries exist — mirrors getParties' next_cursor derivation.
     data.docket_entries_next_page = entries.next ? String(entriesPage + 1) : null;
@@ -915,13 +924,20 @@ export class CourtListenerService {
     results: OpinionSearchResult[];
     nextCursor: string | null;
     sourceCaseName: string | null;
+    sourceCompletion: OpinionCluster['variants_completion'];
   }> {
     const cluster = await this.getOpinionCluster(params.clusterId, ctx);
     const sourceCaseName = cluster.case_name ?? null;
     const opinionIds = cluster.sub_opinions.map((op) => op.id);
 
     if (opinionIds.length === 0) {
-      return { total: 0, results: [], nextCursor: null, sourceCaseName };
+      return {
+        total: 0,
+        results: [],
+        nextCursor: null,
+        sourceCaseName,
+        sourceCompletion: cluster.variants_completion,
+      };
     }
 
     const query: Record<string, string | number | boolean | undefined> = {
@@ -940,6 +956,7 @@ export class CourtListenerService {
       results: data.results,
       nextCursor: extractCursor(data.next),
       sourceCaseName,
+      sourceCompletion: cluster.variants_completion,
     };
   }
 
@@ -965,7 +982,9 @@ export class CourtListenerService {
     results: OpinionSearchResult[];
     nextCursor: string | null;
     sourceCaseName: string | null;
+    sourceCompletion: OpinionCluster['variants_completion'];
   }> {
+    const offset = citingOffset(params.cursor);
     const cluster = await this.getOpinionCluster(params.clusterId, ctx);
     const sourceCaseName = cluster.case_name ?? null;
 
@@ -979,14 +998,19 @@ export class CourtListenerService {
       )
       .filter((id, i, arr) => arr.indexOf(id) === i);
 
-    if (citedIds.length === 0) {
-      return { total: 0, results: [], nextCursor: null, sourceCaseName };
+    if (offset >= citedIds.length) {
+      return {
+        total: citedIds.length,
+        results: [],
+        nextCursor: null,
+        sourceCaseName,
+        sourceCompletion: cluster.variants_completion,
+      };
     }
 
     const pageSize = params.page_size ?? 10;
     // Cursor is an offset into the already-computed cited-ID list — wire it so pages advance
     // (the IDs are all in hand; no extra upstream call needed to paginate).
-    const offset = params.cursor ? parseInt(params.cursor, 10) : 0;
     const pageIds = citedIds.slice(offset, offset + pageSize);
     const query: Record<string, string | number | boolean | undefined> = {
       q: pageIds.map((id) => `id:(${id})`).join(' OR '),
@@ -1003,6 +1027,7 @@ export class CourtListenerService {
       results: data.results,
       nextCursor: offset + pageSize < citedIds.length ? String(offset + pageSize) : null,
       sourceCaseName,
+      sourceCompletion: cluster.variants_completion,
     };
   }
 
@@ -1224,7 +1249,16 @@ export class CourtListenerService {
     cursor: string | undefined,
     pageSize: number,
     ctx: Context,
-  ): Promise<{ count: number | null; next_cursor: string | null; parties: Party[] }> {
+  ): Promise<{
+    count: number | null;
+    next_cursor: string | null;
+    parties: Party[];
+    attorney_resolution: {
+      status: 'resolved' | 'exhausted' | 'capped';
+      unresolved_ids: number[];
+      next_cursor: string | null;
+    };
+  }> {
     // Raw /parties/ shape from the upstream API
     type RawParty = {
       id: number;
@@ -1268,11 +1302,24 @@ export class CourtListenerService {
     const unresolved = new Set(allAttorneyIds);
     let attorneyCursor: string | null = null;
     for (let fetched = 0; fetched < ATTORNEY_PAGE_LIMIT && unresolved.size > 0; fetched++) {
-      const attPage = await this.get<CourtListenerPage<AttorneyDetail>>(
-        '/attorneys/',
-        { docket: docketId, cursor: attorneyCursor ?? undefined },
-        ctx,
-      );
+      let attPage: CourtListenerPage<AttorneyDetail>;
+      try {
+        attPage = await this.get<CourtListenerPage<AttorneyDetail>>(
+          '/attorneys/',
+          { docket: docketId, cursor: attorneyCursor ?? undefined },
+          ctx,
+        );
+      } catch (error) {
+        if (
+          fetched > 0 &&
+          !ctx.signal?.aborted &&
+          error instanceof McpError &&
+          error.cause instanceof McpError &&
+          error.cause.data?.reason === 'pacer_shed'
+        )
+          break;
+        throw error;
+      }
       for (const att of attPage.results) {
         if (unresolved.delete(att.id)) attorneyMap.set(att.id, att);
       }
@@ -1284,7 +1331,6 @@ export class CourtListenerService {
       ctx.log.warning('Attorney detail unresolved after the page walk', {
         docketId,
         unresolved: unresolved.size,
-        pagesWalked: ATTORNEY_PAGE_LIMIT,
       });
     }
 
@@ -1298,6 +1344,11 @@ export class CourtListenerService {
         const detail = attorneyMap.get(rel.attorney_id);
         return {
           attorney_id: rel.attorney_id,
+          resolution: detail
+            ? ('resolved' as const)
+            : attorneyCursor
+              ? ('not_fetched' as const)
+              : ('not_found' as const),
           name: detail?.name ?? '',
           contact_raw: detail?.contact_raw ?? '',
           role_code: rel.role ?? null,
@@ -1329,6 +1380,11 @@ export class CourtListenerService {
 
     return {
       count,
+      attorney_resolution: {
+        status: unresolved.size === 0 ? 'resolved' : attorneyCursor ? 'capped' : 'exhausted',
+        unresolved_ids: [...unresolved],
+        next_cursor: attorneyCursor,
+      },
       // Cursor-paginated: `next` carries an opaque `cursor=` token, so hand that token
       // straight back — the same derivation used for /attorneys/ above.
       next_cursor: extractCursor(pageData.next),

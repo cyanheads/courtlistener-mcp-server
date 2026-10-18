@@ -5,8 +5,16 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { citingOffset } from '@/services/courtlistener/citing-offset.js';
 import { getCourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
 import { findInvalidDates, ISO_DATE_HINT } from '@/services/courtlistener/dates.js';
+import {
+  Completion,
+  formatPageSizing,
+  PageSizing,
+  pageSizing,
+} from '@/services/courtlistener/page-metadata.js';
+import { escapeText, readableText } from '@/services/courtlistener/readable-text.js';
 
 export const getCitationsTool = tool('courtlistener_get_citations', {
   title: 'Get Citation Network',
@@ -43,19 +51,34 @@ export const getCitationsTool = tool('courtlistener_get_citations', {
       .number()
       .int()
       .min(1)
-      .max(20)
       .optional()
       .default(20)
       .describe(
-        'Number of results to request (default 20). For direction="cited_by", CourtListener enforces a minimum of 20 results per page regardless of the value passed — you will always receive at least 20 results. direction="citing" returns at most page_size (the cited-opinion list is sliced before querying) — fewer when the opinion cites fewer than page_size distinct opinions. Either direction costs three requests against the rate limit (a case with many opinion variants costs one more per extra variant page) — keep low for multi-hop traversal.',
+        'Positive requested size (default 20), bounded to 20. cited_by has an upstream minimum of 20; citing slices at most 20 cited IDs by the bounded size before filtering. Full upstream pages are preserved. Final or filtered pages can be smaller or empty; retain next_cursor to continue. page_sizing distinguishes requested, bounded and actual sizes. A normal call costs three requests plus extra variant pages.',
       ),
     cursor: z
       .string()
       .optional()
-      .describe("Pagination cursor from a previous response's next_cursor field."),
+      .describe(
+        'Pagination cursor from next_cursor. For citing, a nonnegative safe decimal integer offset; for cited_by, an opaque upstream token.',
+      ),
   }),
 
   output: z.object({
+    page_sizing: PageSizing.optional(),
+    source_variants_completion: Completion.optional(),
+    observed_total: z
+      .number()
+      .optional()
+      .describe(
+        'Citation total observed from the fetched source variants; a lower bound when total_is_partial is true.',
+      ),
+    total_is_partial: z
+      .boolean()
+      .optional()
+      .describe(
+        'True when citation results and totals are based on an incomplete source-variant set.',
+      ),
     source_cluster_id: z.number().describe('The cluster ID this citation network is for.'),
     source_case_name: z.string().describe('Case name for the source cluster.'),
     direction: z
@@ -93,8 +116,9 @@ export const getCitationsTool = tool('courtlistener_get_citations', {
   enrichment: {
     totalCount: z
       .number()
+      .optional()
       .describe(
-        'Total citations in the requested direction. For "cited_by" it counts matching clusters with the court and filed_after filters applied. For "citing" it counts the distinct opinions this case cites, before any filter — so it exceeds what the filters make reachable, and runs higher than the result rows, which are clusters (several cited opinions in one case collapse to one row).',
+        'Exact total for the fetched direction when source variants are complete; absent when total_is_partial is true. For cited_by this counts matching clusters after filters; for citing it counts distinct cited opinions before any filter, which can exceed the cluster rows.',
       ),
     notice: z
       .string()
@@ -105,6 +129,13 @@ export const getCitationsTool = tool('courtlistener_get_citations', {
   },
 
   errors: [
+    {
+      reason: 'invalid_cursor',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'A citing cursor is not a nonnegative safe decimal integer offset.',
+      recovery: 'Pass the next_cursor from a citing response, or omit cursor to start over.',
+      thrownBy: 'service',
+    },
     {
       reason: 'not_found',
       code: JsonRpcErrorCode.NotFound,
@@ -146,13 +177,15 @@ export const getCitationsTool = tool('courtlistener_get_citations', {
       );
     }
 
+    if (input.direction === 'citing') citingOffset(input.cursor);
+
     const svc = getCourtListenerService();
 
     const citationParams = {
       clusterId: input.cluster_id,
       court: input.court,
       filed_after: input.filed_after,
-      page_size: input.page_size,
+      page_size: Math.min(input.page_size, 20),
       cursor: input.cursor,
     };
 
@@ -176,7 +209,7 @@ export const getCitationsTool = tool('courtlistener_get_citations', {
       cite_count: r.citeCount ?? 0,
       // v4 nests the matched excerpt under each opinion variant; nothing marks which
       // one matched, so take the first that carries one (same rule as search_opinions).
-      snippet: (r.opinions ?? []).find((o) => o.snippet)?.snippet ?? '',
+      snippet: readableText((r.opinions ?? []).find((o) => o.snippet)?.snippet ?? ''),
     }));
 
     ctx.log.info('courtlistener_get_citations complete', {
@@ -185,8 +218,13 @@ export const getCitationsTool = tool('courtlistener_get_citations', {
       returned: results.length,
     });
 
-    ctx.enrich.total(data.total);
-    if (results.length === 0) {
+    const incomplete = data.sourceCompletion?.complete === false;
+    if (!incomplete) ctx.enrich.total(data.total);
+    if (incomplete)
+      ctx.enrich.notice(
+        `Citation results are partial because source variants remain unfetched; source cluster ${input.cluster_id}, upstream variant cursor ${data.sourceCompletion?.next_cursor}. A zero result does not establish absence. This cursor describes source completeness and is not a citation-page cursor.`,
+      );
+    if (results.length === 0 && !incomplete) {
       const dirLabel = input.direction === 'cited_by' ? 'citing' : 'cited by';
       const filters: string[] = [];
       if (input.court) filters.push(`court="${input.court}"`);
@@ -212,6 +250,15 @@ export const getCitationsTool = tool('courtlistener_get_citations', {
       direction: input.direction,
       results,
       next_cursor: data.nextCursor,
+      source_variants_completion: data.sourceCompletion,
+      total_is_partial: incomplete,
+      observed_total: data.total,
+      page_sizing: pageSizing(
+        input.page_size,
+        20,
+        results.length,
+        input.direction === 'citing' ? 'cited_id_slice' : 'minimum_20',
+      ),
     };
   },
 
@@ -219,12 +266,27 @@ export const getCitationsTool = tool('courtlistener_get_citations', {
     const dirLabel = result.direction === 'cited_by' ? 'Cited By' : 'Citing';
     const lines: string[] = [
       `## Citation Network — ${dirLabel}`,
+      formatPageSizing(result.page_sizing),
+      ...(result.observed_total !== undefined
+        ? [
+            `**Observed citation total:** ${result.observed_total}${result.total_is_partial ? ' (partial lower bound)' : ''}`,
+          ]
+        : []),
+      ...(result.source_variants_completion
+        ? [
+            `**Source variants:** complete=${result.source_variants_completion.complete}; upstream variant cursor=${result.source_variants_completion.next_cursor ?? 'none'}; citation total/results partial=${result.total_is_partial}.`,
+          ]
+        : []),
       `**Source Cluster:** ${result.source_cluster_id} ${result.source_case_name}`,
       `**Direction:** ${result.direction} | **Returned:** ${result.results.length}`,
     ];
 
     if (result.results.length === 0) {
-      lines.push('\n> No citations found in this direction for the given filters.');
+      lines.push(
+        result.total_is_partial
+          ? '\n> No matches among the fetched source variants; unfetched variants may add citations.'
+          : '\n> No citations found in this direction for the given filters.',
+      );
     } else {
       for (const r of result.results) {
         lines.push(`\n### ${r.case_name}`);
@@ -233,7 +295,7 @@ export const getCitationsTool = tool('courtlistener_get_citations', {
         );
         lines.push(`**Authority weight (cited by):** ${r.cite_count}`);
         if (r.citations.length > 0) lines.push(`**Citations:** ${r.citations.join(', ')}`);
-        if (r.snippet) lines.push(`*${r.snippet}*`);
+        if (r.snippet) lines.push(`*${escapeText(r.snippet)}*`);
       }
     }
 

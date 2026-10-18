@@ -6,7 +6,12 @@
  * @module tests/service/courtlistener-service.test
  */
 
-import { createMockContext, type MockContextLogger } from '@cyanheads/mcp-ts-core/testing';
+import {
+  createMockContext,
+  getEnrichment,
+  type MockContextLogger,
+  runToolContract,
+} from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Mock withRetry to execute the fn directly (no retries, no backoff) and fetchWithTimeout
@@ -45,6 +50,7 @@ vi.mock('@cyanheads/mcp-ts-core/utils', async (importOriginal) => {
   };
 });
 
+import { getCitationsTool } from '@/mcp-server/tools/definitions/get-citations.tool.js';
 import { getDocketTool } from '@/mcp-server/tools/definitions/get-docket.tool.js';
 import { getPartiesTool } from '@/mcp-server/tools/definitions/get-parties.tool.js';
 import { lookupCourtsTool } from '@/mcp-server/tools/definitions/lookup-courts.tool.js';
@@ -102,6 +108,310 @@ function mockFetchResponse(
     } as unknown as Response),
   );
 }
+
+describe('service correctness contracts', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it.each(['01', '+1', ' 1 ', '1.0', '1.'])('normalizes citing offset %j', async (cursor) => {
+    const svc = new CourtListenerService(makeMockConfig(), makeMockStorage());
+    const urls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string) => {
+        urls.push(input);
+        return new Response(
+          JSON.stringify(
+            input.includes('/clusters/')
+              ? { id: 100 }
+              : input.includes('/opinions/')
+                ? {
+                    next: null,
+                    results: [
+                      {
+                        id: 1,
+                        opinions_cited: ['/opinions/101/', '/opinions/102/', '/opinions/103/'],
+                      },
+                    ],
+                  }
+                : { count: 0, next: null, results: [] },
+          ),
+        );
+      }),
+    );
+    const result = await svc.getCiting(
+      { clusterId: 100, cursor, page_size: 1 },
+      createMockContext(),
+    );
+    expect(new URL(urls[2]!).searchParams.get('q')).toBe('id:(102)');
+    expect(result.nextCursor).toBe('2');
+    expect(result.total).toBe(3);
+  });
+
+  it.each(['+0', '-0', '-0.0'])('normalizes signed zero %j', async (cursor) => {
+    const svc = new CourtListenerService(makeMockConfig(), makeMockStorage());
+    const urls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string) => {
+        urls.push(input);
+        return new Response(
+          JSON.stringify(
+            input.includes('/clusters/')
+              ? { id: 100 }
+              : input.includes('/opinions/')
+                ? { next: null, results: [{ id: 1, opinions_cited: ['/opinions/101/'] }] }
+                : { count: 0, next: null, results: [] },
+          ),
+        );
+      }),
+    );
+    const result = await svc.getCiting({ clusterId: 100, cursor }, createMockContext());
+    expect(new URL(urls[2]!).searchParams.get('q')).toBe('id:(101)');
+    expect(result.nextCursor).toBeNull();
+  });
+
+  it('keeps cited_by cursors opaque', async () => {
+    const svc = new CourtListenerService(makeMockConfig(), makeMockStorage());
+    const urls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string) => {
+        urls.push(input);
+        return new Response(
+          JSON.stringify(
+            input.includes('/clusters/')
+              ? { id: 100 }
+              : input.includes('/opinions/')
+                ? { next: null, results: [{ id: 1 }] }
+                : { count: 0, next: null, results: [] },
+          ),
+        );
+      }),
+    );
+    await svc.getCitedBy({ clusterId: 100, cursor: 'opaque/+token==' }, createMockContext());
+    expect(new URL(urls[2]!).searchParams.get('cursor')).toBe('opaque/+token==');
+  });
+
+  it('carries invalid_cursor recovery through both error surfaces', async () => {
+    initCourtListenerService(makeMockConfig(), makeMockStorage());
+    mockFetchResponse();
+    const result = await runToolContract(getCitationsTool, {
+      cluster_id: 100,
+      direction: 'citing',
+      cursor: '1e0',
+    });
+    const hint = getCitationsTool.errors!.find(
+      (error) => error.reason === 'invalid_cursor',
+    )!.recovery;
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: { code: -32007, data: { reason: 'invalid_cursor', recovery: { hint } } },
+    });
+    expect(JSON.stringify(result.content)).toContain(hint);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'In-chambers',
+    'Relating-to',
+    'Published',
+    'Unpublished',
+    'Errata',
+    'Separate',
+    'Unknown',
+  ])('sends the exact upstream status key for %s', async (status) => {
+    const svc = new CourtListenerService(makeMockConfig(), makeMockStorage());
+    mockFetchResponse();
+    await svc.searchOpinions({ q: 'test', status }, createMockContext());
+    const params = new URL(vi.mocked(fetch).mock.calls[0]![0] as string).searchParams;
+    expect([...params.entries()].filter(([key]) => key.startsWith('stat_'))).toEqual([
+      [`stat_${status}`, 'on'],
+    ]);
+  });
+
+  it.each([
+    ['https://www.courtlistener.com/api/rest/v4/docket-entries/?count=on', '2', 1],
+    ['https://www.courtlistener.com/api/rest/v4/docket-entries/?count=on', null, 1],
+    [undefined, null, 1],
+    [undefined, null, 0],
+  ])(
+    'keeps unknown docket totals distinct from page length (%s, %s, %s)',
+    async (count, next, length) => {
+      initCourtListenerService(makeMockConfig(), makeMockStorage());
+      const requests: string[] = [];
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input: string) => {
+          requests.push(input);
+          return new Response(
+            JSON.stringify(
+              input.includes('/docket-entries/')
+                ? { count, next, results: Array.from({ length }, () => ({ id: 1 })) }
+                : { id: 100, case_name: 'Source' },
+            ),
+          );
+        }),
+      );
+      const ctx = createMockContext({ errors: getDocketTool.errors });
+      const result = await getDocketTool.handler(
+        getDocketTool.input.parse({ docket_id: 100 }),
+        ctx,
+      );
+      expect(result.total_entries).toBeNull();
+      expect(result.entries).toHaveLength(length);
+      expect(result.next_cursor).toBe(next);
+      expect(() => getDocketTool.output.parse(result)).not.toThrow();
+      expect(JSON.stringify(getDocketTool.format!(result))).toContain('Total entries:** unknown');
+      expect(requests).toHaveLength(2);
+      const contract = await runToolContract(getDocketTool, { docket_id: 100 });
+      expect(contract.structuredContent).toMatchObject({ total_entries: null });
+      expect(JSON.stringify(contract.content)).toContain('Total entries:** unknown');
+    },
+  );
+
+  it.each(['', ' ', 'no', '1abc', '-1', '1.5', '1e0', '0x1', '9007199254740992'])(
+    'rejects invalid citing cursor %j before any upstream request',
+    async (cursor) => {
+      const svc = new CourtListenerService(makeMockConfig(), makeMockStorage());
+      mockFetchResponse();
+      await expect(
+        svc.getCiting({ clusterId: 100, cursor }, createMockContext()),
+      ).rejects.toMatchObject({
+        code: -32007,
+        data: { reason: 'invalid_cursor' },
+      });
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['3', '999999'])(
+    'returns an exhausted citing page for offset %s without searching',
+    async (cursor) => {
+      initCourtListenerService(makeMockConfig(), makeMockStorage());
+      const requests: string[] = [];
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input: string) => {
+          requests.push(input);
+          const page2 = input.includes('cursor=tail');
+          const body = input.includes('/clusters/')
+            ? { id: 100, case_name: 'Source' }
+            : input.includes('/opinions/')
+              ? {
+                  next: page2
+                    ? null
+                    : 'https://www.courtlistener.com/api/rest/v4/opinions/?cursor=tail',
+                  results: [
+                    {
+                      id: page2 ? 2 : 1,
+                      opinions_cited: page2
+                        ? ['/opinions/103/', '/opinions/101/']
+                        : ['/opinions/101/', '/opinions/102/'],
+                    },
+                  ],
+                }
+              : { count: 1, next: null, results: [{ cluster_id: 999, caseName: 'Unrelated' }] };
+          return new Response(JSON.stringify(body));
+        }),
+      );
+      const ctx = createMockContext({ errors: getCitationsTool.errors });
+      const result = await getCitationsTool.handler(
+        getCitationsTool.input.parse({ cluster_id: 100, direction: 'citing', cursor }),
+        ctx,
+      );
+      expect(result).toMatchObject({ source_case_name: 'Source', results: [], next_cursor: null });
+      expect(getEnrichment(ctx).totalCount).toBe(3);
+      expect(JSON.stringify(getCitationsTool.format!(result))).toContain('Source');
+      expect(() => getCitationsTool.output.parse(result)).not.toThrow();
+      expect(requests).toHaveLength(3);
+      expect(requests.some((url) => url.includes('/search/'))).toBe(false);
+      const contract = await runToolContract(getCitationsTool, {
+        cluster_id: 100,
+        direction: 'citing',
+        cursor,
+      });
+      expect(contract.structuredContent).toMatchObject({
+        results: [],
+        source_case_name: 'Source',
+        totalCount: 3,
+        next_cursor: null,
+      });
+      expect(JSON.stringify(contract.content)).toContain('Source');
+      expect(JSON.stringify(contract.content)).not.toContain('Unrelated');
+    },
+  );
+
+  it('walks a capped citing page, a filtered-empty tail, and exhaustion', async () => {
+    initCourtListenerService(makeMockConfig(), makeMockStorage());
+    const searches: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string) => {
+        if (input.includes('/search/')) searches.push(input);
+        return new Response(
+          JSON.stringify(
+            input.includes('/clusters/')
+              ? { id: 100, case_name: 'Source' }
+              : input.includes('/opinions/')
+                ? {
+                    next: null,
+                    results: [
+                      {
+                        id: 1,
+                        opinions_cited: Array.from(
+                          { length: 21 },
+                          (_, i) => `/opinions/${101 + i}/`,
+                        ),
+                      },
+                    ],
+                  }
+                : { count: 0, next: null, results: [] },
+          ),
+        );
+      }),
+    );
+    for (const [cursor, next] of [
+      [undefined, '20'],
+      ['20', null],
+      ['21', null],
+    ] as const) {
+      const contract = await runToolContract(getCitationsTool, {
+        cluster_id: 100,
+        direction: 'citing',
+        court: 'ca9',
+        page_size: 20,
+        ...(cursor === undefined ? {} : { cursor }),
+      });
+      expect(contract.structuredContent).toMatchObject({
+        results: [],
+        next_cursor: next,
+        totalCount: 21,
+      });
+      expect(JSON.stringify(contract.content)).toContain('Source');
+      if (next) expect(JSON.stringify(contract.content)).toContain('more pages remain');
+    }
+    expect(searches).toHaveLength(2);
+    expect(new URL(searches[0]!).searchParams.get('q')?.split(' OR ')).toHaveLength(20);
+    expect(new URL(searches[1]!).searchParams.get('q')).toBe('id:(121)');
+  });
+
+  it('preserves omitted status and numeric zero entry totals', async () => {
+    const svc = new CourtListenerService(makeMockConfig(), makeMockStorage());
+    mockFetchResponse();
+    await svc.searchOpinions({ q: 'test' }, createMockContext());
+    const url = new URL(vi.mocked(fetch).mock.calls[0]![0] as string);
+    expect([...url.searchParams.keys()].some((key) => key.startsWith('stat_'))).toBe(false);
+    vi.mocked(fetch).mockImplementation(async (input) => {
+      const body = String(input).includes('/dockets/')
+        ? { id: 100 }
+        : { count: 0, next: null, results: [] };
+      return new Response(JSON.stringify(body));
+    });
+    const docket = await svc.getDocket(100, 20, 1, createMockContext());
+    expect(docket.docket_entries_count).toBe(0);
+    expect(docket.docket_entries_next_page).toBeNull();
+  });
+});
 
 // ── init/accessor ─────────────────────────────────────────────────────────────
 
@@ -1368,6 +1678,7 @@ describe('getOpinionCluster sub-opinion pagination (#48)', () => {
     const cluster = await svc.getOpinionCluster(108713, ctx);
 
     expect(cluster.sub_opinions).toHaveLength(35);
+    expect(cluster.variants_completion).toEqual({ complete: true, next_cursor: null });
     expect(opinionUrls).toHaveLength(2);
     // The continuation carries the cursor token off the first page's `next`.
     expect(new URL(opinionUrls[0]!).searchParams.get('cursor')).toBeNull();
@@ -1390,6 +1701,7 @@ describe('getOpinionCluster sub-opinion pagination (#48)', () => {
 
     expect(opinionUrls).toHaveLength(5);
     expect(cluster.sub_opinions).toHaveLength(100);
+    expect(cluster.variants_completion).toEqual({ complete: false, next_cursor: '100' });
     expect((ctx.log as MockContextLogger).calls).toContainEqual(
       expect.objectContaining({
         level: 'warning',
@@ -1405,6 +1717,42 @@ describe('getOpinionCluster sub-opinion pagination (#48)', () => {
 
     // One distinct cited opinion per variant — capped at 20 before the walk landed.
     expect(result.total).toBe(35);
+  });
+
+  it('keeps bounded citing ID slices and filtered-empty continuation after oversized requests', async () => {
+    stubCluster(35, 20);
+    initCourtListenerService(makeMockConfig(), makeMockStorage());
+    const first = await runToolContract(getCitationsTool, {
+      cluster_id: 108713,
+      direction: 'citing',
+      page_size: 100,
+      court: 'ca9',
+    });
+    expect(first.structuredContent).toMatchObject({
+      results: [],
+      next_cursor: '20',
+      page_sizing: { requested: 100, bounded: 20, actual: 0 },
+    });
+    expect(JSON.stringify(first.content)).toContain('more pages remain');
+    const last = await runToolContract(getCitationsTool, {
+      cluster_id: 108713,
+      direction: 'citing',
+      page_size: 100,
+      cursor: '20',
+      court: 'ca9',
+    });
+    expect(last.structuredContent).toMatchObject({ next_cursor: null });
+    const past = await runToolContract(getCitationsTool, {
+      cluster_id: 108713,
+      direction: 'citing',
+      page_size: 100,
+      cursor: '100',
+    });
+    expect(past.structuredContent).toMatchObject({
+      results: [],
+      next_cursor: null,
+      observed_total: 35,
+    });
   });
 });
 
@@ -1969,6 +2317,90 @@ describe('getParties attorney scoping, detail, and role decoding (#45 #54 #59)',
     expect(attorneyUrl.searchParams.getAll('id')).toEqual([]);
   });
 
+  it('distinguishes resolved empty names from exhausted unresolved IDs', async () => {
+    stubParties(
+      [
+        { attorney_id: 1, docket_id: DOCKET, role: 1, date_action: null },
+        { attorney_id: 2, docket_id: DOCKET, role: 1, date_action: null },
+      ],
+      [{ id: 1, name: '' }],
+    );
+    const result = await svc.getParties(DOCKET, undefined, 10, ctx);
+    expect(result.attorney_resolution).toEqual({
+      status: 'exhausted',
+      unresolved_ids: [2],
+      next_cursor: null,
+    });
+    expect(result.parties[0]?.attorneys).toMatchObject([
+      { name: '', resolution: 'resolved' },
+      { name: '', resolution: 'not_found' },
+    ]);
+  });
+
+  it('reports no unresolved IDs and avoids attorney requests with no relationships', async () => {
+    const urls = stubParties([]);
+    const result = await svc.getParties(DOCKET, undefined, 10, ctx);
+    expect(urls).toEqual([]);
+    expect(result.attorney_resolution).toEqual({
+      status: 'resolved',
+      unresolved_ids: [],
+      next_cursor: null,
+    });
+  });
+
+  it.each([
+    { status: 'resolved', ids: [], details: [], unresolved: [], cursor: null },
+    {
+      status: 'exhausted',
+      ids: [1, 2],
+      details: [{ id: 1, name: '' }],
+      unresolved: [2],
+      cursor: null,
+    },
+    {
+      status: 'capped',
+      ids: Array.from({ length: 600 }, (_, i) => 300_000 + i),
+      details: Array.from({ length: 600 }, (_, i) => ({ id: 300_000 + i, name: `Counsel ${i}` })),
+      unresolved: Array.from({ length: 100 }, (_, i) => 300_500 + i),
+      cursor: '500',
+    },
+  ])(
+    'preserves $status attorney resolution through both final surfaces',
+    async ({ status, ids, details, unresolved, cursor }) => {
+      initCourtListenerService(makeMockConfig(), makeMockStorage());
+      const urls = stubParties(
+        ids.map((attorney_id) => ({ attorney_id, docket_id: DOCKET, role: 1, date_action: null })),
+        details,
+      );
+      const result = await runToolContract(getPartiesTool, { docket_id: DOCKET });
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        attorney_resolution: { status, unresolved_ids: unresolved, next_cursor: cursor },
+      });
+      const text = result.content
+        .map((block) => (block.type === 'text' ? block.text : ''))
+        .join('\n');
+      expect(text.split('\n')).toContain(
+        `**Attorney resolution:** ${status}; unresolved IDs: ${unresolved.join(', ') || 'none'}; roster cursor: ${cursor ?? 'none'}.`,
+      );
+      if (status === 'resolved') expect(urls).toEqual([]);
+      if (status === 'exhausted') {
+        expect(result.structuredContent).toMatchObject({
+          parties: [
+            {
+              attorneys: [
+                { attorney_id: 1, name: '', resolution: 'resolved' },
+                { attorney_id: 2, name: '', resolution: 'not_found' },
+              ],
+            },
+          ],
+        });
+        expect(text).toContain('  Resolution: resolved\n');
+        expect(text).toContain('  Resolution: not_found');
+      }
+    },
+  );
+
   it('resolves a name and contact block for every attorney on the docket (#59)', async () => {
     const attorneyUrls = stubParties(
       [
@@ -2062,11 +2494,18 @@ describe('getParties attorney scoping, detail, and role decoding (#45 #54 #59)',
     const details = attorneys.map((a) => ({ id: a.attorney_id, name: `Counsel ${a.attorney_id}` }));
     const attorneyUrls = stubParties(attorneys, details);
 
-    const resolved = (await svc.getParties(DOCKET, undefined, 10, ctx)).parties[0]?.attorneys ?? [];
+    const result = await svc.getParties(DOCKET, undefined, 10, ctx);
+    const resolved = result.parties[0]?.attorneys ?? [];
+    expect(result.attorney_resolution).toEqual({
+      status: 'capped',
+      unresolved_ids: Array.from({ length: 100 }, (_, i) => 300_500 + i),
+      next_cursor: '500',
+    });
 
     // The walk stops at the bound, so the tail keeps empty names — but it is announced.
     expect(attorneyUrls).toHaveLength(5);
     expect(resolved.filter((a) => a.name === '')).toHaveLength(100);
+    expect(resolved.filter((a) => a.resolution === 'not_fetched')).toHaveLength(100);
     expect((ctx.log as MockContextLogger).calls).toContainEqual(
       expect.objectContaining({
         level: 'warning',
@@ -2351,9 +2790,8 @@ describe('raw upstream payloads validate through the tool output schema', () => 
     // The bug: document_number (z.number) received "1"; total_entries received a URL string.
     expect(() => getDocketTool.output.parse(result)).not.toThrow();
     expect(result.entries[0]!.documents[0]!.document_number).toBe('1');
-    // URL-string count guarded → total_entries falls back to the fetched page length (a number).
-    expect(typeof result.total_entries).toBe('number');
-    expect(result.total_entries).toBe(1);
+    // A URL-valued count leaves the total unknown, independently of the returned page (#14).
+    expect(result.total_entries).toBeNull();
     // #26 — relative path becomes a directly fetchable storage URL.
     expect(result.entries[0]!.documents[0]!.filepath_local).toBe(
       'https://storage.courtlistener.com/recap/gov.uscourts.nysd.458699/gov.uscourts.nysd.458699.1.0.pdf',

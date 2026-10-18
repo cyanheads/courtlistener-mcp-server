@@ -7,6 +7,11 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getCourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
 import { findInvalidDates, ISO_DATE_HINT } from '@/services/courtlistener/dates.js';
+import {
+  formatPageSizing,
+  PageSizing,
+  pageSizing,
+} from '@/services/courtlistener/page-metadata.js';
 import { toStorageUrl } from '@/services/courtlistener/uri.js';
 
 export const searchOralArgumentsTool = tool('courtlistener_search_oral_arguments', {
@@ -34,11 +39,10 @@ export const searchOralArgumentsTool = tool('courtlistener_search_oral_arguments
       .number()
       .int()
       .min(1)
-      .max(20)
       .optional()
       .default(20)
       .describe(
-        'Number of results to request (default 20). CourtListener search enforces a minimum of 20 results per page regardless of the value passed.',
+        'Positive requested page size (default 20), bounded to 20. Upstream search has a 20-row minimum; empty and final pages can be smaller. Full pages and continuation are preserved; page_sizing reports actual sizes.',
       ),
     cursor: z
       .string()
@@ -47,6 +51,7 @@ export const searchOralArgumentsTool = tool('courtlistener_search_oral_arguments
   }),
 
   output: z.object({
+    page_sizing: PageSizing.optional(),
     results: z
       .array(
         z
@@ -167,7 +172,7 @@ export const searchOralArgumentsTool = tool('courtlistener_search_oral_arguments
         court: input.court,
         argued_after: input.argued_after,
         argued_before: input.argued_before,
-        page_size: input.page_size,
+        page_size: Math.min(input.page_size, 20),
         cursor: input.cursor,
       },
       ctx,
@@ -207,12 +212,17 @@ export const searchOralArgumentsTool = tool('courtlistener_search_oral_arguments
       );
     }
 
-    return { results, next_cursor: data.nextCursor };
+    return {
+      results,
+      next_cursor: data.nextCursor,
+      page_sizing: pageSizing(input.page_size, 20, results.length, 'minimum_20'),
+    };
   },
 
   format: (result) => {
     const lines: string[] = [
       `## CourtListener Oral Arguments`,
+      formatPageSizing(result.page_sizing),
       `**Returned:** ${result.results.length}`,
     ];
 

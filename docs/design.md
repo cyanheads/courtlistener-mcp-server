@@ -117,11 +117,11 @@ filed_after: z.string().optional()
 filed_before: z.string().optional()
   .describe('Latest filing date (ISO 8601). Narrows search to opinions filed before or on this date.'),
 status: z.enum(['Published', 'Unpublished', 'Errata', 'Separate', 'In-chambers', 'Relating-to', 'Unknown']).optional()
-  .describe('Opinion publication status. "Published": precedential. "Unpublished": not citable as precedent in most jurisdictions. "Errata": corrections. "Separate": separate opinion filed outside main cluster. "In-chambers": single-justice order. "Relating-to": companion or related-case order. Omit to search all statuses.'),
+  .describe('Opinion publication status. "Published": precedential. "Unpublished": not citable as precedent in most jurisdictions. "Errata": corrections. "Separate": separate opinion filed outside main cluster. "In-chambers": single-justice order. "Relating-to": companion or related-case order. Omit to use CourtListener’s Published default.'),
 order_by: z.enum(['score desc', 'dateFiled desc', 'dateFiled asc', 'citeCount desc']).optional().default('score desc')
   .describe('Result ordering. "score desc" (default) ranks by relevance. "citeCount desc" surfaces most-cited opinions first.'),
-page_size: z.number().int().min(1).max(20).optional().default(10)
-  .describe('Number of results (1–20, default 10). Keep low — each search costs one request against the rate limit.'),
+page_size: z.number().int().min(1).optional().default(20)
+  .describe('Positive requested size, bounded to 20 upstream; page_sizing reports requested, bounded and actual rows.'),
 cursor: z.string().optional()
   .describe('Pagination cursor from a previous response\'s next_cursor field. Omit for the first page.'),
 ```
@@ -152,8 +152,8 @@ cursor: z.string().optional()
 **Errors:**
 | Reason | Code | When | Retryable |
 |:-------|:-----|:-----|:----------|
-| `rate_limited` | `ServiceUnavailable` | 429 response; minute, hour, or day throttle | Yes — after window resets |
-| `invalid_query` | `InvalidParams` | Malformed field syntax or invalid `type` value | Yes — fix query |
+| `rate_limited` | `RateLimited` | 429 response or request-slot wait budget exhausted | No — wait out the reported Retry-After interval |
+| `invalid_query` | `ValidationError` | CourtListener rejects caller-authored query or filter syntax with a recognized diagnostic | No — correct syntax before searching again |
 
 ---
 
@@ -221,8 +221,8 @@ court: z.string().optional()
   .describe('Filter results to a specific court (e.g., "scotus", "ca9"). Applies to both directions.'),
 filed_after: z.string().optional()
   .describe('Limit to citations filed after this date (ISO 8601). For "cited_by", useful for "how has this precedent been applied recently?"'),
-page_size: z.number().int().min(1).max(20).optional().default(10)
-  .describe('Number of results (1–20). Each citation tool call costs one request against the rate limit — keep page_size low for multi-hop traversal.'),
+page_size: z.number().int().min(1).optional().default(20)
+  .describe('Requested size, bounded to 20. cited_by has an upstream minimum of 20; citing slices the bounded number of cited IDs before filtering. Full upstream result pages are preserved.'),
 cursor: z.string().optional()
   .describe('Pagination cursor from a previous response\'s next_cursor field.'),
 ```
@@ -248,12 +248,13 @@ cursor: z.string().optional()
 }
 ```
 
-**Implementation note:** For `cited_by`, use `GET /search/?q=cites:(cluster_id)&type=o` (1 upstream request). For `citing`, call `GET /clusters/{id}/` internally and extract the inline `cites[]` array (1 upstream request — the opinion cluster record includes outbound citation IDs). Both directions cost 1 upstream call.
+**Implementation note:** Both directions fetch the source cluster and walk its `/opinions/` variants. `cited_by` searches `cites:(opinion_id)` with an opaque upstream cursor. `citing` deduplicates the variants' `opinions_cited` IDs, slices them by a nonnegative safe decimal integer offset, then searches that slice; its total counts distinct opinions before filters. A filtered empty page retains continuation when IDs remain. An offset at or past the end returns the source name, total, empty results, and null continuation without searching. Invalid offsets fail before fetching the cluster. A normal invocation costs three requests, plus one per extra variant page.
 
 **Errors:**
 | Reason | Code | When | Retryable |
 |:-------|:-----|:-----|:----------|
-| `rate_limited` | `ServiceUnavailable` | 429 | Yes |
+| `rate_limited` | `RateLimited` | 429 response or request-slot wait budget exhausted | No — wait out the reported Retry-After interval |
+| `invalid_cursor` | `ValidationError` | A citing cursor is not a nonnegative safe decimal integer offset | No — pass next_cursor from a citing response or omit cursor |
 
 ---
 
@@ -327,8 +328,8 @@ filed_after: z.string().optional()
   .describe('Earliest case filing date (ISO 8601).'),
 filed_before: z.string().optional()
   .describe('Latest case filing date (ISO 8601).'),
-page_size: z.number().int().min(1).max(10).optional().default(5)
-  .describe('Number of results (1–10). Lower limit than opinion search — docket results embed document lists and are larger payloads.'),
+page_size: z.number().int().min(1).optional().default(20)
+  .describe('Positive requested size, bounded to 20 upstream; page_sizing reports requested, bounded and actual rows.'),
 cursor: z.string().optional()
   .describe('Pagination cursor from a previous response\'s next_cursor field.'),
 ```
@@ -374,8 +375,8 @@ Fetch full docket metadata and entry list for a single federal case. Returns all
 ```ts
 docket_id: z.number().int()
   .describe('Docket ID from a search result\'s docket_id field or from an opinion cluster result.'),
-entries_page_size: z.number().int().min(1).max(50).optional().default(20)
-  .describe('Number of docket entries to return (1–50). Large cases can have hundreds of entries.'),
+entries_page_size: z.number().int().min(1).optional().default(20)
+  .describe('Positive requested size, bounded to 50 upstream. CourtListener ignores it and serves fixed 20-row pages.'),
 ```
 
 **Output:**
@@ -395,7 +396,7 @@ entries_page_size: z.number().int().min(1).max(50).optional().default(20)
   cause: string,
   jury_demand: string,
   jurisdiction_type: string,
-  total_entries: number,
+  total_entries: number | null, // unknown when upstream supplies no numeric count; never page length
   entries: Array<{
     id: number,
     entry_number: number | null,
@@ -430,8 +431,8 @@ court: z.string().optional()
   .describe('Filter to judges who have held a position at this court (e.g., "scotus", "ca9"). Use court_id strings from courtlistener_lookup_courts.'),
 political_affiliation: z.enum(['d', 'r', 'i', 'l', 'g', 'u']).optional()
   .describe('Filter by political affiliation: d=Democrat, r=Republican, i=Independent, l=Libertarian, g=Green Party, u=Unknown/unconfirmed. Based on party of the appointing president or election affiliation.'),
-page_size: z.number().int().min(1).max(20).optional().default(10)
-  .describe('Number of results (1–20).'),
+page_size: z.number().int().min(1).optional().default(20)
+  .describe('Positive requested size, bounded to 20 upstream.'),
 cursor: z.string().optional()
   .describe('Pagination cursor from a previous response\'s next_cursor field.'),
 ```
@@ -574,8 +575,8 @@ argued_after: z.string().optional()
   .describe('Earliest date the case was argued (ISO 8601) — filters by argument date, not publication date.'),
 argued_before: z.string().optional()
   .describe('Latest date the case was argued (ISO 8601).'),
-page_size: z.number().int().min(1).max(20).optional().default(10)
-  .describe('Number of results (1–20).'),
+page_size: z.number().int().min(1).optional().default(20)
+  .describe('Positive requested size, bounded to 20 upstream.'),
 cursor: z.string().optional()
   .describe('Pagination cursor from a previous response\'s next_cursor field.'),
 ```
@@ -644,14 +645,14 @@ cursor: z.string().optional()
 
 **Rate limits drive everything.** At the published free-tier windows (5 req/min, 50/hr, 125/day), a single complex agent session can exhaust the daily budget. Consequences:
 - No workflow tool spends more than three upstream requests, plus one per extra page of opinion variants a cluster needs
-- `page_size` defaults are kept low (5–10) and maximums are capped (10–20)
+- Page sizes accept positive requests but bound outgoing sizes (search/citations 20, parties 10, entries 50); metadata discloses requested, bounded and actual counts without trimming upstream pages
 - No "fetch related data" enrichment in responses that would auto-trigger extra calls
 - `courtlistener_get_citations` uses the search endpoint rather than paginating the `/opinions-cited/` REST endpoint across multiple pages; both directions first resolve the source cluster's opinion IDs, since the `cites:` index is keyed by opinion, not cluster
 - Deep citation traversal (multi-hop: "what cites X, then what cites those 10 cases") burns through daily budget in one session. The server exposes the tool correctly but the rate-limit constraint is a free-tier reality. Free Law Project membership ($10/mo) unlocks higher limits for research use.
 
 **Pace in the server, not in the agent.** Keeping per-call request counts low is not enough on its own — two tool calls in parallel, or one tool spending several upstream requests, trip the minute window with no request budget actually exhausted. A single process-wide queue in front of the client is what makes the window a property of the server rather than something each caller has to reason about, so the minute and hour windows are enforced there and a 429's `Retry-After` closes the gate for everyone queued behind it. Pacing deliberately stops at the minute and hour: the daily ceiling cannot be stretched by waiting, so a queue in front of it would trade a fast, honest failure for a slow one. Both windows are env-configurable because the published free-tier figures are a floor — actual limits vary by token tier.
 
-**Citation network via search, not dedicated endpoint.** The `/opinions-cited/` REST endpoint requires auth and consumes daily quota per page. The search API's `cites:(id)` filter returns rich metadata for the whole network from one search call. That search is not free-standing, though: `cites:` keys on opinion IDs, and the `citing` direction reads the cluster's inline `cites[]`, so both directions resolve the cluster's opinion variants first — three calls per invocation, not one.
+**Citation network via search, not dedicated endpoint.** The `/opinions-cited/` REST endpoint requires auth and consumes daily quota per page. The search API's `cites:(id)` filter returns rich metadata for the whole network from one search call. Both directions first resolve the cluster's opinion variants: `cites:` keys on opinion IDs, and `citing` reads the variants' `opinions_cited` lists. A normal invocation therefore costs three calls, plus any extra variant pages; exhausted outbound offsets skip the search.
 
 **No financial disclosures tool in v1.** The endpoint is public and interesting, but requires traversing a person ID → disclosure ID → investment/income sub-resources chain (3–4 calls minimum) with low structured-data density. Deferred to a future `courtlistener_get_financial_disclosure` tool.
 

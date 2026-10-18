@@ -92,6 +92,8 @@ export interface OpinionCluster {
   precedential_status: string;
   sub_opinions: Opinion[];
   syllabus: string;
+  /** Whether the bounded opinion-variant walk reached the end. */
+  variants_completion?: { complete: boolean; next_cursor: string | null };
 }
 
 /**
@@ -148,8 +150,8 @@ export interface Docket {
   date_filed: string;
   date_terminated: string | null;
   docket_entries: DocketEntry[];
-  /** Total entry count from /docket-entries/?docket=... — may exceed the fetched page. */
-  docket_entries_count?: number;
+  /** Total entry count from /docket-entries/; null when upstream supplies no numeric count. */
+  docket_entries_count?: number | null;
   /**
    * Next page number to fetch from /docket-entries/?docket=...&page=N; null when the fetched
    * page is the last. /docket-entries/ is page-paginated (its `next` is a `...&page=N` URL, not a
@@ -582,6 +584,8 @@ export interface Party {
   /** Attorneys of record for this party on this docket. */
   attorneys: {
     attorney_id: number;
+    /** Resolution state independent of a source record's possibly empty name. */
+    resolution?: 'resolved' | 'not_found' | 'not_fetched';
     name: string;
     contact_raw: string;
     /** Role code as sent by upstream; null when it recorded no code. */

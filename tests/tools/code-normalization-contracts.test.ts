@@ -66,17 +66,19 @@ describe('code normalization characterization', () => {
   });
 
   it.each([
-    ['030CONCURRENCE', 'concurrence-opinion'],
-    ['UnmappedCode', 'UnmappedCode'],
-    ['', ''],
-  ])('opinion type %s stays %s in a second variant', async (raw, label) => {
+    ['030CONCURRENCE', 'concurrence-opinion', 'concurrence\\-opinion'],
+    ['UnmappedCode', 'UnmappedCode', 'UnmappedCode'],
+    ['', '', ''],
+  ])('opinion type %s stays %s in a second variant', async (raw, label, displayed) => {
     code = raw;
     const result = await runToolContract(getOpinionTool, { cluster_id: 1 });
     expect(result.isError).not.toBe(true);
     expect(result.structuredContent).toMatchObject({
       opinions: [{ type_label: 'combined-opinion' }, { type: raw, type_label: label }],
     });
-    expect(JSON.stringify(result.content)).toContain(`Opinion (${label})`);
+    expect(
+      result.content.map((block) => (block.type === 'text' ? block.text : '')).join('\n'),
+    ).toContain(`Opinion (${displayed})`);
     expect(fetchStub).toHaveBeenCalledTimes(2);
   });
 });
@@ -94,19 +96,23 @@ describe('unknown prototype-name code regressions (#72)', () => {
     },
   );
 
-  it.each(['constructor', 'CONSTRUCTOR', '__proto__', '__PROTO__'])(
-    'preserves %s through a second opinion variant',
-    async (raw) => {
-      code = raw;
-      const opinion = await runToolContract(getOpinionTool, { cluster_id: 1 });
-      expect(opinion.isError).not.toBe(true);
-      expect(opinion.structuredContent).toMatchObject({
-        opinions: [{ type_label: 'combined-opinion' }, { type: raw, type_label: raw }],
-      });
-      expect(JSON.stringify(opinion.content)).toContain(`Opinion (${raw})`);
-      expect(fetchStub).toHaveBeenCalledTimes(2);
-    },
-  );
+  it.each([
+    ['constructor', 'constructor'],
+    ['CONSTRUCTOR', 'CONSTRUCTOR'],
+    ['__proto__', '\\_\\_proto\\_\\_'],
+    ['__PROTO__', '\\_\\_PROTO\\_\\_'],
+  ])('preserves %s through a second opinion variant', async (raw, displayed) => {
+    code = raw;
+    const opinion = await runToolContract(getOpinionTool, { cluster_id: 1 });
+    expect(opinion.isError).not.toBe(true);
+    expect(opinion.structuredContent).toMatchObject({
+      opinions: [{ type_label: 'combined-opinion' }, { type: raw, type_label: raw }],
+    });
+    expect(
+      opinion.content.map((block) => (block.type === 'text' ? block.text : '')).join('\n'),
+    ).toContain(`Opinion (${displayed})`);
+    expect(fetchStub).toHaveBeenCalledTimes(2);
+  });
 
   it.each(['constructor', '__proto__'])('preserves %s in nested judge records', async (raw) => {
     fetchStub.mockImplementation(async (input) => {

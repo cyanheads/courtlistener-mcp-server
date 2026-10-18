@@ -17,6 +17,19 @@ import {
 import { COURT_JURISDICTION_LABELS } from '@/services/courtlistener/jurisdictions.js';
 
 describe('resolveCourtName', () => {
+  it.each(['constructor', '__proto__', 'toString'])('preserves unmapped %s', (id) => {
+    expect(resolveCourtName(id)).toBe(id);
+  });
+
+  it('ignores a custom inherited label', () => {
+    const original = Object.getPrototypeOf(COURT_FULL_NAMES);
+    Object.setPrototypeOf(COURT_FULL_NAMES, { inheritedCourt: 'Inherited Court' });
+    try {
+      expect(resolveCourtName('inheritedCourt')).toBe('inheritedCourt');
+    } finally {
+      Object.setPrototypeOf(COURT_FULL_NAMES, original);
+    }
+  });
   it('resolves federal appellate court ids to full names', () => {
     expect(resolveCourtName('scotus')).toBe('Supreme Court of the United States');
     expect(resolveCourtName('ca9')).toBe('Court of Appeals for the Ninth Circuit');

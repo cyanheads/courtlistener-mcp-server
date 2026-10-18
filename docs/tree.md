@@ -1,6 +1,6 @@
 # courtlistener-mcp-server - Directory Structure
 
-Generated on: 2026-09-30 09:33:09
+Generated on: 2026-10-18 08:47:55
 
 ```text
 courtlistener-mcp-server/
@@ -138,6 +138,7 @@ courtlistener-mcp-server/
 │   ├── lint-mcp.ts
 │   ├── lint-packaging.ts
 │   ├── list-skills.ts
+│   ├── prune-musl-packages.ts
 │   ├── release-github.ts
 │   └── tree.ts
 ├── src/
@@ -168,12 +169,16 @@ courtlistener-mcp-server/
 │   │           └── search-oral-arguments.tool.ts
 │   ├── services/
 │   │   └── courtlistener/
+│   │       ├── citing-offset.ts
 │   │       ├── codes.ts
 │   │       ├── court-names-data.ts
 │   │       ├── court-names.ts
 │   │       ├── courtlistener-service.ts
 │   │       ├── dates.ts
 │   │       ├── jurisdictions.ts
+│   │       ├── page-metadata.ts
+│   │       ├── readable-text.ts
+│   │       ├── retrieval.ts
 │   │       ├── types.ts
 │   │       └── uri.ts
 │   └── index.ts
@@ -187,6 +192,7 @@ courtlistener-mcp-server/
 │   ├── resources/
 │   │   └── courts-reference.resource.test.ts
 │   ├── service/
+│   │   ├── citing-offset.test.ts
 │   │   ├── codes.test.ts
 │   │   ├── court-names.test.ts
 │   │   ├── courtlistener-service.pacing.test.ts
@@ -194,8 +200,12 @@ courtlistener-mcp-server/
 │   │   ├── courtlistener-service.test.ts
 │   │   ├── dates.test.ts
 │   │   ├── jurisdictions.test.ts
+│   │   ├── readable-text.test.ts
+│   │   ├── retrieval.test.ts
 │   │   └── uri.test.ts
 │   ├── tools/
+│   │   ├── attorney-budget.test.ts
+│   │   ├── bounded-pages.test.ts
 │   │   ├── code-normalization-contracts.test.ts
 │   │   ├── error-recovery-contracts.test.ts
 │   │   ├── get-citations.tool.test.ts
@@ -205,8 +215,10 @@ courtlistener-mcp-server/
 │   │   ├── get-opinion.tool.test.ts
 │   │   ├── get-oral-argument.tool.test.ts
 │   │   ├── get-parties.tool.test.ts
+│   │   ├── inherited-label-contracts.test.ts
 │   │   ├── lookup-citation.tool.test.ts
 │   │   ├── lookup-courts.tool.test.ts
+│   │   ├── readable-retrieval.test.ts
 │   │   ├── search-dockets.tool.test.ts
 │   │   ├── search-financial-disclosures.tool.test.ts
 │   │   ├── search-judges.tool.test.ts

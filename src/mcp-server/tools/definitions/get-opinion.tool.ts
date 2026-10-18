@@ -4,11 +4,20 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { formatOutline, OUTLINE_VARIANT, outlineOnOverflow } from '@cyanheads/mcp-ts-core/utils';
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
+import { formatOutline, OUTLINE_VARIANT } from '@cyanheads/mcp-ts-core/utils';
 import { expandCode } from '@/services/courtlistener/codes.js';
 import { resolveCourtName } from '@/services/courtlistener/court-names.js';
 import { getCourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
+import { Completion } from '@/services/courtlistener/page-metadata.js';
+import { presentation, readableText } from '@/services/courtlistener/readable-text.js';
+import {
+  formatRetrievalPage,
+  Retrieval,
+  RetrievalCursor,
+  readRetrievalCursor,
+  retrieve,
+} from '@/services/courtlistener/retrieval.js';
 import { idFromUri } from '@/services/courtlistener/uri.js';
 
 /**
@@ -33,8 +42,7 @@ const OPINION_TYPE_LABELS: Record<string, string> = {
   '100trialcourt': 'trial-court-document',
 };
 
-/** A single opinion variant within a cluster. Optional in the tool output: the
- *  full arm carries them all; on overflow they're replaced by a section outline. */
+/** A variant stays typed on partial pages; text omitted there follows field paths. */
 const OpinionVariant = z
   .object({
     id: z.number().describe('Individual opinion ID.'),
@@ -58,22 +66,37 @@ const OpinionVariant = z
       .describe(
         'Full opinion text as HTML, drawn from the best available variant (citation-linked when present); empty only when no HTML text is stored — use download_url then.',
       ),
-    plain_text: z.string().describe('Plain text version of the opinion; may be empty.'),
+    plain_text: z
+      .string()
+      .describe(
+        'Supplied plain text preserved exactly, or readable text derived from source markup when absent; empty if neither exists.',
+      ),
     cites: z.array(z.number()).describe('Opinion IDs this opinion cites.'),
     download_url: z
       .string()
       .nullable()
       .describe('Direct download URL for the original opinion document; null if not available.'),
   })
-  .describe('Individual opinion variant.');
+  .partial({
+    type: true,
+    type_label: true,
+    html_text: true,
+    plain_text: true,
+    download_url: true,
+    cites: true,
+  })
+  .describe(
+    'Individual opinion variant; omitted partial fields are recoverable through retrieval.',
+  );
 
 export const getOpinionTool = tool('courtlistener_get_opinion', {
   title: 'Get Court Opinion',
   description:
-    'Fetch the full text and metadata for a single opinion cluster by cluster ID. A cluster groups all opinions filed in a case — majority, concurrence, dissent, and per curiam. Returns the cluster metadata (case name, court, citations, dates) plus every opinion variant with HTML and plain text. When the combined opinion text is too large to inline, the response lists each variant as a retrievable section (opinion_<id>) while keeping the cheap cluster metadata — re-call with sections:[...] to pull specific variants in full. Obtain cluster IDs from courtlistener_search_opinions, courtlistener_lookup_citation, or docket results.',
+    'Fetch text and metadata for an opinion cluster by cluster ID. Returns majority, concurrence and dissent variants with raw HTML and readable plain text, variants_completion for source coverage, and docket_enrichment. Oversized selections return outline then page responses; continue retrieval.next_cursor as cursor with the unchanged ID/sections selection until null. Obtain cluster IDs from courtlistener_search_opinions, courtlistener_lookup_citation, or docket results.',
   annotations: { readOnlyHint: true, idempotentHint: true },
 
   input: z.object({
+    cursor: RetrievalCursor,
     cluster_id: z
       .number()
       .int()
@@ -84,60 +107,108 @@ export const getOpinionTool = tool('courtlistener_get_opinion', {
       .array(z.string())
       .optional()
       .describe(
-        'Opinion variant identifiers to retrieve in full, from a prior outline response (e.g. ["opinion_12345"]). Omit to return all variants, or an outline if they overflow the inline byte budget.',
+        'Opinion variant identifiers to select (e.g. ["opinion_12345"]). Omit for all fetched variants. Oversized selections page; keep this selection unchanged while following cursor.',
       ),
   }),
 
-  output: z.object({
-    // Cheap cluster metadata — always present, in both full and outline responses.
-    cluster_id: z.number().describe('Opinion cluster ID.'),
-    case_name: z.string().describe('Short case name.'),
-    case_name_full: z.string().describe('Full case name with parties.'),
-    court: z.string().describe('Court display name.'),
-    court_id: z.string().describe('Court identifier.'),
-    date_filed: z.string().describe('Date the opinion was filed.'),
-    docket_id: z.number().describe('Associated docket ID.'),
-    docket_number: z.string().describe('Docket number.'),
-    judges: z.string().describe('Judge names.'),
-    citations: z.array(z.string()).describe('All known citation strings for this case.'),
-    cite_count: z.number().describe('Total number of citations from other opinions.'),
-    precedential_status: z.string().describe('Publication/precedential status.'),
-    syllabus: z.string().describe('Syllabus text (may be empty).'),
-    posture: z.string().describe('Procedural posture (may be empty).'),
-    kind: z
-      .enum(['full', 'outline'])
-      .describe(
-        "'full' returns the opinion variants (all, or a selected subset); 'outline' lists each variant as a retrievable section (opinion_<id>) when the opinions overflow the inline byte budget. Cluster metadata is present either way.",
-      ),
-    // Full arm — every opinion variant. Omitted in outline mode.
-    opinions: z
-      .array(OpinionVariant)
-      .optional()
-      .describe(
-        'All opinion variants within this cluster. Present in full mode; omitted in outline mode — re-call with sections:["opinion_<id>"] to retrieve specific variants.',
-      ),
-    // Outline arm — one section per opinion variant. Reuses OUTLINE_VARIANT's shape;
-    // the section element gets an object-level describe (the framework schema describes
-    // only name/bytes) and the re-call notice is named retrieval_notice to read as
-    // domain data (a field literally named `notice` reads as agent-facing context).
-    sections: z
-      .array(
-        OUTLINE_VARIANT.shape.sections.element.describe(
-          'A retrievable opinion variant (opinion_<id>) and its serialized byte size.',
+  output: z
+    .object({
+      retrieval: Retrieval,
+      variants_completion: Completion.partial({ next_cursor: true })
+        .optional()
+        .describe(
+          'Source-walk completion. An oversized upstream next_cursor is omitted on partial responses and recovered at /variants_completion/next_cursor through retrieval.text_chunks.',
         ),
-      )
-      .optional()
-      .describe(
-        'Retrievable opinion variants, largest first — pass names to `sections` on a re-call.',
-      ),
-    retrieval_notice: OUTLINE_VARIANT.shape.notice
-      .optional()
-      .describe(
-        'How to re-call the tool for specific opinion variants when the opinions overflow.',
-      ),
-  }),
+      docket_enrichment: z
+        .object({
+          status: z
+            .enum(['not_linked', 'resolved', 'source_fields_absent', 'lookup_failed'])
+            .describe('Outcome of the optional linked-docket lookup.'),
+          error_code: z
+            .number()
+            .optional()
+            .describe('Sanitized MCP error code when the lookup failed.'),
+          reason: z
+            .enum(['not_found', 'lookup_failed'])
+            .optional()
+            .describe('Safe lookup failure category, without upstream error text.'),
+        })
+        .optional()
+        .describe('Linked-docket enrichment outcome, independent of opinion text availability.'),
+      // Bounded identity stays present; oversized metadata is recoverable by path.
+      cluster_id: z.number().describe('Opinion cluster ID.'),
+      case_name: z.string().describe('Short case name.'),
+      case_name_full: z.string().describe('Full case name with parties.'),
+      court: z.string().describe('Court display name.'),
+      court_id: z.string().describe('Court identifier.'),
+      date_filed: z.string().describe('Date the opinion was filed.'),
+      docket_id: z.number().describe('Associated docket ID.'),
+      docket_number: z.string().describe('Docket number.'),
+      judges: z.string().describe('Judge names.'),
+      citations: z.array(z.string()).describe('All known citation strings for this case.'),
+      cite_count: z.number().describe('Total number of citations from other opinions.'),
+      precedential_status: z.string().describe('Publication/precedential status.'),
+      syllabus: z.string().describe('Syllabus text (may be empty).'),
+      posture: z.string().describe('Procedural posture (may be empty).'),
+      kind: z
+        .enum(['full', 'outline', 'page'])
+        .describe(
+          "'full' carries a small selected record; 'outline' pages the section catalog; 'page' carries typed rows and field-path text chunks. Bounded identity remains present throughout retrieval.",
+        ),
+      // Full arm — every opinion variant. Omitted in outline mode.
+      opinions: z
+        .array(OpinionVariant)
+        .optional()
+        .describe(
+          'Fetched variants; variants_completion describes source coverage. Pages can contain partial typed variants; omitted text is recoverable through retrieval.text_chunks at original field paths.',
+        ),
+      // Outline arm — one section per opinion variant. Reuses OUTLINE_VARIANT's shape;
+      // the section element gets an object-level describe (the framework schema describes
+      // only name/bytes) and the re-call notice is named retrieval_notice to read as
+      // domain data (a field literally named `notice` reads as agent-facing context).
+      sections: z
+        .array(
+          OUTLINE_VARIANT.shape.sections.element.describe(
+            'A retrievable opinion variant (opinion_<id>) and its serialized byte size.',
+          ),
+        )
+        .optional()
+        .describe(
+          'Section catalog in source order, including paged metadata. Only opinion_<id> names select variants; follow retrieval.next_cursor to finish the catalog and retrieve data.',
+        ),
+      retrieval_notice: OUTLINE_VARIANT.shape.notice
+        .optional()
+        .describe('How to continue bounded retrieval using the unchanged ID and selection.'),
+    })
+    .partial({
+      case_name: true,
+      case_name_full: true,
+      court: true,
+      court_id: true,
+      date_filed: true,
+      docket_number: true,
+      judges: true,
+      precedential_status: true,
+      syllabus: true,
+      posture: true,
+      citations: true,
+    }),
 
   errors: [
+    {
+      reason: 'invalid_cursor',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'Retrieval cursor is malformed, out of range or belongs to another request.',
+      recovery: 'Restart without cursor using the original ID and selection.',
+      thrownBy: 'service',
+    },
+    {
+      reason: 'stale_cursor',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'The normalized selected source changed since the previous page.',
+      recovery: 'Restart without cursor to retrieve the current source consistently.',
+      thrownBy: 'service',
+    },
     {
       reason: 'not_found',
       code: JsonRpcErrorCode.NotFound,
@@ -165,6 +236,7 @@ export const getOpinionTool = tool('courtlistener_get_opinion', {
   ],
 
   async handler(input, ctx) {
+    const cursor = readRetrievalCursor(input.cursor, 'opinion', input.cluster_id, input.sections);
     ctx.log.info('courtlistener_get_opinion', { cluster_id: input.cluster_id });
     const svc = getCourtListenerService();
     const cluster = await svc.getOpinionCluster(input.cluster_id, ctx);
@@ -182,13 +254,33 @@ export const getOpinionTool = tool('courtlistener_get_opinion', {
     // docket (one extra call, non-fatal so a docket miss never fails the opinion fetch).
     let courtId = cluster.court_id ?? '';
     let docketNumber = cluster.docket_number ?? '';
+    let docketEnrichment: {
+      status: 'not_linked' | 'resolved' | 'source_fields_absent' | 'lookup_failed';
+      error_code?: number;
+      reason?: 'not_found' | 'lookup_failed';
+    } = { status: 'not_linked' };
     if (docketId) {
       try {
         const summary = await svc.getDocketSummary(docketId, ctx);
         courtId ||= summary.court_id;
         docketNumber ||= summary.docket_number;
+        docketEnrichment = {
+          status: summary.court_id && summary.docket_number ? 'resolved' : 'source_fields_absent',
+        };
       } catch (err) {
-        ctx.log.debug('docket summary backfill failed', { docketId, err: String(err) });
+        if (
+          ctx.signal?.aborted ||
+          (err instanceof McpError && err.code === JsonRpcErrorCode.RequestCancelled) ||
+          (err instanceof Error && err.name === 'AbortError')
+        )
+          throw err;
+        const code = err instanceof McpError ? err.code : JsonRpcErrorCode.ServiceUnavailable;
+        docketEnrichment = {
+          status: 'lookup_failed',
+          error_code: code,
+          reason: code === JsonRpcErrorCode.NotFound ? 'not_found' : 'lookup_failed',
+        };
+        ctx.log.debug('docket summary backfill failed', { docketId, code });
       }
     }
 
@@ -209,7 +301,17 @@ export const getOpinionTool = tool('courtlistener_get_opinion', {
         op.xml_harvard ||
         op.html_anon_2020 ||
         '',
-      plain_text: op.plain_text ?? '',
+      plain_text:
+        op.plain_text ||
+        readableText(
+          op.html_with_citations ||
+            op.html ||
+            op.html_columbia ||
+            op.html_lawbox ||
+            op.xml_harvard ||
+            op.html_anon_2020 ||
+            '',
+        ),
       // opinions_cited are URI strings — extract the numeric ID from each
       cites: (op.opinions_cited ?? []).flatMap((uri) => {
         const id = idFromUri(String(uri), 'opinions');
@@ -223,13 +325,14 @@ export const getOpinionTool = tool('courtlistener_get_opinion', {
       opinions_count: opinions.length,
     });
 
-    // Cheap cluster metadata — kept in every response, full or outline. The overflow
-    // primitive drops all fields but kind/sections/notice, so these are merged back on.
+    // Normalize metadata before hashing and slicing the selected view.
     const clusterMeta = {
       cluster_id: cluster.id,
+      variants_completion: cluster.variants_completion,
+      docket_enrichment: docketEnrichment,
       case_name: cluster.case_name ?? '',
       case_name_full: cluster.case_name_full ?? '',
-      court: resolveCourtName(courtId),
+      court: courtId ? resolveCourtName(courtId) : (cluster.court ?? ''),
       court_id: courtId,
       date_filed: cluster.date_filed ?? '',
       docket_id: docketId,
@@ -246,6 +349,7 @@ export const getOpinionTool = tool('courtlistener_get_opinion', {
     // Valid names are generated per cluster (opinion_<id>) from the variants this
     // cluster actually has, so they can't be a static input enum — reject unmatched
     // names here rather than silently returning a full response with nothing in it.
+    let selected = opinions;
     if (input.sections?.length) {
       const available = opinions.map((op) => `opinion_${op.id}`);
       const unknown = input.sections.filter((name) => !available.includes(name));
@@ -260,43 +364,31 @@ export const getOpinionTool = tool('courtlistener_get_opinion', {
         );
       }
       const wanted = new Set(input.sections);
-      const selected = opinions.filter((op) => wanted.has(`opinion_${op.id}`));
-      return { ...clusterMeta, opinions: selected, kind: 'full' as const };
+      selected = opinions.filter((op) => wanted.has(`opinion_${op.id}`));
     }
 
-    // Disclosure path: outline scoped to the opinions sub-collection so each variant
-    // is its own section (opinion_<id>). The default extractor would treat the whole
-    // `opinions` array as one unsplittable section, so override it.
-    const overflow = outlineOnOverflow(
-      { opinions },
-      {
-        extract: (doc) =>
-          doc.opinions.map((op) => ({
-            name: `opinion_${op.id}`,
-            bytes: JSON.stringify(op).length,
-          })),
-        notice: (sections) =>
-          `Opinion text too large to inline. Re-call courtlistener_get_opinion with the same cluster_id plus sections:[...] to retrieve specific opinion variants — e.g. ${sections
-            .slice(0, 3)
-            .map((s) => s.name)
-            .join(
-              ', ',
-            )}. Cluster metadata (case name, court, citations, syllabus) is included in every response.`,
-      },
-    );
-
-    if (overflow.kind === 'outline') {
-      return {
-        ...clusterMeta,
-        kind: 'outline' as const,
-        sections: overflow.sections,
-        retrieval_notice: overflow.notice,
-      };
-    }
-    return { ...clusterMeta, opinions: overflow.opinions, kind: 'full' as const };
+    return retrieve({
+      tool: 'opinion',
+      id: input.cluster_id,
+      selection: input.sections,
+      cursor,
+      view: { ...clusterMeta, opinions: selected },
+      groups: selected.map((op) => ({ name: `opinion_${op.id}`, value: op })),
+      required: [
+        'cluster_id',
+        'docket_id',
+        'cite_count',
+        'variants_completion',
+        'docket_enrichment',
+      ],
+      signal: ctx.signal,
+      finalize: finalizeOpinion,
+    });
   },
 
   format: (result) => {
+    if (result.retrieval) return formatRetrievalPage(result);
+    result = presentation(result);
     // Cheap cluster metadata — always present, so this header renders in every mode.
     // `kind` is rendered unconditionally: it's required in every response, so keying
     // it off an arm would hide the discriminator from content[]-only clients.
@@ -305,12 +397,22 @@ export const getOpinionTool = tool('courtlistener_get_opinion', {
       `**Cluster ID:** ${result.cluster_id} | **Court:** ${result.court} (${result.court_id}) | **Filed:** ${result.date_filed}`,
       `**Docket:** ${result.docket_number} (ID: ${result.docket_id}) | **Status:** ${result.precedential_status} | **Cited by:** ${result.cite_count}`,
       `**Response mode:** ${result.kind}`,
+      ...(result.variants_completion
+        ? [
+            `**Variants:** complete=${result.variants_completion.complete}; upstream variant cursor=${result.variants_completion.next_cursor ?? 'none'}.`,
+          ]
+        : []),
+      ...(result.docket_enrichment
+        ? [
+            `**Docket enrichment:** ${result.docket_enrichment.status}; error code=${result.docket_enrichment.error_code ?? 'none'}; reason=${result.docket_enrichment.reason ?? 'none'}.`,
+          ]
+        : []),
     ];
 
     if (result.case_name_full && result.case_name_full !== result.case_name) {
       lines.push(`*${result.case_name_full}*`);
     }
-    if (result.citations.length > 0) {
+    if (result.citations?.length) {
       lines.push(`**Citations:** ${result.citations.join(', ')}`);
     }
     if (result.judges) lines.push(`**Judges:** ${result.judges}`);
@@ -324,7 +426,7 @@ export const getOpinionTool = tool('courtlistener_get_opinion', {
         `**ID:** ${op.id} | **Type code:** ${op.type} | **Per Curiam:** ${op.per_curiam ? 'Yes' : 'No'}`,
       );
       if (op.author_id != null) lines.push(`**Author ID:** ${op.author_id}`);
-      if (op.cites.length > 0) lines.push(`**Cites:** ${op.cites.join(', ')}`);
+      if (op.cites?.length) lines.push(`**Cites:** ${op.cites.join(', ')}`);
       if (op.download_url) lines.push(`**Download:** ${op.download_url}`);
 
       // Full opinion text — no truncation; overflow is handled by the outline arm.
@@ -350,3 +452,11 @@ export const getOpinionTool = tool('courtlistener_get_opinion', {
     return [{ type: 'text', text: lines.join('\n') }, ...outlineBlocks];
   },
 });
+
+/** No enrichment or collected media is declared here: parse + format is the complete success wire. */
+function finalizeOpinion(value: unknown): { structuredContent: object; content: unknown[] } {
+  const parsed = getOpinionTool.output.parse(value);
+  const format = getOpinionTool.format;
+  if (!format) throw new Error('Bounded retrieval requires the production formatter.');
+  return { structuredContent: parsed, content: format(parsed) };
+}

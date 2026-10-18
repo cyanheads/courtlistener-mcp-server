@@ -7,6 +7,11 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { resolveCourtName } from '@/services/courtlistener/court-names.js';
 import { getCourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
+import {
+  formatPageSizing,
+  PageSizing,
+  pageSizing,
+} from '@/services/courtlistener/page-metadata.js';
 import { toStorageUrl } from '@/services/courtlistener/uri.js';
 
 export const getDocketTool = tool('courtlistener_get_docket', {
@@ -35,7 +40,6 @@ export const getDocketTool = tool('courtlistener_get_docket', {
       .number()
       .int()
       .min(1)
-      .max(50)
       .optional()
       .default(20)
       .describe(
@@ -44,6 +48,7 @@ export const getDocketTool = tool('courtlistener_get_docket', {
   }),
 
   output: z.object({
+    page_sizing: PageSizing.optional(),
     docket_id: z.number().describe('Docket ID.'),
     case_name: z.string().describe('Short case name.'),
     case_name_full: z.string().describe('Full case name.'),
@@ -65,7 +70,10 @@ export const getDocketTool = tool('courtlistener_get_docket', {
     jurisdiction_type: z.string().describe('Jurisdiction type.'),
     total_entries: z
       .number()
-      .describe('Total number of docket entries available — may exceed the returned entries list.'),
+      .nullable()
+      .describe(
+        'Total number of docket entries available; null when upstream supplies no numeric total. May exceed the returned entries list.',
+      ),
     entries_page: z.number().describe('Current entries page number (1-indexed).'),
     next_cursor: z
       .string()
@@ -153,7 +161,7 @@ export const getDocketTool = tool('courtlistener_get_docket', {
     const svc = getCourtListenerService();
     const docket = await svc.getDocket(
       input.docket_id,
-      input.entries_page_size,
+      Math.min(input.entries_page_size, 50),
       input.entries_page,
       ctx,
     );
@@ -198,16 +206,18 @@ export const getDocketTool = tool('courtlistener_get_docket', {
       cause: docket.cause ?? '',
       jury_demand: docket.jury_demand ?? '',
       jurisdiction_type: docket.jurisdiction_type ?? '',
-      total_entries: docket.docket_entries_count ?? entries.length,
+      total_entries: docket.docket_entries_count ?? null,
       entries_page: input.entries_page,
       next_cursor: docket.docket_entries_next_page ?? null,
       entries,
+      page_sizing: pageSizing(input.entries_page_size, 50, entries.length, 'fixed_20'),
     };
   },
 
   format: (result) => {
     const lines: string[] = [
       `## ${result.case_name}`,
+      formatPageSizing(result.page_sizing),
       `**Docket ID:** ${result.docket_id} | **Court:** ${result.court} (${result.court_id})`,
       `**Docket #:** ${result.docket_number} | **Filed:** ${result.date_filed}${result.date_terminated ? ` | **Terminated:** ${result.date_terminated}` : ''}`,
     ];
@@ -222,7 +232,7 @@ export const getDocketTool = tool('courtlistener_get_docket', {
     if (result.jurisdiction_type) lines.push(`**Jurisdiction:** ${result.jurisdiction_type}`);
     if (result.pacer_case_id) lines.push(`**PACER ID:** ${result.pacer_case_id}`);
     lines.push(
-      `**Total entries:** ${result.total_entries} | **Page:** ${result.entries_page} | **Next cursor:** ${result.next_cursor ?? 'none'}`,
+      `**Total entries:** ${result.total_entries ?? 'unknown'} | **Page:** ${result.entries_page} | **Next cursor:** ${result.next_cursor ?? 'none'}`,
     );
 
     if (result.entries.length > 0) {

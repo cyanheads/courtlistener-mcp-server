@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.7.3-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/courtlistener-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.1.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/courtlistener-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/courtlistener-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.2-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.7.3-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/courtlistener-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.3.1-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/courtlistener-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/courtlistener-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.3-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -29,14 +29,14 @@
 
 ## Overview
 
-US case law and federal court records from CourtListener's 9M+ opinion corpus and its RECAP mirror of PACER. Search opinions and dockets, trace citation networks, resolve citations, look up judges and courts, and read oral argument transcripts and judicial financial disclosures. Runs as a stdio process, a local Streamable HTTP server, or the public hosted endpoint above.
+US case law and federal court records from CourtListener's 9M+ opinion corpus and its RECAP mirror of PACER. Search opinions and dockets, trace citation networks, resolve citations, look up judges and courts, and read oral argument transcripts and judicial financial disclosures.
 
 ### Tools
 
 | Tool | Description |
 |:---|:---|
 | `courtlistener_search_opinions` | Full-text search across 9M+ court opinions with field syntax, court, date, and status filters |
-| `courtlistener_get_opinion` | Fetch an opinion cluster's metadata and the full text of every variant (majority, concurrence, dissent) |
+| `courtlistener_get_opinion` | Fetch an opinion cluster's metadata and variant text (majority, concurrence, dissent), with source-completion status |
 | `courtlistener_get_citations` | Trace a cluster's citation network: opinions it cites (`citing`) or that cite it (`cited_by`) |
 | `courtlistener_lookup_citation` | Resolve every citation in a text (e.g. "410 U.S. 113") to cluster IDs and case metadata |
 | `courtlistener_search_dockets` | Search RECAP federal dockets by case name, party, attorney, court, and filing date |
@@ -66,10 +66,13 @@ The jurisdiction codes are also listed on the `jurisdiction` parameter of `court
 
 ## Capability reference
 
+Result-page sizes accept positive integers and bound outgoing requests: 20 for searches/citations, 10 for parties, and 50 for docket entries. Both response surfaces carry `page_sizing` (`requested`, `bounded`, `actual`, `upstream`). Upstream search/disclosure pages have a 20-row minimum, parties/entries use fixed 20-row pages, and citing slices cited IDs before searching. Returned pages are preserved; empty/final pages and page-local filters can produce fewer rows. Continue with the native cursor rather than increasing the requested size.
+
 ### `courtlistener_search_opinions` <sub>tool</sub>
 
 - `q` is required and takes CourtListener field syntax (`caseName:"roe v wade"`, `court_id:scotus`, `judge:"Alito"`) and `AND` / `OR` / `NOT`; filter by `court`, `filed_after` / `filed_before`, and `status`, and sort with `order_by` (`score desc` default, `dateFiled desc`, `dateFiled asc`, `citeCount desc`); 20 results per page, continued with `next_cursor`
 - Each result carries `cluster_id` (for `courtlistener_get_opinion` and `courtlistener_get_citations`), `docket_id`, `cite_count`, a `snippet`, and `opinions[]` variants with opinion ID, `type`, `author_id`, and `local_path`; `totalCount` and `effectiveQuery` report the match
+- Omit `status` for CourtListener's Published default, or select one publication status, including `In-chambers` and `Relating-to`.
 
 ---
 
@@ -77,14 +80,17 @@ The jurisdiction codes are also listed on the `jurisdiction` parameter of `court
 
 - `cluster_id` is required; after an outline response, `sections: ["opinion_<id>", ...]` pulls specific variants, and a name the cluster doesn't have fails as `unknown_section`
 - Cluster metadata (case name, `court_id`, citations, `cite_count`, `precedential_status`, syllabus, posture, `docket_id`) plus each variant's `html_text`, `plain_text`, `cites[]`, `download_url`, and `type_label`, the same label `courtlistener_search_opinions` reports
-- `kind` is `full`, or `outline` when the variants overflow the inline budget: the response then lists them as retrievable `opinion_<id>` sections and keeps the cluster metadata
+- Small responses use `kind: "full"`. Oversized variants or metadata return a bounded `outline`, then typed `page` responses through `retrieval.next_cursor`; repeat the original ID and selection with `cursor` until null.
+- Supplied `plain_text` is preserved; markup-only variants gain readable text with paragraphs, tables, lists, footnotes, and decoded entities. `html_text` retains raw source and renders as fenced text. Search/citation snippets use the same readable normalization.
+- `variants_completion` reports whether the bounded source walk finished and its remaining upstream variant cursor. `docket_enrichment` distinguishes `not_linked`, `resolved`, `source_fields_absent`, and `lookup_failed` with a sanitized failure category; cancellation propagates.
 
 ---
 
 ### `courtlistener_get_citations` <sub>tool</sub>
 
 - `cluster_id` is required; `direction` is `cited_by` (default, opinions that cite this one) or `citing` (opinions it cites); optional `court` and `filed_after` filters; up to 20 results per page, continued with `cursor`
-- Rows carry `cluster_id`, `court_id`, `date_filed`, `cite_count`, and `snippet`; for `citing`, `totalCount` counts the unfiltered cited-opinion list, and a filtered page can come back empty while `next_cursor` is still set
+- Rows carry `cluster_id`, `court_id`, `date_filed`, `cite_count`, and `snippet`; for `citing`, totals count the unfiltered cited-opinion list, and a filtered page can come back empty while `next_cursor` is still set. `source_variants_completion` and `total_is_partial` qualify `observed_total`; incomplete variants make this a lower bound and omit the exact `totalCount` trailer.
+- For `citing`, `cursor` is a nonnegative safe decimal integer offset (`01`, `+1`, `1.0`, and `1.` all mean `1`); malformed offsets fail as `invalid_cursor` before any request. An offset at or past the end returns an empty page with the source name and unfiltered distinct-opinion total, without searching. `cited_by` cursors stay opaque.
 
 ---
 
@@ -107,13 +113,15 @@ The jurisdiction codes are also listed on the `jurisdiction` parameter of `court
 
 - `docket_id` is required; entries come 20 per page (CourtListener ignores `entries_page_size`), walked with `entries_page`
 - Returns docket metadata, `total_entries`, `next_cursor` (the next `entries_page` number), and `entries[]` whose `documents[]` carry `is_available`, `page_count`, and `filepath_local`; documents with `is_available: false` need PACER, and fetching them is not exposed
+- `total_entries` is `null` when CourtListener supplies no numeric total, including on the last page; the rendered total says `unknown`. It never substitutes the number of entries returned.
 
 ---
 
 ### `courtlistener_get_parties` <sub>tool</sub>
 
-- `docket_id` is required; `cursor` takes the opaque `next_cursor` token, not a page number; `page_size` (max 10) is a request CourtListener may not honor
+- `docket_id` is required; `cursor` takes the opaque `next_cursor` token, not a page number; outgoing `page_size` is bounded to 10 and CourtListener may not honor it
 - Each party carries `name`, its docket-scoped `role`, and `attorneys[]` with `name`, `contact_raw`, `role_code` / `role` (codes 5–9 mean no longer of record), and `date_action`; `total_parties` uses the upstream total when supplied, otherwise counts a single-page result or stays null
+- `attorney_resolution` reports resolved, exhausted, or capped lookups, unresolved IDs, and the remaining upstream roster cursor. Resolution stops after five roster pages or when the local request budget blocks a later page; already fetched records are retained. Per-attorney `resolution` distinguishes a resolved record with empty source fields from `not_found` after exhaustion and `not_fetched` after the cap. Upstream roster/variant cursors describe completeness; these tools do not accept them as new retrieval inputs.
 
 ---
 
@@ -148,8 +156,8 @@ The jurisdiction codes are also listed on the `jurisdiction` parameter of `court
 
 ### `courtlistener_get_oral_argument` <sub>tool</sub>
 
-- `id` (an `audio_id` from a search) is required; `sections: ["transcript"]` pulls a transcript that an outline response withheld
-- Returns `panel_ids`, `duration_seconds`, `download_url`, `docket_id`, `has_transcript`, and `transcript`; `kind` is `outline` when the transcript overflows the inline budget. The argument date is not on this record; take it from the search result or the docket
+- `id` (an `audio_id` from a search) is required; `sections: ["transcript"]` selects the transcript. Selected responses obey the same byte limits.
+- Returns `panel_ids`, `duration_seconds`, `download_url`, `docket_id`, `has_transcript`, and `transcript`; oversized text or metadata uses `outline` and cursor-driven `page` responses. The argument date is not on this record; take it from the search result or the docket.
 
 ---
 
@@ -163,7 +171,9 @@ The jurisdiction codes are also listed on the `jurisdiction` parameter of `court
 ### `courtlistener_get_financial_disclosure` <sub>tool</sub>
 
 - `disclosure_id` is required; `categories` selects from `investments`, `debts`, `positions`, `reimbursements`, `non_investment_incomes`, `spouse_incomes`, `agreements`, and `gifts` (omit for all)
-- Returns filing metadata, `counts`, and the requested line-item rows, with coded value and income columns decoded to dollar ranges (`N` → `$250,001 - $500,000`); `kind` is `outline` when the full itemization overflows, listing categories by size for a `categories` re-call
+- Returns filing metadata, `counts`, and the requested line-item rows, with coded value and income columns decoded to dollar ranges (`N` → `$250,001 - $500,000`); oversized selections use `outline` and cursor-driven `page` responses, including when a single row exceeds the budget.
+
+Opinion, audio, and disclosure retrieval bounds each serialized response surface (`structuredContent` and complete `content[]`) to 24,000 UTF-8 bytes. Repeat the original ID and unchanged sections/categories selection with `cursor: retrieval.next_cursor`. Catalog pages lead automatically to data pages. `retrieval.ranges` uses JSON Pointer paths and absolute exclusive ranges (`rows`, `code_points`, or `sections`); merge typed rows by absolute index, and concatenate `text_chunks` by their code-point ranges. Partial rows retain their source identity; omitted text is recoverable through its original field path. Metadata can also be paged. Structured strings remain unescaped; presentation escaping happens after slicing. A changed normalized source returns `stale_cursor`; restart without cursor. Source-completion cursors remain distinct from these retrieval cursors.
 
 ---
 
@@ -194,7 +204,7 @@ Agent-friendly output:
 
 - Chaining IDs: `cluster_id`, `docket_id`, `person_id`, `audio_id`, and `disclosure_id` appear wherever they feed a follow-up call, with field descriptions naming the tool that takes each
 - Typed rate-limit errors: `reason: "rate_limited"` with `retryAfter` in seconds, whether CourtListener returned the 429 or the queue gave up before sending, in which case the message says no request was spent
-- Outlines instead of oversized payloads: `courtlistener_get_opinion`, `courtlistener_get_oral_argument`, and `courtlistener_get_financial_disclosure` return `kind: "outline"` with named sections to re-call for
+- Bounded retrieval: opinion, audio, and disclosure tools preserve small full responses and stream oversized selected records through an outline and resumable typed pages without truncating source text
 - Coverage caveats inline: RECAP `coverage_note`, `court_resolution` on citation lookups, `truncated` on position history, and notices when a page-local filter empties a page that has more pages behind it
 
 ## Getting started

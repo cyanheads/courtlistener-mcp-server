@@ -154,7 +154,7 @@ describe('getOralArgumentTool', () => {
       expect(result.sections).toEqual([
         { name: 'transcript', bytes: JSON.stringify(longTranscript).length },
       ]);
-      expect(result.retrieval_notice).toContain('sections:["transcript"]');
+      expect(result.retrieval_notice).toContain('retrieval.next_cursor');
     });
 
     it('renders the metadata header on the outline arm in content[] (#51)', async () => {
@@ -171,7 +171,7 @@ describe('getOralArgumentTool', () => {
       // Pre-fix content[] was exactly '**Response mode:** outline' — 26 characters.
       expect(text.length).toBeGreaterThan(100);
       expect(text).toContain('**Response mode:** outline');
-      expect(text).toContain(baseAudio.case_name);
+      expect(text).toContain('Arrowhead Capital Finance v\\. Seven Arts');
       expect(text).toContain('73418842');
       expect(text).toContain('sections available');
     });
@@ -187,7 +187,7 @@ describe('getOralArgumentTool', () => {
       expect(result.sections).toBeUndefined();
     });
 
-    it('returns the full transcript on a section re-call', async () => {
+    it('bounds the selected transcript on a section re-call', async () => {
       mockSvc.getOralArgument = vi
         .fn()
         .mockResolvedValue({ ...baseAudio, stt_transcript: longTranscript });
@@ -195,8 +195,9 @@ describe('getOralArgumentTool', () => {
       const input = getOralArgumentTool.input.parse({ id: 105162, sections: ['transcript'] });
       const result = await getOralArgumentTool.handler(input, ctx);
 
-      expect(result.kind).toBe('full');
-      expect(result.transcript).toBe(longTranscript);
+      expect(result.kind).toBe('outline');
+      expect(result.transcript).toBeUndefined();
+      expect(result.retrieval?.next_cursor).toEqual(expect.any(String));
       // identity fields retained via alwaysKeep
       expect(result.oral_argument_id).toBe(105162);
       expect(result.case_name).toBe(baseAudio.case_name);
@@ -275,13 +276,13 @@ describe('getOralArgumentTool', () => {
     const blocks = getOralArgumentTool.format!(output);
     const text = (blocks[0] as { text: string }).text;
     expect(text).toContain('105162');
-    expect(text).toContain('Arrowhead Capital Finance v. Seven Arts');
+    expect(text).toContain('Arrowhead Capital Finance v\\. Seven Arts');
     // duration rendered (1607s = 26m 47s)
     expect(text).toContain('1607');
     // panel ids rendered
     expect(text).toContain('42');
     // transcript rendered
-    expect(text).toContain('Good morning, your honors.');
+    expect(text).toContain('Good morning, your honors\\.');
     // #38 — the kind discriminator must reach content[], not just structuredContent
     expect(text).toContain('**Response mode:** full');
   });
@@ -304,7 +305,7 @@ describe('getOralArgumentTool', () => {
     const blocks = getOralArgumentTool.format!(output);
     const text = (blocks[0] as { text: string }).text;
     // full text present, no truncation marker
-    expect(text).toContain(longTranscript);
+    expect(text).toContain('ARGUMENT SESSION\\. '.repeat(2000));
     expect(text).not.toContain('truncated');
   });
 
@@ -327,11 +328,11 @@ describe('getOralArgumentTool', () => {
     const text = blocks.map((b) => (b as { text: string }).text).join('\n');
     expect(text).toContain('transcript');
     expect(text).toContain('sections available');
-    expect(text).toContain('Re-call with sections');
+    expect(text).toContain('Re\\-call with sections');
     // #38 — the mode line must reach content[], not just structuredContent.
     expect(text).toContain('**Response mode:** outline');
     // #51 — the outline arm carries the record metadata, so the header renders too.
-    expect(text).toContain('Arrowhead Capital Finance v. Seven Arts');
+    expect(text).toContain('Arrowhead Capital Finance v\\. Seven Arts');
     expect(text).toContain('105162');
     expect(text).toContain('73418842');
   });

@@ -7,6 +7,11 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getCourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
 import { findInvalidDates, ISO_DATE_HINT } from '@/services/courtlistener/dates.js';
+import {
+  formatPageSizing,
+  PageSizing,
+  pageSizing,
+} from '@/services/courtlistener/page-metadata.js';
 import { toStorageUrl } from '@/services/courtlistener/uri.js';
 
 const COVERAGE_NOTE =
@@ -43,11 +48,10 @@ export const searchDocketsTool = tool('courtlistener_search_dockets', {
       .number()
       .int()
       .min(1)
-      .max(20)
       .optional()
       .default(20)
       .describe(
-        'Number of results to request (default 20). CourtListener search enforces a minimum of 20 results per page regardless of the value passed — you will always receive at least 20 results.',
+        'Positive requested page size (default 20), bounded to 20. Upstream search has a 20-row minimum; empty and final pages can be smaller. Full pages and continuation are preserved; page_sizing reports actual sizes.',
       ),
     cursor: z
       .string()
@@ -56,6 +60,7 @@ export const searchDocketsTool = tool('courtlistener_search_dockets', {
   }),
 
   output: z.object({
+    page_sizing: PageSizing.optional(),
     results: z
       .array(
         z
@@ -239,7 +244,7 @@ export const searchDocketsTool = tool('courtlistener_search_dockets', {
         party_name: input.party_name,
         filed_after: input.filed_after,
         filed_before: input.filed_before,
-        page_size: input.page_size,
+        page_size: Math.min(input.page_size, 20),
         cursor: input.cursor,
       },
       ctx,
@@ -299,12 +304,14 @@ export const searchDocketsTool = tool('courtlistener_search_dockets', {
       results,
       next_cursor: data.nextCursor,
       coverage_note: COVERAGE_NOTE,
+      page_sizing: pageSizing(input.page_size, 20, results.length, 'minimum_20'),
     };
   },
 
   format: (result) => {
     const lines: string[] = [
       `## CourtListener Docket Search`,
+      formatPageSizing(result.page_sizing),
       `**Returned:** ${result.results.length}`,
       `\n> ${result.coverage_note}`,
     ];

@@ -162,7 +162,7 @@ describe.each(searches)('$name characterization', (definition) => {
     expect(fetchStub).toHaveBeenCalledOnce();
   });
 
-  it.each([{ q: ' ' }, { q: 'case', page_size: 21 }])(
+  it.each([{ q: ' ' }, { q: 'case', page_size: 0 }])(
     'rejects invalid local input %j before fetch',
     async (input) => {
       const result = await runToolContract(definition, input);

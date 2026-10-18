@@ -4,7 +4,7 @@
  * @module tests/tools/get-financial-disclosure.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getFinancialDisclosureTool } from '@/mcp-server/tools/definitions/get-financial-disclosure.tool.js';
 import type { CourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
@@ -125,6 +125,84 @@ function makeOverflowDisclosure(): FinancialDisclosure {
 }
 
 describe('getFinancialDisclosureTool', () => {
+  it('ignores custom inherited disclosure labels', async () => {
+    Object.defineProperty(Object.prototype, 'unmappedDisclosure', {
+      value: 'Inherited label',
+      configurable: true,
+    });
+    try {
+      mockSvc.getFinancialDisclosure = vi.fn().mockResolvedValue({
+        ...baseDisclosure,
+        investments: [{ ...baseDisclosure.investments[0], gross_value_code: 'unmappedDisclosure' }],
+      });
+      const contract = await runToolContract(getFinancialDisclosureTool, { disclosure_id: 34207 });
+      expect(contract.structuredContent).toMatchObject({
+        investments: [{ value_range: 'unmappedDisclosure' }],
+      });
+      expect(JSON.stringify(contract.content)).toContain('unmappedDisclosure');
+    } finally {
+      Reflect.deleteProperty(Object.prototype, 'unmappedDisclosure');
+    }
+  });
+  it.each([
+    ['constructor', 'constructor'],
+    ['__proto__', '\\_\\_proto\\_\\_'],
+    ['toString', 'toString'],
+  ])('preserves unknown %s in every disclosure code column', async (code, displayed) => {
+    mockSvc.getFinancialDisclosure = vi.fn().mockResolvedValue({
+      ...baseDisclosure,
+      investments: [
+        {
+          ...baseDisclosure.investments[0],
+          income_during_reporting_period_code: code,
+          gross_value_code: code,
+          gross_value_method: code,
+          transaction_value_code: code,
+          transaction_gain_code: code,
+        },
+      ],
+      debts: [{ ...baseDisclosure.debts[0], value_code: code }],
+    });
+    const result = await getFinancialDisclosureTool.handler(
+      getFinancialDisclosureTool.input.parse({ disclosure_id: 34207 }),
+      createMockContext({ errors: getFinancialDisclosureTool.errors }),
+    );
+    expect(result.investments?.[0]).toMatchObject({
+      income_range: code,
+      value_range: code,
+      value_method: code,
+      transaction_value_range: code,
+      transaction_gain_range: code,
+    });
+    expect(result.debts?.[0]?.value_range).toBe(code);
+    expect(() => getFinancialDisclosureTool.output.parse(result)).not.toThrow();
+    expect(
+      getFinancialDisclosureTool.format!(result)
+        .map((block) => (block.type === 'text' ? block.text : ''))
+        .join('\n'),
+    ).toContain(displayed);
+    const contract = await runToolContract(getFinancialDisclosureTool, { disclosure_id: 34207 });
+    expect(contract.isError).not.toBe(true);
+    expect(contract.structuredContent).toMatchObject({
+      investments: [
+        {
+          income_range: code,
+          value_range: code,
+          value_method: code,
+          transaction_value_range: code,
+          transaction_gain_range: code,
+        },
+      ],
+      debts: [{ value_range: code }],
+    });
+    const text = contract.content
+      .map((block) => (block.type === 'text' ? block.text : ''))
+      .join('\n');
+    expect(text).toContain(`Income: Interest ${displayed}`);
+    expect(text).toContain(`Value: ${displayed} (${displayed})`);
+    expect(text).toContain(`value ${displayed}, gain ${displayed}`);
+    expect(text).toContain(`(value ${displayed})`);
+  });
   it('returns full itemization with decoded codes for a small filing', async () => {
     mockSvc.getFinancialDisclosure = vi.fn().mockResolvedValue(baseDisclosure);
     const ctx = createMockContext({ errors: getFinancialDisclosureTool.errors });
@@ -199,14 +277,14 @@ describe('getFinancialDisclosureTool', () => {
     expect(names).toContain('investments');
     expect(names).toContain('debts');
     expect(names[0]).toBe('investments'); // biggest category leads
-    expect(result.retrieval_notice).toContain('categories:[');
+    expect(result.retrieval_notice).toContain('retrieval.next_cursor');
     // cheap metadata + counts survive overflow
     expect(result.disclosure_id).toBe(34207);
     expect(result.counts.investments).toBe(100);
     expect(() => getFinancialDisclosureTool.output.parse(result)).not.toThrow();
   });
 
-  it('returns a large category in full on an explicit category re-call (no overflow gate)', async () => {
+  it('bounds a large explicitly selected category through retrieval', async () => {
     mockSvc.getFinancialDisclosure = vi.fn().mockResolvedValue(makeOverflowDisclosure());
     const ctx = createMockContext({ errors: getFinancialDisclosureTool.errors });
     const input = getFinancialDisclosureTool.input.parse({
@@ -215,10 +293,9 @@ describe('getFinancialDisclosureTool', () => {
     });
     const result = await getFinancialDisclosureTool.handler(input, ctx);
 
-    // explicit selection returns the rows in full even when they exceed the inline budget
-    expect(result.kind).toBe('full');
-    expect(result.investments).toHaveLength(100);
-    expect(result.sections).toBeUndefined();
+    expect(result.kind).toBe('outline');
+    expect(result.investments).toBeUndefined();
+    expect(result.retrieval?.next_cursor).toEqual(expect.any(String));
     expect(result.debts).toBeUndefined();
     expect(() => getFinancialDisclosureTool.output.parse(result)).not.toThrow();
   });
@@ -289,8 +366,8 @@ describe('getFinancialDisclosureTool', () => {
     expect(text).toContain('3045');
     expect(text).toContain('1 investments');
     // decoded row data appears on the content[] surface
-    expect(text).toContain('Citibank, N.A. Accounts');
-    expect(text).toContain('$250,001 - $500,000');
+    expect(text).toContain('Citibank, N\\.A\\. Accounts');
+    expect(text).toContain('$250,001 \\- $500,000');
     expect(text).toContain('Cash/market value');
     expect(text).toContain('Wells Fargo Bank, NA');
   });

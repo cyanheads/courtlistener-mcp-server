@@ -85,6 +85,31 @@ const baseResult = {
 };
 
 describe('searchOpinionsTool', () => {
+  it.each([
+    'Published',
+    'Unpublished',
+    'Errata',
+    'Separate',
+    'In-chambers',
+    'Relating-to',
+    'Unknown',
+  ] as const)('preserves the selected %s status on both surfaces', async (status) => {
+    mockSvc.searchOpinions = vi
+      .fn()
+      .mockResolvedValue({ ...baseResult, results: [{ ...baseResult.results[0], status }] });
+    const result = await runToolContract(searchOpinionsTool, { q: 'test', status });
+    expect(mockSvc.searchOpinions).toHaveBeenCalledWith(
+      expect.objectContaining({ status }),
+      expect.anything(),
+    );
+    expect(result.structuredContent).toMatchObject({ results: [{ status }] });
+    expect(JSON.stringify(result.content)).toContain(`Status:** ${status}`);
+  });
+
+  it('documents the upstream Published default without introducing another status', () => {
+    expect(searchOpinionsTool.input.shape.status.description).toContain('Published default');
+    expect(searchOpinionsTool.input.safeParse({ q: 'test', status: 'all' }).success).toBe(false);
+  });
   it('preserves nested opinion data on both contract response surfaces', async () => {
     mockSvc.searchOpinions = vi.fn().mockResolvedValue(baseResult);
     const result = await runToolContract(searchOpinionsTool, { q: 'abortion rights' });

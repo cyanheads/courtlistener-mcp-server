@@ -6,8 +6,16 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { formatOutline, OUTLINE_VARIANT, outlineOnOverflow } from '@cyanheads/mcp-ts-core/utils';
+import { formatOutline, OUTLINE_VARIANT } from '@cyanheads/mcp-ts-core/utils';
 import { getCourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
+import { presentation } from '@/services/courtlistener/readable-text.js';
+import {
+  formatRetrievalPage,
+  Retrieval,
+  RetrievalCursor,
+  readRetrievalCursor,
+  retrieve,
+} from '@/services/courtlistener/retrieval.js';
 import type {
   Agreement,
   Debt,
@@ -89,7 +97,7 @@ const VALUATION_METHODS: Record<string, string> = {
 
 /** Decode an AO form code to its label; '' stays '', an unknown code stays raw. */
 function decode(code: string, table: Record<string, string>): string {
-  return code ? (table[code] ?? code) : '';
+  return Object.hasOwn(table, code) ? (table[code] as string) : code;
 }
 
 // ── Per-category normalizers: raw upstream row → readable output row ─────────────
@@ -213,7 +221,21 @@ const InvestmentRow = z
     transaction_partner: z.string().describe('Identity of the transaction partner; empty if none.'),
     redacted: z.boolean().describe('True if the source row was partially redacted.'),
   })
-  .describe('An investment holding (Part VII).');
+  .partial({
+    description: true,
+    income_type: true,
+    income_range: true,
+    value_range: true,
+    value_method: true,
+    transaction: true,
+    transaction_date: true,
+    transaction_value_range: true,
+    transaction_gain_range: true,
+    transaction_partner: true,
+  })
+  .describe(
+    'An investment holding (Part VII); omitted partial strings remain reachable through retrieval.',
+  );
 
 const DebtRow = z
   .object({
@@ -223,7 +245,10 @@ const DebtRow = z
     value_range: z.string().describe('Value of the debt as a dollar range; empty if none.'),
     redacted: z.boolean().describe('True if the source row was partially redacted.'),
   })
-  .describe('A debt or liability (Part VII).');
+  .partial({ creditor: true, description: true, value_range: true })
+  .describe(
+    'A debt or liability (Part VII); omitted partial strings remain reachable through retrieval.',
+  );
 
 const PositionRow = z
   .object({
@@ -232,7 +257,10 @@ const PositionRow = z
     organization: z.string().describe('Organization or entity name.'),
     redacted: z.boolean().describe('True if the source row was partially redacted.'),
   })
-  .describe('An outside position held by the filer (Part I).');
+  .partial({ position: true, organization: true })
+  .describe(
+    'An outside position held by the filer (Part I); omitted partial strings remain reachable through retrieval.',
+  );
 
 const ReimbursementRow = z
   .object({
@@ -244,7 +272,10 @@ const ReimbursementRow = z
     items: z.string().describe('Items reimbursed (e.g. "Transportation, Lodging and Meals").'),
     redacted: z.boolean().describe('True if the source row was partially redacted.'),
   })
-  .describe('A travel/event reimbursement (Part IV).');
+  .partial({ source: true, date: true, location: true, purpose: true, items: true })
+  .describe(
+    'A travel/event reimbursement (Part IV); omitted partial strings remain reachable through retrieval.',
+  );
 
 const NonInvestmentIncomeRow = z
   .object({
@@ -254,7 +285,10 @@ const NonInvestmentIncomeRow = z
     amount: z.string().describe('Amount as filed — usually a dollar string (e.g. "$10,116.00").'),
     redacted: z.boolean().describe('True if the source row was partially redacted.'),
   })
-  .describe("The filer's non-investment income (Part II).");
+  .partial({ date: true, source_type: true, amount: true })
+  .describe(
+    "The filer's non-investment income (Part II); omitted partial strings remain reachable through retrieval.",
+  );
 
 const SpouseIncomeRow = z
   .object({
@@ -263,7 +297,10 @@ const SpouseIncomeRow = z
     date: z.string().describe('Date as filed.'),
     redacted: z.boolean().describe('True if the source row was partially redacted.'),
   })
-  .describe("The filer's spouse income (Part III).");
+  .partial({ source_type: true, date: true })
+  .describe(
+    "The filer's spouse income (Part III); omitted partial strings remain reachable through retrieval.",
+  );
 
 const AgreementRow = z
   .object({
@@ -272,7 +309,10 @@ const AgreementRow = z
     parties_and_terms: z.string().describe('Parties to and terms of the agreement.'),
     redacted: z.boolean().describe('True if the source row was partially redacted.'),
   })
-  .describe('A continuing agreement or arrangement (Part VIII).');
+  .partial({ date: true, parties_and_terms: true })
+  .describe(
+    'A continuing agreement or arrangement (Part VIII); omitted partial strings remain reachable through retrieval.',
+  );
 
 const GiftRow = z
   .object({
@@ -280,7 +320,10 @@ const GiftRow = z
     source: z.string().describe('Who provided the gift.'),
     value: z.string().describe('Reported dollar value; empty if not stated.'),
   })
-  .describe('A reported gift (Part VI).');
+  .partial({ description: true, source: true, value: true })
+  .describe(
+    'A reported gift (Part VI); omitted partial strings remain reachable through retrieval.',
+  );
 
 const CountsShape = z
   .object({
@@ -300,10 +343,11 @@ const CountsShape = z
 export const getFinancialDisclosureTool = tool('courtlistener_get_financial_disclosure', {
   title: 'Get Financial Disclosure',
   description:
-    'Fetch a single judicial financial disclosure by ID with its parsed line-item rows — investments, debts, positions, reimbursements, non-investment and spouse income, agreements, and gifts. This is the itemized companion to courtlistener_search_financial_disclosures (which returns only category counts). Pass categories:[...] to select specific categories; omit for all. Coded value/income columns are decoded to readable dollar ranges. When the full itemization is too large to inline, the response lists each category as a retrievable section by byte size while keeping the filing metadata and counts — re-call with categories:[...] to pull specific categories in full. Obtain disclosure IDs from courtlistener_search_financial_disclosures (the disclosure_id field).',
+    'Fetch a judicial financial disclosure by disclosure_id from courtlistener_search_financial_disclosures. Returns metadata, counts and typed line items with coded values decoded to dollar ranges. Select categories or omit for all. Oversized selections return outline then page responses; continue retrieval.next_cursor as cursor with the unchanged ID/categories selection until null. Large individual row fields remain recoverable through text_chunks.',
   annotations: { readOnlyHint: true, idempotentHint: true },
 
   input: z.object({
+    cursor: RetrievalCursor,
     disclosure_id: z
       .number()
       .int()
@@ -314,71 +358,90 @@ export const getFinancialDisclosureTool = tool('courtlistener_get_financial_disc
       .array(z.enum(CATEGORY_NAMES))
       .optional()
       .describe(
-        'Line-item categories to return in full: investments, debts, positions, reimbursements, non_investment_incomes, spouse_incomes, agreements, gifts. Omit for all categories (or an outline if they overflow the inline budget). Also the re-call selector — after an outline response, re-call with the category names it lists.',
+        'Line-item categories to select. Omit for all. Oversized selections page; keep this selection unchanged while following cursor.',
       ),
   }),
 
-  output: z.object({
-    // Cheap filing metadata — always present, in both full and outline responses.
-    disclosure_id: z.number().describe('Financial disclosure ID.'),
-    person_id: z
-      .number()
-      .nullable()
-      .describe('Person ID of the filer — pass to courtlistener_get_judge; null if absent.'),
-    year: z.number().describe('Filing year.'),
-    report_type: z
-      .string()
-      .describe('Report type (Nomination, Initial, Annual, Final, or Unknown).'),
-    page_count: z
-      .number()
-      .nullable()
-      .describe('Page count of the source filing; null if not recorded.'),
-    has_been_extracted: z
-      .boolean()
-      .describe(
-        'True if line items were parsed from the PDF; category arrays are empty when false.',
-      ),
-    is_amended: z.boolean().describe('True if this filing is an amendment.'),
-    pdf_url: z
-      .string()
-      .nullable()
-      .describe('URL to the source disclosure PDF; null if unavailable.'),
-    counts: CountsShape,
-    kind: z
-      .enum(['full', 'outline'])
-      .describe(
-        "'full' returns the requested category rows; 'outline' lists each category as a retrievable section (by byte size) when the itemization overflows the inline budget. Filing metadata and counts are present either way.",
-      ),
-    // Full arm — one field per category, present when selected and non-empty. Omitted in outline mode.
-    investments: z.array(InvestmentRow).optional().describe('Investment holdings.'),
-    debts: z.array(DebtRow).optional().describe('Debts and liabilities.'),
-    positions: z.array(PositionRow).optional().describe('Outside positions.'),
-    reimbursements: z.array(ReimbursementRow).optional().describe('Reimbursements.'),
-    non_investment_incomes: z
-      .array(NonInvestmentIncomeRow)
-      .optional()
-      .describe('Non-investment income sources.'),
-    spouse_incomes: z.array(SpouseIncomeRow).optional().describe('Spouse income sources.'),
-    agreements: z.array(AgreementRow).optional().describe('Continuing agreements.'),
-    gifts: z.array(GiftRow).optional().describe('Reported gifts.'),
-    // Outline arm — one section per category. Reuses OUTLINE_VARIANT's shape; the section
-    // element gets an object-level describe (the framework schema describes only name/bytes),
-    // and the re-call notice is named retrieval_notice so it reads as domain data (a field
-    // literally named `notice` reads as agent-facing context).
-    sections: z
-      .array(
-        OUTLINE_VARIANT.shape.sections.element.describe(
-          'A retrievable category (by name) and its serialized byte size.',
+  output: z
+    .object({
+      retrieval: Retrieval,
+      // Bounded identity stays present; oversized metadata follows retrieval paths.
+      disclosure_id: z.number().describe('Financial disclosure ID.'),
+      person_id: z
+        .number()
+        .nullable()
+        .describe('Person ID of the filer — pass to courtlistener_get_judge; null if absent.'),
+      year: z.number().describe('Filing year.'),
+      report_type: z
+        .string()
+        .describe('Report type (Nomination, Initial, Annual, Final, or Unknown).'),
+      page_count: z
+        .number()
+        .nullable()
+        .describe('Page count of the source filing; null if not recorded.'),
+      has_been_extracted: z
+        .boolean()
+        .describe(
+          'True if line items were parsed from the PDF; category arrays are empty when false.',
         ),
-      )
-      .optional()
-      .describe('Retrievable categories, largest first — pass names to `categories` on a re-call.'),
-    retrieval_notice: OUTLINE_VARIANT.shape.notice
-      .optional()
-      .describe('How to re-call the tool for specific categories when the itemization overflows.'),
-  }),
+      is_amended: z.boolean().describe('True if this filing is an amendment.'),
+      pdf_url: z
+        .string()
+        .nullable()
+        .describe('URL to the source disclosure PDF; null if unavailable.'),
+      counts: CountsShape,
+      kind: z
+        .enum(['full', 'outline', 'page'])
+        .describe(
+          "'full' carries a small selected record; 'outline' pages the section catalog; 'page' carries typed rows and field-path text chunks. Filing identity and counts remain present.",
+        ),
+      // Full arm — one field per category, present when selected and non-empty. Omitted in outline mode.
+      investments: z.array(InvestmentRow).optional().describe('Investment holdings.'),
+      debts: z.array(DebtRow).optional().describe('Debts and liabilities.'),
+      positions: z.array(PositionRow).optional().describe('Outside positions.'),
+      reimbursements: z.array(ReimbursementRow).optional().describe('Reimbursements.'),
+      non_investment_incomes: z
+        .array(NonInvestmentIncomeRow)
+        .optional()
+        .describe('Non-investment income sources.'),
+      spouse_incomes: z.array(SpouseIncomeRow).optional().describe('Spouse income sources.'),
+      agreements: z.array(AgreementRow).optional().describe('Continuing agreements.'),
+      gifts: z.array(GiftRow).optional().describe('Reported gifts.'),
+      // Outline arm — one section per category. Reuses OUTLINE_VARIANT's shape; the section
+      // element gets an object-level describe (the framework schema describes only name/bytes),
+      // and the re-call notice is named retrieval_notice so it reads as domain data (a field
+      // literally named `notice` reads as agent-facing context).
+      sections: z
+        .array(
+          OUTLINE_VARIANT.shape.sections.element.describe(
+            'A retrievable category (by name) and its serialized byte size.',
+          ),
+        )
+        .optional()
+        .describe(
+          'Category catalog in declared order, with paged metadata fields. Follow retrieval.next_cursor to finish the catalog and retrieve data.',
+        ),
+      retrieval_notice: OUTLINE_VARIANT.shape.notice
+        .optional()
+        .describe('How to continue bounded retrieval using the unchanged ID and selection.'),
+    })
+    .partial({ report_type: true, pdf_url: true }),
 
   errors: [
+    {
+      reason: 'invalid_cursor',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'Retrieval cursor is malformed, out of range or belongs to another request.',
+      recovery: 'Restart without cursor using the original ID and selection.',
+      thrownBy: 'service',
+    },
+    {
+      reason: 'stale_cursor',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'The normalized selected source changed since the previous page.',
+      recovery: 'Restart without cursor to retrieve the current source consistently.',
+      thrownBy: 'service',
+    },
     {
       reason: 'not_found',
       code: JsonRpcErrorCode.NotFound,
@@ -398,6 +461,12 @@ export const getFinancialDisclosureTool = tool('courtlistener_get_financial_disc
   ],
 
   async handler(input, ctx) {
+    const cursor = readRetrievalCursor(
+      input.cursor,
+      'disclosure',
+      input.disclosure_id,
+      input.categories,
+    );
     ctx.log.info('courtlistener_get_financial_disclosure', {
       disclosure_id: input.disclosure_id,
       categories: input.categories,
@@ -416,7 +485,7 @@ export const getFinancialDisclosureTool = tool('courtlistener_get_financial_disc
       spouse_incomes: d.spouse_incomes.length,
     };
 
-    // Cheap filing metadata — kept in every response, full or outline.
+    // Normalize metadata before measuring the selected view.
     const meta = {
       disclosure_id: d.id,
       person_id: personIdFromUri(d.person ?? ''),
@@ -465,42 +534,37 @@ export const getFinancialDisclosureTool = tool('courtlistener_get_financial_disc
       returned_categories: Object.keys(arrays),
     });
 
-    // Explicit category selection → return those in full (the agent asked for them,
-    // whether a first targeted call or an outline re-call). No overflow gate.
-    if (input.categories?.length) {
-      return { ...meta, ...arrays, kind: 'full' as const };
-    }
-
-    // Default (all categories) → outline when the itemization overflows the inline
-    // budget, so the agent can re-call with categories:[...]. The default extractor
-    // makes one section per top-level key, i.e. one per category, sorted by byte size.
-    const overflow = outlineOnOverflow(arrays, {
-      notice: (sections) =>
-        `Full itemization too large to inline. Re-call courtlistener_get_financial_disclosure with the same disclosure_id plus categories:[...] to retrieve specific categories in full — e.g. ${sections
-          .slice(0, 3)
-          .map((s) => s.name)
-          .join(', ')}. Filing metadata and category counts are included in every response.`,
+    return retrieve({
+      tool: 'disclosure',
+      id: input.disclosure_id,
+      selection: input.categories,
+      cursor,
+      view: { ...meta, ...arrays },
+      groups: Object.entries(arrays).map(([name, value]) => ({ name, value })),
+      required: [
+        'disclosure_id',
+        'person_id',
+        'year',
+        'page_count',
+        'has_been_extracted',
+        'is_amended',
+        'counts',
+      ],
+      signal: ctx.signal,
+      finalize: finalizeDisclosure,
     });
-
-    if (overflow.kind === 'outline') {
-      return {
-        ...meta,
-        kind: 'outline' as const,
-        sections: overflow.sections,
-        retrieval_notice: overflow.notice,
-      };
-    }
-    return { ...meta, ...overflow };
   },
 
   format: (result) => {
+    if (result.retrieval) return formatRetrievalPage(result);
+    result = presentation(result);
     // Cheap filing metadata — always present, so this header renders in every mode.
     const lines: string[] = [
       `## ${result.report_type} financial disclosure — ${result.year}`,
       `**Disclosure ID:** ${result.disclosure_id} | **Person ID:** ${result.person_id ?? 'Unknown'} | **Pages:** ${result.page_count ?? 'N/A'}`,
       `**Extracted:** ${result.has_been_extracted ? 'yes' : 'no'} | **Amended:** ${result.is_amended ? 'yes' : 'no'}`,
       result.kind === 'outline'
-        ? '**Response:** category outline — re-call with categories:[...] to retrieve full rows'
+        ? '**Response:** category outline — continue retrieval.next_cursor with the unchanged ID and categories'
         : '**Response:** full itemization',
     ];
     const c = result.counts;
@@ -563,3 +627,11 @@ export const getFinancialDisclosureTool = tool('courtlistener_get_financial_disc
     return [{ type: 'text', text: lines.join('\n') }, ...outlineBlocks];
   },
 });
+
+/** No enrichment or collected media is declared here: parse + format is the complete success wire. */
+function finalizeDisclosure(value: unknown): { structuredContent: object; content: unknown[] } {
+  const parsed = getFinancialDisclosureTool.output.parse(value);
+  const format = getFinancialDisclosureTool.format;
+  if (!format) throw new Error('Bounded retrieval requires the production formatter.');
+  return { structuredContent: parsed, content: format(parsed) };
+}

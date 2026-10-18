@@ -164,24 +164,24 @@ describe('input validation — out-of-range values rejected', () => {
     expect(() => searchOpinionsTool.input.parse({ q: 'test', page_size: 0 })).toThrow();
   });
 
-  it('searchOpinionsTool rejects page_size above 20', () => {
-    expect(() => searchOpinionsTool.input.parse({ q: 'test', page_size: 21 })).toThrow();
+  it('searchOpinionsTool accepts a request that will be bounded upstream', () => {
+    expect(searchOpinionsTool.input.parse({ q: 'test', page_size: 21 }).page_size).toBe(21);
   });
 
   it('searchDocketsTool rejects page_size below 1', () => {
     expect(() => searchDocketsTool.input.parse({ q: 'test', page_size: 0 })).toThrow();
   });
 
-  it('searchDocketsTool rejects page_size above 20', () => {
-    expect(() => searchDocketsTool.input.parse({ q: 'test', page_size: 21 })).toThrow();
+  it('searchDocketsTool accepts a request that will be bounded upstream', () => {
+    expect(searchDocketsTool.input.parse({ q: 'test', page_size: 21 }).page_size).toBe(21);
   });
 
   it('getCitationsTool rejects page_size below 1', () => {
     expect(() => getCitationsTool.input.parse({ cluster_id: 1, page_size: 0 })).toThrow();
   });
 
-  it('getCitationsTool rejects page_size above 20', () => {
-    expect(() => getCitationsTool.input.parse({ cluster_id: 1, page_size: 21 })).toThrow();
+  it('getCitationsTool accepts a request that will be bounded upstream', () => {
+    expect(getCitationsTool.input.parse({ cluster_id: 1, page_size: 21 }).page_size).toBe(21);
   });
 
   it('lookupCourtsTool rejects unknown jurisdiction enum value', () => {

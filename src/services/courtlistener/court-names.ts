@@ -23,7 +23,7 @@ import { COURT_JURISDICTION_LABELS } from './jurisdictions.js';
  */
 export function resolveCourtName(courtId: string | null | undefined): string {
   if (!courtId) return '';
-  return COURT_FULL_NAMES[courtId] ?? courtId;
+  return Object.hasOwn(COURT_FULL_NAMES, courtId) ? (COURT_FULL_NAMES[courtId] as string) : courtId;
 }
 
 /**

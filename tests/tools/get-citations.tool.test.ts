@@ -3,7 +3,7 @@
  * @module tests/tools/get-citations.tool.test
  */
 
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getCitationsTool } from '@/mcp-server/tools/definitions/get-citations.tool.js';
 import type { CourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
@@ -78,6 +78,48 @@ const mockCitingResult = {
 };
 
 describe('getCitationsTool', () => {
+  it.each(['citing', 'cited_by'] as const)(
+    'qualifies partial %s totals on both surfaces',
+    async (direction) => {
+      const data = {
+        ...mockCitingResult,
+        results: [],
+        total: 100,
+        sourceCompletion: { complete: false, next_cursor: 'variant-tail' },
+      };
+      mockSvc.getCitedBy = vi.fn().mockResolvedValue(data);
+      mockSvc.getCiting = vi.fn().mockResolvedValue(data);
+      const ctx = createMockContext({ errors: getCitationsTool.errors });
+      const result = await getCitationsTool.handler(
+        getCitationsTool.input.parse({ cluster_id: 100, direction, page_size: 100 }),
+        ctx,
+      );
+      expect(result.observed_total).toBe(100);
+      expect(result.total_is_partial).toBe(true);
+      expect(result.source_variants_completion).toEqual(data.sourceCompletion);
+      expect(getEnrichment(ctx).totalCount).toBeUndefined();
+      expect(getEnrichment(ctx).notice).toContain('partial');
+      const text = JSON.stringify(getCitationsTool.format!(result));
+      expect(text).toContain('100 (partial lower bound)');
+      expect(text).toContain('variant-tail');
+      const response = await runToolContract(getCitationsTool, {
+        cluster_id: 100,
+        direction,
+        page_size: 100,
+      });
+      expect(response.structuredContent).toMatchObject({
+        observed_total: 100,
+        total_is_partial: true,
+        source_variants_completion: { complete: false },
+      });
+      expect(JSON.stringify(response.content)).toContain('partial lower bound');
+      expect(result.page_sizing).toMatchObject({ requested: 100, bounded: 20, actual: 0 });
+      expect(direction === 'citing' ? mockSvc.getCiting : mockSvc.getCitedBy).toHaveBeenCalledWith(
+        expect.objectContaining({ page_size: 20 }),
+        ctx,
+      );
+    },
+  );
   it('fetches cited_by citations by default', async () => {
     mockSvc.getCitedBy = vi.fn().mockResolvedValue(mockCitingResult);
     const ctx = createMockContext({ errors: getCitationsTool.errors });

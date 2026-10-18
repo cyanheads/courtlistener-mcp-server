@@ -5,16 +5,19 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import {
-  DEFAULT_OUTLINE_BUDGET_BYTES,
-  formatOutline,
-  OUTLINE_VARIANT,
-} from '@cyanheads/mcp-ts-core/utils';
+import { formatOutline, OUTLINE_VARIANT } from '@cyanheads/mcp-ts-core/utils';
 import { getCourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
+import { presentation } from '@/services/courtlistener/readable-text.js';
+import {
+  formatRetrievalPage,
+  Retrieval,
+  RetrievalCursor,
+  readRetrievalCursor,
+  retrieve,
+} from '@/services/courtlistener/retrieval.js';
 import { idFromUri, personIdFromUri } from '@/services/courtlistener/uri.js';
 
-/** The record's fields. Made optional in the tool output because `transcript` is the
- *  one field an outline response withholds; the rest accompany every response. */
+/** Record fields; optional output fields remain recoverable through page paths. */
 const OralArgumentDetail = z.object({
   oral_argument_id: z.number().describe('Audio recording ID.'),
   case_name: z.string().describe('Case name.'),
@@ -30,23 +33,21 @@ const OralArgumentDetail = z.object({
   transcript: z
     .string()
     .describe(
-      'Speech-to-text transcript; empty string if transcription has not completed. The only field an outline response withholds — re-call with sections:["transcript"] to retrieve it.',
+      'Speech-to-text transcript; empty if transcription has not completed. Oversized text is recovered through retrieval.text_chunks at /transcript.',
     ),
 });
 
-/** Valid `sections` names — the record's own top-level keys, derived from the schema
- *  rather than restated. `transcript` is the only name that adds anything, since the
- *  rest accompany every response; a selection naming only the others is accepted and
- *  returns the record without the transcript. */
+/** Existing selection vocabulary: metadata stays selected; transcript can be excluded. */
 const SECTION_NAMES = Object.keys(OralArgumentDetail.shape);
 
 export const getOralArgumentTool = tool('courtlistener_get_oral_argument', {
   title: 'Get Oral Argument',
   description:
-    'Fetch the full detail record for a single oral argument audio recording by its ID (the audio_id from courtlistener_search_oral_arguments). Returns the case name, panel judge IDs, duration, MP3 download URL, linked docket, and the speech-to-text transcript when transcription has completed. A long transcript is withheld and listed as a retrievable section instead; re-call with sections:["transcript"] to pull it. Every other field is present either way. The argument date is not on this record — it comes from the search result or the linked docket.',
+    'Fetch an oral argument recording by audio_id from courtlistener_search_oral_arguments. Returns case metadata, panel IDs, duration, MP3 URL, docket and available transcript. Oversized text or metadata returns outline then page responses; continue retrieval.next_cursor as cursor with the unchanged ID/sections selection until null. The argument date comes from search or the linked docket.',
   annotations: { readOnlyHint: true, idempotentHint: true },
 
   input: z.object({
+    cursor: RetrievalCursor,
     id: z
       .number()
       .int()
@@ -57,15 +58,16 @@ export const getOralArgumentTool = tool('courtlistener_get_oral_argument', {
       .array(z.string())
       .optional()
       .describe(
-        'Section identifiers to retrieve, from a prior outline response — ["transcript"] is the only one that adds anything, since every other field is returned regardless. A selection that omits "transcript" therefore returns the record without it. Omit this argument entirely for the whole record, or the record minus an oversized transcript.',
+        'Selected record fields. Metadata is always selected; a nonempty selection omitting transcript excludes it. Omit for the whole record. Oversized selections page; keep this selection unchanged while following cursor.',
       ),
   }),
 
   output: z.object({
+    retrieval: Retrieval,
     kind: z
-      .enum(['full', 'outline'])
+      .enum(['full', 'outline', 'page'])
       .describe(
-        "'full' carries the transcript inline; 'outline' withholds it and lists it as a retrievable section because it overflows the inline byte budget. Every other field of the record is present either way.",
+        "'full' carries a small selected record; 'outline' pages the section catalog; 'page' carries fields and text chunks. Bounded identity remains present throughout retrieval.",
       ),
     ...OralArgumentDetail.partial().shape,
     // Outline arm — reuses OUTLINE_VARIANT's shape. The section element carries an
@@ -79,14 +81,28 @@ export const getOralArgumentTool = tool('courtlistener_get_oral_argument', {
       )
       .optional()
       .describe(
-        'Sections withheld from this response — only ever `transcript`; pass its name to `sections` on a re-call. Absent when nothing was withheld.',
+        'Section catalog: transcript and paged metadata fields. Follow retrieval.next_cursor to finish the catalog and retrieve data.',
       ),
     retrieval_notice: OUTLINE_VARIANT.shape.notice
       .optional()
-      .describe('How to re-call the tool for the transcript when it overflows the inline budget.'),
+      .describe('How to continue bounded retrieval using the unchanged ID and selection.'),
   }),
 
   errors: [
+    {
+      reason: 'invalid_cursor',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'Retrieval cursor is malformed, out of range or belongs to another request.',
+      recovery: 'Restart without cursor using the original ID and selection.',
+      thrownBy: 'service',
+    },
+    {
+      reason: 'stale_cursor',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'The normalized selected source changed since the previous page.',
+      recovery: 'Restart without cursor to retrieve the current source consistently.',
+      thrownBy: 'service',
+    },
     {
       reason: 'not_found',
       code: JsonRpcErrorCode.NotFound,
@@ -113,6 +129,7 @@ export const getOralArgumentTool = tool('courtlistener_get_oral_argument', {
   ],
 
   async handler(input, ctx) {
+    const cursor = readRetrievalCursor(input.cursor, 'audio', input.id, input.sections);
     ctx.log.info('courtlistener_get_oral_argument', { id: input.id });
 
     // Reject unknown section names before the network call. SECTION_NAMES is fixed at
@@ -147,10 +164,7 @@ export const getOralArgumentTool = tool('courtlistener_get_oral_argument', {
       return id !== null ? [id] : [];
     });
 
-    // Cheap record metadata — kept in every response, full or outline. The transcript
-    // is the only field large enough to be worth withholding; the rest are scalars and
-    // short arrays that cost nothing, and an outline without them tells the agent
-    // neither which case it fetched nor what to chain to next.
+    // Normalize metadata before measuring the selected view.
     const meta = {
       oral_argument_id: audio.id,
       case_name: audio.case_name ?? '',
@@ -168,35 +182,23 @@ export const getOralArgumentTool = tool('courtlistener_get_oral_argument', {
       has_transcript: meta.has_transcript,
     });
 
-    // Selection re-call: the transcript is the only withheld field, so it is the only
-    // name that adds anything. Unknown names were already rejected before the fetch.
-    if (input.sections?.length) {
-      return {
-        ...meta,
-        ...(input.sections.includes('transcript') ? { transcript } : {}),
-        kind: 'full' as const,
-      };
-    }
-
-    // Disclosure path. `outlineOnOverflow` can't drive this: it short-circuits to the
-    // full document whenever fewer than two sections are extracted, so scoping it to
-    // the transcript alone would inline every oversized transcript — the exact payload
-    // the outline arm exists to avoid. Measure the one field against the same budget
-    // and build the single-section outline directly.
-    const transcriptBytes = JSON.stringify(transcript).length;
-    if (transcriptBytes > DEFAULT_OUTLINE_BUDGET_BYTES) {
-      return {
-        ...meta,
-        kind: 'outline' as const,
-        sections: [{ name: 'transcript', bytes: transcriptBytes }],
-        retrieval_notice:
-          'Transcript too large to inline. Re-call courtlistener_get_oral_argument with the same id plus sections:["transcript"] to retrieve it in full. Every other field of the record is already in this response.',
-      };
-    }
-    return { ...meta, transcript, kind: 'full' as const };
+    const includeTranscript = !input.sections?.length || input.sections.includes('transcript');
+    return retrieve({
+      tool: 'audio',
+      id: input.id,
+      selection: input.sections,
+      cursor,
+      view: { ...meta, ...(includeTranscript ? { transcript } : {}) },
+      groups: includeTranscript ? [{ name: 'transcript', value: transcript }] : [],
+      required: ['oral_argument_id', 'docket_id', 'duration_seconds', 'has_transcript'],
+      signal: ctx.signal,
+      finalize: finalizeAudio,
+    });
   },
 
   format: (result) => {
+    if (result.retrieval) return formatRetrievalPage(result);
+    result = presentation(result);
     // Outline arm — rendered whenever `sections` is present (independent of `kind`).
     const outlineBlocks = result.sections
       ? formatOutline({
@@ -239,3 +241,11 @@ export const getOralArgumentTool = tool('courtlistener_get_oral_argument', {
     return [{ type: 'text', text: lines.join('\n') }, ...outlineBlocks];
   },
 });
+
+/** No enrichment or collected media is declared here: parse + format is the complete success wire. */
+function finalizeAudio(value: unknown): { structuredContent: object; content: unknown[] } {
+  const parsed = getOralArgumentTool.output.parse(value);
+  const format = getOralArgumentTool.format;
+  if (!format) throw new Error('Bounded retrieval requires the production formatter.');
+  return { structuredContent: parsed, content: format(parsed) };
+}
