@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.8.0](changelog/0.8.x/0.8.0.md) — 2026-10-18 · ⚠️ Breaking
+
+Bounded legal-record retrieval with explicit source coverage and pagination totals.
+
 ## [0.7.3](changelog/0.7.x/0.7.3.md) — 2026-09-30
 
 Search queries CourtListener rejects for their syntax now fail as invalid_query with the upstream diagnostic and a recovery hint, and a coded value named like an inherited object property no longer fails courtlistener_get_judge or courtlistener_get_opinion.

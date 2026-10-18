@@ -1,7 +1,7 @@
 # Developer Protocol
 
 **Server:** courtlistener-mcp-server
-**Version:** 0.7.3
+**Version:** 0.8.0
 **Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.15`
 **Engines:** Bun ≥1.4.0, Node ≥24.0.0
 **MCP SDK:** `@modelcontextprotocol/server` ^2.3.1
