@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.9.0](changelog/0.9.x/0.9.0.md) — 2026-10-31 · ⚠️ Breaking
+
+Selected RECAP filing text and stable opinion continuation across docket backfill changes.
+
 ## [0.8.0](changelog/0.8.x/0.8.0.md) — 2026-10-18 · ⚠️ Breaking
 
 Bounded legal-record retrieval with explicit source coverage and pagination totals.
