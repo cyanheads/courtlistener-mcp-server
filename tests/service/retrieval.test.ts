@@ -229,6 +229,35 @@ it('leaves small and empty responses full without retrieval metadata', () => {
   expect(walk({ id: 1, rows: [{ id: 2, text: '' }] })[0]).toMatchObject({ kind: 'full' });
 });
 
+it('keeps primary catalog and unit positions independent of live finalization metadata', () => {
+  const view = { id: 1, label: '<'.repeat(700), rows: [{ id: 2, text: 'source 😀'.repeat(9000) }] };
+  let live = '';
+  const options = {
+    tool: 'test',
+    id: 1,
+    view,
+    groups: [{ name: 'rows', value: view.rows }],
+    required: ['id'],
+    cursorVersion: 2 as const,
+    planningFinalize: finalize,
+    finalize: (value: unknown) => finalize({ ...(value as object), more: live }),
+  };
+  const first = retrieve(options);
+  const cursor = readRetrievalCursor(first.retrieval!.next_cursor!, 'test', 1)!;
+  expect(cursor.v).toBe(2);
+  const small = retrieve({ ...options, cursor });
+  live = '<'.repeat(1000);
+  const large = retrieve({ ...options, cursor });
+  expect(large.label).toBe(view.label);
+  expect(large.retrieval!.ranges[0]).toEqual(small.retrieval!.ranges[0]);
+  const smallText = small.retrieval!.ranges.find((range) => range.unit === 'code_points')!;
+  const largeText = large.retrieval!.ranges.find((range) => range.unit === 'code_points')!;
+  expect(largeText.start).toBe(smallText.start);
+  expect(largeText.path).toBe(smallText.path);
+  expect(size(options.finalize(large).structuredContent)).toBeLessThanOrEqual(24_000);
+  expect(size(options.finalize(large).content)).toBeLessThanOrEqual(24_000);
+});
+
 it('renders absolute row and catalog paths on later pages, including nested arrays', () => {
   const content = formatRetrievalPage({
     kind: 'page',

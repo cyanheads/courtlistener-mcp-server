@@ -67,7 +67,7 @@ export function readableText(markup: string): string {
     .trim();
 }
 
-/** Escape literal Markdown and HTML only after normalized text has been sliced. */
+/** Preserve source line endings while escaping sliced text; framework inline escaping normalizes CRLF. */
 export function escapeText(value: string): string {
   return value.replace(/[&<>\\`*_{}[\]()#+.!|~-]/g, (char) => {
     if (char === '&') return '&amp;';

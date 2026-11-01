@@ -18,7 +18,7 @@ export const legalResearchPrompt = prompt('courtlistener_research_topic', {
       .string()
       .optional()
       .describe(
-        'Optional jurisdiction to focus on (e.g., "scotus" for Supreme Court, "ca9" for Ninth Circuit, "nyed" for SDNY). Omit for nationwide research.',
+        'Optional jurisdiction to focus on (e.g., "scotus" for Supreme Court, "ca9" for Ninth Circuit, "nysd" for SDNY). Omit for nationwide research.',
       ),
     depth: z
       .enum(['overview', 'deep'])
@@ -34,7 +34,7 @@ export const legalResearchPrompt = prompt('courtlistener_research_topic', {
       : ' across all jurisdictions';
     const depthNote =
       args.depth === 'deep'
-        ? '\n\nFor deep research, also:\n4. For the top 2–3 opinions, call courtlistener_get_citations(direction="cited_by") to trace how the precedent has been applied or distinguished.\n5. Call courtlistener_get_judge to look up the authoring judge\'s appointment history and affiliations.\n6. Summarize the precedent trajectory: which courts have adopted vs. distinguished the landmark ruling.'
+        ? '\n\nFor deep research, also:\n4. For the top 2–3 opinions, call courtlistener_get_citations(direction="cited_by") to find citing decisions, then read their relevant opinion variants before describing how they treat the precedent.\n5. Call courtlistener_get_judge with the author\'s person ID to look up appointment history and affiliations.\n6. Summarize the precedent trajectory from the passages read; citation links alone do not establish adoption or distinguishing treatment.'
         : '';
 
     return [
@@ -48,9 +48,9 @@ export const legalResearchPrompt = prompt('courtlistener_research_topic', {
 
 Follow this research workflow:
 
-1. Start with courtlistener_search_opinions to find key cases on this topic${args.jurisdiction ? ` in ${args.jurisdiction}` : ''}. Use relevant legal terminology in the query. Try both exact phrases (caseName:) and plain-text searches.
+1. Start with courtlistener_search_opinions to find key cases on this topic${args.jurisdiction ? ` in ${args.jurisdiction}` : ''}. Use relevant legal terminology, quoted phrases, and plain-text searches. Use caseName: only when searching a case name.
 
-2. For the 2–3 most relevant opinions, call courtlistener_get_opinion to read the full text and understand the court's reasoning.
+2. For the 2–3 most relevant clusters, call courtlistener_get_opinion, select the relevant variants, and follow retrieval continuations to read the passages supporting the court's reasoning. Distinguish retrieval completion from source completeness.
 
 3. Use courtlistener_lookup_citation if you encounter a specific citation string (e.g., "410 U.S. 113") that you want to trace directly.${depthNote}
 

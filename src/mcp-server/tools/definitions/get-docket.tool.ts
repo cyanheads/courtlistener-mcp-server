@@ -5,6 +5,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { markdownLink } from '@cyanheads/mcp-ts-core/utils';
 import { resolveCourtName } from '@/services/courtlistener/court-names.js';
 import { getCourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
 import {
@@ -12,15 +13,107 @@ import {
   PageSizing,
   pageSizing,
 } from '@/services/courtlistener/page-metadata.js';
-import { toStorageUrl } from '@/services/courtlistener/uri.js';
+import {
+  formatRetrievalPage,
+  Retrieval,
+  RetrievalCursor,
+  readRetrievalCursor,
+  retrieve,
+} from '@/services/courtlistener/retrieval.js';
+import { idFromUri, toStorageUrl } from '@/services/courtlistener/uri.js';
+
+const SelectedDocument = z.object({
+  id: z.number().describe('RECAP document ID.'),
+  entry_id: z.number().describe('Owning entry ID, verified against the requested docket.'),
+  document_number: z.string().nullable().describe('PACER document number.'),
+  attachment_number: z.number().nullable().describe('Attachment number, or null.'),
+  description: z.string().describe('Source document description.'),
+  is_available: z.boolean().nullable().describe('Source file availability; null means unknown.'),
+  page_count: z.number().nullable().describe('Source page count, or null.'),
+  filepath_local: z.string().nullable().describe('RECAP storage URL, or null.'),
+  source_url: z.string().nullable().describe('CourtListener document source link, or null.'),
+  plain_text: z
+    .string()
+    .nullable()
+    .optional()
+    .describe(
+      'Unmodified extracted source text; omitted if absent upstream or deferred to retrieval.text_chunks.',
+    ),
+  text_status: z
+    .enum(['available', 'unavailable', 'not_extracted', 'unknown'])
+    .describe('Text availability independently of source file availability.'),
+});
+
+const SelectedDocket = z.object({
+  kind: z.enum(['full', 'outline', 'page']).describe('Bounded selected-document retrieval mode.'),
+  docket_id: z.number().describe('Requested docket ID.'),
+  entries_page: z.number().describe('Entries page containing the selected documents.'),
+  next_cursor: z
+    .string()
+    .nullable()
+    .describe('Next entries page; independent of retrieval.next_cursor.'),
+  document_ids: z
+    .array(z.number())
+    .optional()
+    .describe(
+      'Normalized selected document IDs; deferred oversized selections are recovered through retrieval ranges.',
+    ),
+  selected_documents: z
+    .array(
+      SelectedDocument.partial().describe('Selected document or a recoverable partial record.'),
+    )
+    .optional()
+    .describe(
+      'Selected source records; partial fields are recovered by retrieval ranges and text_chunks.',
+    ),
+  sections: z
+    .array(
+      z
+        .object({
+          name: z.string().describe('Deferred field group.'),
+          bytes: z.number().describe('Serialized source bytes.'),
+        })
+        .describe('Deferred field group and source size.'),
+    )
+    .optional()
+    .describe('Deferred selected-document groups.'),
+  retrieval: Retrieval,
+  retrieval_notice: z
+    .string()
+    .optional()
+    .describe('Instructions for reconstructing selected source records.'),
+});
+
+/** Keep selected source and storage URLs directly navigable on the text surface. */
+function formatSelectedDocket(result: z.infer<typeof SelectedDocket>) {
+  const blocks = formatRetrievalPage(result);
+  const links: string[] = [];
+  for (const document of result.selected_documents ?? []) {
+    if (document.source_url) links.push(markdownLink('CourtListener source', document.source_url));
+    if (document.filepath_local) links.push(markdownLink('RECAP file', document.filepath_local));
+  }
+  return blocks.map((block, index) =>
+    index === 0 && links.length
+      ? { ...block, text: `${block.text}\n\n${links.join('\n\n')}` }
+      : block,
+  );
+}
 
 export const getDocketTool = tool('courtlistener_get_docket', {
   title: 'Get Docket',
   description:
-    'Fetch full docket metadata and entry list for a single federal case by docket ID. Returns all available docket entries with document availability status. Documents with is_available=true have a RECAP-stored copy; others require a PACER account. Obtain docket IDs from courtlistener_search_dockets or from opinion results.',
+    'Fetch docket metadata and one entries page by docket ID. Omit document_ids for the docket listing, or select RECAP document IDs embedded on entries_page to retrieve their extracted text without further upstream requests. Selected text uses bounded full/outline/page responses; continue retrieval.next_cursor as cursor with the same docket_id, entries_page and document_ids. Top-level next_cursor remains entries pagination. File availability and extracted-text status are independent. Obtain docket IDs from courtlistener_search_dockets or opinion results.',
   annotations: { readOnlyHint: true, idempotentHint: true },
 
   input: z.object({
+    document_ids: z
+      .array(z.number().int().positive().safe())
+      .min(1)
+      .optional()
+      .describe(
+        'Select RECAP document IDs embedded on entries_page. No other pages or document endpoints are fetched; omit for the unchanged docket listing.',
+      ),
+    cursor: RetrievalCursor,
     docket_id: z
       .number()
       .int()
@@ -47,92 +140,138 @@ export const getDocketTool = tool('courtlistener_get_docket', {
       ),
   }),
 
-  output: z.object({
-    page_sizing: PageSizing.optional(),
-    docket_id: z.number().describe('Docket ID.'),
-    case_name: z.string().describe('Short case name.'),
-    case_name_full: z.string().describe('Full case name.'),
-    court: z
-      .string()
-      .describe('Court display name for major federal courts; the court identifier otherwise.'),
-    court_id: z.string().describe('Court identifier — the stable value for filtering.'),
-    date_filed: z.string().describe('Date the case was filed.'),
-    date_terminated: z
-      .string()
-      .nullable()
-      .describe('Date the case was terminated; null if active.'),
-    docket_number: z.string().describe('Docket number.'),
-    pacer_case_id: z.string().nullable().describe('PACER case ID; null if not in RECAP.'),
-    assigned_to: z.string().nullable().describe('Assigned judge name; null if not recorded.'),
-    referred_to: z.string().nullable().describe('Referred judge name; null if not recorded.'),
-    cause: z.string().describe('Legal cause of action.'),
-    jury_demand: z.string().describe('Jury demand status.'),
-    jurisdiction_type: z.string().describe('Jurisdiction type.'),
-    total_entries: z
-      .number()
-      .nullable()
-      .describe(
-        'Total number of docket entries available; null when upstream supplies no numeric total. May exceed the returned entries list.',
-      ),
-    entries_page: z.number().describe('Current entries page number (1-indexed).'),
-    next_cursor: z
-      .string()
-      .nullable()
-      .describe(
-        'Next page number to pass as the `entries_page` argument (docket entries are page-paginated); null when this is the last page.',
-      ),
-    entries: z
-      .array(
-        z
-          .object({
-            id: z.number().describe('Docket entry ID.'),
-            entry_number: z
-              .number()
-              .nullable()
-              .describe('PACER entry number; null if not assigned.'),
-            date_filed: z.string().describe('Date this entry was filed.'),
-            description: z.string().describe('Entry description or filing type.'),
-            documents: z
-              .array(
-                z
-                  .object({
-                    id: z.number().describe('Document ID.'),
-                    document_number: z
-                      .string()
-                      .nullable()
-                      .describe(
-                        'PACER document number as a string (e.g. "1"); attachments can be non-integer like "70-1". Null if not assigned.',
-                      ),
-                    attachment_number: z
-                      .number()
-                      .nullable()
-                      .describe('Attachment number; null for the main document.'),
-                    description: z.string().describe('Document description.'),
-                    is_available: z
-                      .boolean()
-                      .describe(
-                        'True if the document is available via RECAP without a PACER account.',
-                      ),
-                    page_count: z.number().nullable().describe('Page count; null if not recorded.'),
-                    filepath_local: z
-                      .string()
-                      .nullable()
-                      .describe(
-                        'Fully-qualified RECAP storage URL (https://storage.courtlistener.com/...) for the document; null if not available.',
-                      ),
-                  })
-                  .describe('Document attached to a docket entry.'),
-              )
-              .describe('Documents attached to this docket entry.'),
-          })
-          .describe('Docket entry with attached documents.'),
-      )
-      .describe(
-        'Docket entries for this page (fixed at 20 per page; entries_page_size is not honored by upstream).',
-      ),
-  }),
+  output: z
+    .object({
+      page_sizing: PageSizing.optional(),
+      docket_id: z.number().describe('Docket ID.'),
+      case_name: z.string().describe('Short case name.'),
+      case_name_full: z.string().describe('Full case name.'),
+      court: z
+        .string()
+        .describe('Court display name for major federal courts; the court identifier otherwise.'),
+      court_id: z.string().describe('Court identifier — the stable value for filtering.'),
+      date_filed: z.string().describe('Date the case was filed.'),
+      date_terminated: z
+        .string()
+        .nullable()
+        .describe('Date the case was terminated; null if active.'),
+      docket_number: z.string().describe('Docket number.'),
+      pacer_case_id: z.string().nullable().describe('PACER case ID; null if not in RECAP.'),
+      assigned_to: z.string().nullable().describe('Assigned judge name; null if not recorded.'),
+      referred_to: z.string().nullable().describe('Referred judge name; null if not recorded.'),
+      cause: z.string().describe('Legal cause of action.'),
+      jury_demand: z.string().describe('Jury demand status.'),
+      jurisdiction_type: z.string().describe('Jurisdiction type.'),
+      total_entries: z
+        .number()
+        .nullable()
+        .describe(
+          'Total number of docket entries available; null when upstream supplies no numeric total. May exceed the returned entries list.',
+        ),
+      entries_page: z.number().describe('Current entries page number (1-indexed).'),
+      next_cursor: z
+        .string()
+        .nullable()
+        .describe(
+          'Next page number to pass as the `entries_page` argument (docket entries are page-paginated); null when this is the last page.',
+        ),
+      entries: z
+        .array(
+          z
+            .object({
+              id: z.number().describe('Docket entry ID.'),
+              entry_number: z
+                .number()
+                .nullable()
+                .describe('PACER entry number; null if not assigned.'),
+              date_filed: z.string().describe('Date this entry was filed.'),
+              description: z.string().describe('Entry description or filing type.'),
+              documents: z
+                .array(
+                  z
+                    .object({
+                      id: z.number().describe('Document ID.'),
+                      document_number: z
+                        .string()
+                        .nullable()
+                        .describe(
+                          'PACER document number as a string (e.g. "1"); attachments can be non-integer like "70-1". Null if not assigned.',
+                        ),
+                      attachment_number: z
+                        .number()
+                        .nullable()
+                        .describe('Attachment number; null for the main document.'),
+                      description: z.string().describe('Document description.'),
+                      is_available: z
+                        .boolean()
+                        .describe(
+                          'True if the document is available via RECAP without a PACER account.',
+                        ),
+                      page_count: z
+                        .number()
+                        .nullable()
+                        .describe('Page count; null if not recorded.'),
+                      filepath_local: z
+                        .string()
+                        .nullable()
+                        .describe(
+                          'Fully-qualified RECAP storage URL (https://storage.courtlistener.com/...) for the document; null if not available.',
+                        ),
+                    })
+                    .describe('Document attached to a docket entry.'),
+                )
+                .describe('Documents attached to this docket entry.'),
+            })
+            .describe('Docket entry with attached documents.'),
+        )
+        .describe(
+          'Docket entries for this page (fixed at 20 per page; entries_page_size is not honored by upstream).',
+        ),
+    })
+    .partial()
+    .extend({
+      ...SelectedDocket.shape,
+      kind: SelectedDocket.shape.kind.optional(),
+    }),
 
   errors: [
+    {
+      reason: 'document_not_on_page',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'A selected document ID is absent from the requested entries page.',
+      recovery:
+        'List the docket entries on the intended entries_page, then select document IDs from that page.',
+    },
+    {
+      reason: 'document_ownership_unverified',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'The selected document entry has no explicit matching docket relation.',
+      recovery:
+        'Check the docket and entries page selection; retry only after the source entry explicitly belongs to this docket.',
+    },
+    {
+      reason: 'selection_required',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'A text retrieval cursor is supplied without document_ids.',
+      recovery:
+        'Repeat the original docket ID, entries_page and document_ids with the retrieval cursor.',
+    },
+    {
+      reason: 'invalid_cursor',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'A cursor is malformed, out of range or bound to another page or selection.',
+      recovery:
+        'Restart without cursor using the original docket ID, entries_page and document_ids.',
+      thrownBy: 'service',
+    },
+    {
+      reason: 'stale_cursor',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'Selected source records changed since retrieval began.',
+      recovery:
+        'Restart without cursor using the original docket ID, entries_page and document_ids.',
+      thrownBy: 'service',
+    },
     {
       reason: 'not_found',
       code: JsonRpcErrorCode.NotFound,
@@ -153,6 +292,17 @@ export const getDocketTool = tool('courtlistener_get_docket', {
   ],
 
   async handler(input, ctx) {
+    if (input.cursor !== undefined && !input.document_ids) throw ctx.fail('selection_required');
+    const selection = input.document_ids
+      ? [...new Set(input.document_ids)].sort((a, b) => a - b)
+      : undefined;
+    const retrievalTool = `docket_documents:${input.entries_page}`;
+    const cursor = readRetrievalCursor(
+      input.cursor,
+      retrievalTool,
+      input.docket_id,
+      selection?.map(String),
+    );
     ctx.log.info('courtlistener_get_docket', {
       docket_id: input.docket_id,
       entries_page: input.entries_page,
@@ -165,6 +315,80 @@ export const getDocketTool = tool('courtlistener_get_docket', {
       input.entries_page,
       ctx,
     );
+
+    if (selection) {
+      const wanted = new Set(selection);
+      const selected = (docket.docket_entries ?? [])
+        .flatMap((entry) =>
+          (entry.recap_documents ?? [])
+            .filter((document) => wanted.has(document.id))
+            .map((document) => {
+              const owner =
+                typeof entry.docket === 'number'
+                  ? entry.docket
+                  : typeof entry.docket === 'string'
+                    ? idFromUri(entry.docket, 'dockets')
+                    : null;
+              if (owner !== input.docket_id)
+                throw ctx.fail(
+                  'document_ownership_unverified',
+                  'The selected entry does not explicitly belong to the requested docket.',
+                  { entry_id: entry.id },
+                );
+              return {
+                id: document.id,
+                entry_id: entry.id,
+                document_number:
+                  document.document_number == null ? null : String(document.document_number),
+                attachment_number: document.attachment_number ?? null,
+                description: document.description ?? '',
+                is_available: document.is_available ?? null,
+                page_count: document.page_count ?? null,
+                filepath_local: toStorageUrl(document.filepath_local ?? null),
+                source_url: document.absolute_url
+                  ? new URL(document.absolute_url, 'https://www.courtlistener.com').href
+                  : null,
+                ...(document.plain_text !== undefined ? { plain_text: document.plain_text } : {}),
+                text_status: document.plain_text
+                  ? ('available' as const)
+                  : document.is_available === false
+                    ? ('unavailable' as const)
+                    : document.is_available === true
+                      ? ('not_extracted' as const)
+                      : ('unknown' as const),
+              };
+            }),
+        )
+        .sort((a, b) => a.id - b.id);
+      const found = new Set(selected.map((document) => document.id));
+      const missing = selection.filter((id) => !found.has(id));
+      if (missing.length)
+        throw ctx.fail(
+          'document_not_on_page',
+          'Selected documents are not present on this entries page.',
+          { document_ids: missing, entries_page: input.entries_page },
+        );
+      return retrieve({
+        tool: retrievalTool,
+        id: input.docket_id,
+        selection: selection.map(String),
+        cursor,
+        view: {
+          docket_id: docket.id,
+          entries_page: input.entries_page,
+          next_cursor: docket.docket_entries_next_page ?? null,
+          document_ids: selection,
+          selected_documents: selected,
+        },
+        groups: [{ name: 'selected_documents', value: selected }],
+        required: ['docket_id', 'entries_page', 'next_cursor'],
+        signal: ctx.signal,
+        finalize: (value) => {
+          const parsed = SelectedDocket.parse(value);
+          return { structuredContent: parsed, content: formatSelectedDocket(parsed) };
+        },
+      });
+    }
 
     const entries = (docket.docket_entries ?? []).map((e) => ({
       id: e.id,
@@ -215,6 +439,7 @@ export const getDocketTool = tool('courtlistener_get_docket', {
   },
 
   format: (result) => {
+    if (result.kind) return formatSelectedDocket({ ...result, kind: result.kind });
     const lines: string[] = [
       `## ${result.case_name}`,
       formatPageSizing(result.page_sizing),
@@ -235,7 +460,7 @@ export const getDocketTool = tool('courtlistener_get_docket', {
       `**Total entries:** ${result.total_entries ?? 'unknown'} | **Page:** ${result.entries_page} | **Next cursor:** ${result.next_cursor ?? 'none'}`,
     );
 
-    if (result.entries.length > 0) {
+    if (result.entries && result.entries.length > 0) {
       lines.push('\n### Docket Entries');
       for (const e of result.entries) {
         lines.push(

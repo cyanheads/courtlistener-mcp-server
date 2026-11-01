@@ -171,6 +171,8 @@ export interface Docket {
 export interface DocketEntry {
   date_filed: string;
   description: string;
+  /** Explicit owning docket relation from /docket-entries/; never infer from document URLs. */
+  docket?: string | number | null;
   entry_number: number | null;
   id: number;
   recap_documents: Array<{
@@ -183,7 +185,10 @@ export interface DocketEntry {
     document_number: number | string | null;
     attachment_number: number | null;
     description: string;
-    is_available: boolean;
+    is_available?: boolean | null;
+    /** Embedded extracted filing text; null/absent is distinct from empty text. */
+    plain_text?: string | null;
+    absolute_url?: string | null;
     page_count: number | null;
     filepath_local: string | null;
   }>;

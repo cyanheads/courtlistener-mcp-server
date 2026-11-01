@@ -159,15 +159,20 @@ cursor: z.string().optional()
 
 ### `courtlistener_get_opinion`
 
-Fetch full text and metadata for an opinion cluster. A cluster groups all opinions filed in a case (majority, concurrence, dissent, per curiam). Returns the full text of each opinion variant.
+Fetch text and metadata for an opinion cluster. A cluster groups all opinions filed in a case (majority, concurrence, dissent, per curiam). Small responses return full variants; oversized selections use bounded outline and page responses. Select variants with `sections` and continue with `cursor` until `retrieval.next_cursor` is null. `variants_completion` describes the fetched source independently of retrieval completion.
+
+Primary cursor identity and coordinates derive from cluster and opinion fields before optional docket backfill. Live docket enrichment is applied when fitting the final response, so its success or failure cannot invalidate new primary cursors or move their ranges. Oversized backfill has an independent `enrichment_cursor` / `enrichment_retrieval` stream; collect its chunks only within one `source_id`, restarting when that ID changes. A metadata-only page can finish primary retrieval while enrichment remains. Legacy v1 primary cursors retain their historical digest/layout semantics.
 
 **Input schema:**
 ```ts
 cluster_id: z.number().int()
   .describe('Opinion cluster ID — identifies a case decision and groups all opinion variants (majority, concurrence, dissent). Obtain from courtlistener_search_opinions, courtlistener_lookup_citation, or from docket results that link to opinions.'),
+sections: z.array(z.string()).optional(), // opinion_<id> names from this cluster
+cursor: z.string().optional(), // primary retrieval.next_cursor
+enrichment_cursor: z.string().optional(), // enrichment_retrieval.next_cursor
 ```
 
-**Output:**
+**Full-response fields (bounded responses can defer fields):** See [the output schema](../src/mcp-server/tools/definitions/get-opinion.tool.ts) for `kind`, source completion, enrichment status, and both retrieval envelopes.
 ```ts
 {
   cluster_id: number,
@@ -369,17 +374,22 @@ cursor: z.string().optional()
 
 ### `courtlistener_get_docket`
 
-Fetch full docket metadata and entry list for a single federal case. Returns all available docket entries with document availability status.
+Fetch docket metadata and one entries page for a federal case. `entries_page` and top-level `next_cursor` walk the entries list. Without a selection, the listing response remains unchanged.
+
+`document_ids` selects embedded RECAP records on that page only. Each selected entry must explicitly link to the requested docket; absent IDs and unverified ownership fail before text is returned. Selection adds no document-detail request, page walk, extraction, or PACER purchase. Raw `plain_text` and source/storage links are preserved; `text_status` distinguishes available, unavailable, not_extracted, and unknown independently of file availability. Oversized selections use the shared 24,000-byte retrieval contract on both response surfaces. Continue with `cursor`, retaining docket ID, entries page, and normalized selection; `retrieval.next_cursor` is separate from entries pagination. Listing-only fields are optional in selected responses.
 
 **Input schema:**
 ```ts
 docket_id: z.number().int()
   .describe('Docket ID from a search result\'s docket_id field or from an opinion cluster result.'),
+entries_page: z.number().int().min(1).optional().default(1),
+document_ids: z.array(z.number().int().positive().safe()).min(1).optional(),
+cursor: z.string().optional(), // selected-document retrieval.next_cursor
 entries_page_size: z.number().int().min(1).optional().default(20)
   .describe('Positive requested size, bounded to 50 upstream. CourtListener ignores it and serves fixed 20-row pages.'),
 ```
 
-**Output:**
+**Listing fields:** Selected responses instead expose `kind`, `document_ids`, `selected_documents`, and optional retrieval fields alongside docket/page identity and entries continuation. See [the output schema](../src/mcp-server/tools/definitions/get-docket.tool.ts) for both modes.
 ```ts
 {
   docket_id: number,
@@ -404,7 +414,7 @@ entries_page_size: z.number().int().min(1).optional().default(20)
     description: string,
     documents: Array<{
       id: number,
-      document_number: number | null,
+      document_number: string | null,
       attachment_number: number | null,
       description: string,
       is_available: boolean,

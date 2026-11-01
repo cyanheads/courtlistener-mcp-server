@@ -2137,6 +2137,101 @@ describe('getDocket entries pagination (#32)', () => {
     vi.unstubAllGlobals();
   });
 
+  it('reuses parsed nested filing text and verifies explicit ownership without more upstream calls', async () => {
+    const calls: string[] = [];
+    let owner: string | undefined = 'https://www.courtlistener.com/api/rest/v4/dockets/8000/';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        calls.push(url);
+        return Response.json(
+          url.includes('/docket-entries/')
+            ? {
+                count: 2,
+                next: 'https://www.courtlistener.com/api/rest/v4/docket-entries/?page=2',
+                results: [
+                  {
+                    id: 2,
+                    docket: owner,
+                    recap_documents: [
+                      {
+                        id: 11,
+                        plain_text: 'raw 😀\r\n<&> *source*',
+                        is_available: false,
+                        absolute_url: '/docket/8000/1/source/',
+                      },
+                      { id: 12, plain_text: null, is_available: true },
+                      { id: 13 },
+                    ],
+                  },
+                ],
+              }
+            : { id: 8000 },
+        );
+      }),
+    );
+    initCourtListenerService(makeMockConfig(), makeMockStorage());
+    const result = await runToolContract(getDocketTool, {
+      docket_id: 8000,
+      document_ids: [13, 11, 12],
+    });
+    expect(result.structuredContent).toMatchObject({
+      kind: 'full',
+      next_cursor: '2',
+      selected_documents: [
+        {
+          id: 11,
+          plain_text: 'raw 😀\r\n<&> *source*',
+          text_status: 'available',
+          is_available: false,
+          source_url: 'https://www.courtlistener.com/docket/8000/1/source/',
+        },
+        { id: 12, plain_text: null, text_status: 'not_extracted', is_available: true },
+        { id: 13, text_status: 'unknown', is_available: null },
+      ],
+    });
+    expect(calls).toHaveLength(2);
+    expect(JSON.stringify(result.content)).toContain('source');
+    expect((result.content[0] as { text: string }).text).toContain(
+      '[CourtListener source](<https://www.courtlistener.com/docket/8000/1/source/>)',
+    );
+    for (owner of ['https://www.courtlistener.com/api/rest/v4/dockets/9999/', undefined]) {
+      const invalid = await runToolContract(getDocketTool, { docket_id: 8000, document_ids: [11] });
+      expect(invalid.structuredContent).toMatchObject({
+        error: { data: { reason: 'document_ownership_unverified' } },
+      });
+    }
+    const absent = await runToolContract(getDocketTool, {
+      docket_id: 8000,
+      entries_page: 4,
+      document_ids: [99],
+    });
+    expect(absent.structuredContent).toMatchObject({
+      error: { data: { reason: 'document_not_on_page', entries_page: 4 } },
+    });
+    expect(calls).toHaveLength(8);
+    expect(new URL(calls[7]!).searchParams.get('page')).toBe('4');
+  });
+
+  it('propagates selected-mode upstream failures and caller cancellation', async () => {
+    initCourtListenerService(makeMockConfig(), makeMockStorage());
+    mockFetchResponse({ status: 429, ok: false, headers: { 'retry-after': '60' } });
+    const failed = await runToolContract(getDocketTool, { docket_id: 8000, document_ids: [11] });
+    expect(failed.structuredContent).toMatchObject({ error: { data: { reason: 'rate_limited' } } });
+    expect(JSON.stringify(failed.content)).toContain('Retry-After');
+    const controller = new AbortController();
+    controller.abort(new DOMException('caller stopped', 'AbortError'));
+    const cancelled = await runToolContract(
+      getDocketTool,
+      { docket_id: 8000, document_ids: [11] },
+      { context: { signal: controller.signal } },
+    );
+    const { JsonRpcErrorCode } = await import('@cyanheads/mcp-ts-core/errors');
+    expect(cancelled.structuredContent).toMatchObject({
+      error: { code: JsonRpcErrorCode.RequestCancelled },
+    });
+  });
+
   it('threads entriesPage into the upstream page param and surfaces the next page', async () => {
     const entryUrls: string[] = [];
     vi.stubGlobal(
@@ -2789,11 +2884,11 @@ describe('raw upstream payloads validate through the tool output schema', () => 
 
     // The bug: document_number (z.number) received "1"; total_entries received a URL string.
     expect(() => getDocketTool.output.parse(result)).not.toThrow();
-    expect(result.entries[0]!.documents[0]!.document_number).toBe('1');
+    expect(result.entries![0]!.documents[0]!.document_number).toBe('1');
     // A URL-valued count leaves the total unknown, independently of the returned page (#14).
     expect(result.total_entries).toBeNull();
     // #26 — relative path becomes a directly fetchable storage URL.
-    expect(result.entries[0]!.documents[0]!.filepath_local).toBe(
+    expect(result.entries![0]!.documents[0]!.filepath_local).toBe(
       'https://storage.courtlistener.com/recap/gov.uscourts.nysd.458699/gov.uscourts.nysd.458699.1.0.pdf',
     );
   });

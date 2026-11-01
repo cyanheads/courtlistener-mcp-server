@@ -70,7 +70,7 @@ type Json = string | number | boolean | null | Json[] | { [key: string]: Json | 
 type RecordView = { [key: string]: Json | undefined };
 type Range = NonNullable<z.infer<typeof Retrieval>>['ranges'][number];
 type Position = { phase: 'catalog' | 'data'; index: number; offset: number };
-type Cursor = Position & { v: 1; binding: string; digest: string };
+type Cursor = Position & { v: 1 | 2; binding: string; digest: string };
 type Row = { path: string; index: number; total: number };
 type TextIndex = { total: number; checkpoints: number[] };
 type Unit = { path: string; value: Json; rows: Row[]; text?: TextIndex };
@@ -78,7 +78,7 @@ type Descriptor = { name: string; bytes: number };
 
 const CursorShape = z
   .object({
-    v: z.literal(1),
+    v: z.union([z.literal(1), z.literal(2)]),
     binding: z.string().length(64),
     digest: z.string().length(64),
     phase: z.enum(['catalog', 'data']),
@@ -87,6 +87,8 @@ const CursorShape = z
   })
   .strict();
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+/** Identity of a normalized retrieval source, independent of its current page. */
+export const retrievalSourceId = hash;
 const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
 const pointer = (key: string) => key.replace(/~/g, '~0').replace(/\//g, '~1');
 const binding = (tool: string, id: number, selection?: string[]) =>
@@ -190,10 +192,15 @@ export function retrieve<T extends object>(options: {
   selection?: string[] | undefined;
   cursor?: Cursor | undefined;
   view: T;
+  /** Original source values that bind the cursor but are normalized out of the emitted view. */
+  sourceIdentity?: object;
   groups: { name: string; value: unknown }[];
   required: string[];
   signal?: AbortSignal | undefined;
   finalize: (value: unknown) => { structuredContent: object; content: unknown[] };
+  planningFinalize?: (value: unknown) => { structuredContent: object; content: unknown[] };
+  byteLimit?: number;
+  cursorVersion?: 1 | 2;
 }): T & {
   kind: 'full' | 'outline' | 'page';
   retrieval?: NonNullable<z.infer<typeof Retrieval>>;
@@ -206,15 +213,17 @@ export function retrieve<T extends object>(options: {
   };
   checkCancellation();
   const source = view as RecordView;
-  const digest = hash(view);
+  const digest = hash(options.sourceIdentity === undefined ? view : [view, options.sourceIdentity]);
   if (cursor && cursor.digest !== digest)
     throw validationError(
       'The normalized source changed. Restart without cursor using the original ID and selection.',
       { reason: 'stale_cursor' },
     );
-  const fits = (value: object, limit = RETRIEVAL_BYTES) => {
+  const fits = (value: object, limit = options.byteLimit ?? RETRIEVAL_BYTES, planning = false) => {
     checkCancellation();
-    const wire = options.finalize(value);
+    const wire = (planning ? (options.planningFinalize ?? options.finalize) : options.finalize)(
+      value,
+    );
     return bytes(wire.structuredContent) <= limit && bytes(wire.content) <= limit;
   };
   const full = { ...view, kind: 'full' as const };
@@ -286,6 +295,7 @@ export function retrieve<T extends object>(options: {
           retrieval: { next_cursor: null, ranges: [], text_chunks: [] },
         },
         6000,
+        true,
       )
     )
       base[key] = value;
@@ -307,14 +317,14 @@ export function retrieve<T extends object>(options: {
       ? null
       : Buffer.from(
           JSON.stringify({
-            v: 1,
+            v: options.cursorVersion ?? 1,
             binding: requestBinding,
             digest,
             ...position,
           }),
         ).toString('base64url');
   const notice =
-    'Continue with cursor: retrieval.next_cursor, the same ID and the same sections/categories selection. Merge rows by absolute ranges and concatenate text_chunks by their code_points ranges. Source completion is independent.';
+    'Continue with cursor: retrieval.next_cursor, the same ID, page and selection. Merge rows by absolute ranges and concatenate text_chunks by their code_points ranges. Source completion is independent.';
   const response = (
     kind: 'outline' | 'page',
     position: Position | null,

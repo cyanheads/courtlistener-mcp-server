@@ -3,7 +3,7 @@
  * @module tests/tools/get-docket.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getDocketTool } from '@/mcp-server/tools/definitions/get-docket.tool.js';
 import type { CourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
@@ -58,6 +58,184 @@ const baseDocket: Docket = {
 };
 
 describe('getDocketTool', () => {
+  it.each([
+    ['', false, 'unavailable'],
+    [null, true, 'not_extracted'],
+    [undefined, undefined, 'unknown'],
+    [' ', false, 'available'],
+    ['', true, 'not_extracted'],
+    [null, false, 'unavailable'],
+    [undefined, true, 'not_extracted'],
+    [undefined, false, 'unavailable'],
+  ] as const)(
+    'preserves text %j and availability %j as %s',
+    async (plain_text, is_available, text_status) => {
+      const docket = structuredClone(baseDocket);
+      Object.assign(docket.docket_entries[0]!, { docket: 8000 });
+      const document = docket.docket_entries[0]!.recap_documents[0]!;
+      Object.assign(document, { plain_text, is_available });
+      mockSvc.getDocket = vi.fn().mockResolvedValue(docket);
+      const contract = await runToolContract(getDocketTool, {
+        docket_id: 8000,
+        document_ids: [90001],
+      });
+      expect(contract.structuredContent).toMatchObject({
+        selected_documents: [
+          {
+            text_status,
+            is_available: is_available ?? null,
+            ...(plain_text !== undefined ? { plain_text } : {}),
+          },
+        ],
+      });
+      expect((contract.content[0] as { text: string }).text).toContain(
+        text_status === 'not_extracted' ? 'not\\_extracted' : text_status,
+      );
+    },
+  );
+
+  it('reports page selection and unverified ownership with truthful recovery on both surfaces', async () => {
+    mockSvc.getDocket = vi.fn().mockResolvedValue(baseDocket);
+    const missing = await runToolContract(getDocketTool, {
+      docket_id: 8000,
+      entries_page: 3,
+      document_ids: [123],
+    });
+    expect(missing.structuredContent).toMatchObject({
+      error: {
+        data: {
+          reason: 'document_not_on_page',
+          recovery: { hint: expect.stringContaining('entries_page') },
+        },
+      },
+    });
+    expect(JSON.stringify(missing.content)).toContain('entries_page');
+    expect(JSON.stringify(missing.content)).not.toContain('does not exist');
+    const unverified = await runToolContract(getDocketTool, {
+      docket_id: 8000,
+      document_ids: [90001],
+    });
+    expect(unverified.structuredContent).toMatchObject({
+      error: { data: { reason: 'document_ownership_unverified' } },
+    });
+    expect(JSON.stringify(unverified.content)).toContain('explicitly belongs');
+    expect(mockSvc.getDocket).toHaveBeenCalledTimes(2);
+  });
+
+  it('reconstructs Unicode and oversized metadata exactly with page-bound repeatable cursors', async () => {
+    const docket = structuredClone(baseDocket);
+    const source = '😀\r\n<&>\\ * source '.repeat(5000);
+    Object.assign(docket.docket_entries[0]!, { docket: 8000 });
+    Object.assign(docket.docket_entries[0]!.recap_documents[0]!, {
+      plain_text: source,
+      description: 'large 😀'.repeat(4000),
+      absolute_url: '/docket/8000/1/source/',
+    });
+    mockSvc.getDocket = vi.fn().mockResolvedValue(docket);
+    const call = (cursor?: string, extra = {}) =>
+      getDocketTool.handler(
+        getDocketTool.input.parse({
+          docket_id: 8000,
+          document_ids: [90001, 90001],
+          cursor,
+          ...extra,
+        }),
+        createMockContext({ errors: getDocketTool.errors }),
+      );
+    const first = await call();
+    expect(first.kind).toBe('outline');
+    const token = first.retrieval!.next_cursor!;
+    expect(await call(token)).toEqual(await call(token));
+    await expect(call(token, { entries_page: 2 })).rejects.toMatchObject({
+      data: { reason: 'invalid_cursor' },
+    });
+    await expect(call(token, { document_ids: [2] })).rejects.toMatchObject({
+      data: { reason: 'invalid_cursor' },
+    });
+    let page = first;
+    let text = '';
+    let description = '';
+    let pages = 0;
+    for (;;) {
+      const parsed = getDocketTool.output.parse(page);
+      expect(Buffer.byteLength(JSON.stringify(parsed))).toBeLessThanOrEqual(24000);
+      expect(Buffer.byteLength(JSON.stringify(getDocketTool.format!(parsed)))).toBeLessThanOrEqual(
+        24000,
+      );
+      for (const chunk of page.retrieval?.text_chunks ?? []) {
+        if (chunk.path === '/selected_documents/0/plain_text') text += chunk.text;
+        if (chunk.path === '/selected_documents/0/description') description += chunk.text;
+      }
+      const cursor = page.retrieval?.next_cursor;
+      if (!cursor) break;
+      page = await call(cursor, { document_ids: [90001] });
+      expect(++pages).toBeLessThan(100);
+    }
+    expect(text).toBe(source);
+    expect(description).toBe('large 😀'.repeat(4000));
+    Object.assign(docket.docket_entries[0]!.recap_documents[0]!, {
+      plain_text: `${source}changed`,
+    });
+    await expect(call(token)).rejects.toMatchObject({ data: { reason: 'stale_cursor' } });
+  });
+
+  it('rejects invalid selector shapes and cursor without selection', async () => {
+    for (const document_ids of [[], [0], [-1], [1.5], ['1']])
+      expect(() => getDocketTool.input.parse({ docket_id: 8000, document_ids })).toThrow();
+    const result = await runToolContract(getDocketTool, { docket_id: 8000, cursor: 'token' });
+    expect(result.structuredContent).toMatchObject({
+      error: { data: { reason: 'selection_required' } },
+    });
+    expect(mockSvc.getDocket).not.toHaveBeenCalled();
+  });
+  it('selects embedded document text without confusing text and file availability', async () => {
+    const docket = structuredClone(baseDocket);
+    Object.assign(docket.docket_entries[0]!, {
+      docket: 'https://www.courtlistener.com/api/rest/v4/dockets/8000/',
+    });
+    Object.assign(docket.docket_entries[0]!.recap_documents[0]!, {
+      plain_text: 'Exact 😀\r\n<source> & *text*',
+      is_available: false,
+    });
+    mockSvc.getDocket = vi.fn().mockResolvedValue(docket);
+    const result = await getDocketTool.handler(
+      getDocketTool.input.parse({ docket_id: 8000, document_ids: [90001] }),
+      createMockContext({ errors: getDocketTool.errors }),
+    );
+    expect(result).toMatchObject({
+      kind: 'full',
+      selected_documents: [
+        {
+          id: 90001,
+          plain_text: 'Exact 😀\r\n<source> & *text*',
+          text_status: 'available',
+          is_available: false,
+        },
+      ],
+    });
+    expect(JSON.stringify(getDocketTool.format!(getDocketTool.output.parse(result)))).toContain(
+      'available',
+    );
+    expect(
+      (getDocketTool.format!(getDocketTool.output.parse(result))[0] as { text: string }).text,
+    ).toContain('Exact 😀\r\n&lt;source&gt; &amp; \\*text\\*');
+  });
+  it('keeps default listing free of nested filing text', async () => {
+    const docket = structuredClone(baseDocket);
+    Object.assign(docket.docket_entries[0]!.recap_documents[0]!, {
+      plain_text: 'paid source text',
+    });
+    mockSvc.getDocket = vi.fn().mockResolvedValue(docket);
+    const result = await getDocketTool.handler(
+      getDocketTool.input.parse({ docket_id: 8000 }),
+      createMockContext({ errors: getDocketTool.errors }),
+    );
+    expect(JSON.stringify(result)).not.toContain('paid source text');
+    expect(JSON.stringify(getDocketTool.format!(getDocketTool.output.parse(result)))).not.toContain(
+      'paid source text',
+    );
+    expect(result.next_cursor).toBeNull();
+  });
   it('returns full docket metadata and entries', async () => {
     mockSvc.getDocket = vi.fn().mockResolvedValue(baseDocket);
     const ctx = createMockContext({ errors: getDocketTool.errors });
@@ -73,13 +251,13 @@ describe('getDocketTool', () => {
     expect(result.court).toBe('District Court, N.D. California');
     expect(result.court).not.toContain('http');
     expect(result.entries).toHaveLength(1);
-    expect(result.entries[0]!.id).toBe(50001);
-    expect(result.entries[0]!.documents[0]!.id).toBe(90001);
-    expect(result.entries[0]!.documents[0]!.attachment_number).toBeNull();
+    expect(result.entries![0]!.id).toBe(50001);
+    expect(result.entries![0]!.documents[0]!.id).toBe(90001);
+    expect(result.entries![0]!.documents[0]!.attachment_number).toBeNull();
     // document_number is preserved as the string the upstream sends — not coerced (#23)
-    expect(result.entries[0]!.documents[0]!.document_number).toBe('1');
+    expect(result.entries![0]!.documents[0]!.document_number).toBe('1');
     // relative filepath_local is normalized to a directly fetchable storage URL (#26)
-    expect(result.entries[0]!.documents[0]!.filepath_local).toBe(
+    expect(result.entries![0]!.documents[0]!.filepath_local).toBe(
       'https://storage.courtlistener.com/recap/gov.uscourts.cand.123/doc1.pdf',
     );
     // the real upstream types validate against the declared output schema
@@ -185,9 +363,9 @@ describe('getDocketTool', () => {
     });
     const ctx = createMockContext({ errors: getDocketTool.errors });
     const result = await getDocketTool.handler(getDocketTool.input.parse({ docket_id: 8000 }), ctx);
-    expect(result.entries[0]!.documents[0]!.document_number).toBe('70-1');
+    expect(result.entries![0]!.documents[0]!.document_number).toBe('70-1');
     // an already-absolute URL is passed through, never double-prefixed
-    expect(result.entries[0]!.documents[0]!.filepath_local).toBe(
+    expect(result.entries![0]!.documents[0]!.filepath_local).toBe(
       'https://storage.courtlistener.com/recap/already-absolute.pdf',
     );
     expect(() => getDocketTool.output.parse(result)).not.toThrow();

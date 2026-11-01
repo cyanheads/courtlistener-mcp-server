@@ -1,19 +1,19 @@
 <div align="center">
   <h1>@cyanheads/courtlistener-mcp-server</h1>
   <p><b>Search and retrieve US court opinions, federal dockets, judge records, citation networks, and oral arguments from CourtListener's 9M+ opinion corpus via MCP. STDIO or Streamable HTTP.</b>
-  <div>14 Tools • 1 Resource • 1 Prompt</div>
+  <div>14 Tools • 2 Resources • 1 Prompt</div>
   </p>
 </div>
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.8.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/courtlistener-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.3.1-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/courtlistener-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/courtlistener-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.3-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.8.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/courtlistener-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.4.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/courtlistener-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/courtlistener-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.4-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
 <div align="center">
 
-[![Install in Claude Desktop](https://img.shields.io/badge/Install_in-Claude_Desktop-D97757?style=for-the-badge&logo=anthropic&logoColor=white)](https://github.com/cyanheads/courtlistener-mcp-server/releases/latest/download/courtlistener-mcp-server.mcpb) [![Install in Cursor](https://cursor.com/deeplink/mcp-install-dark.svg)](https://cursor.com/en/install-mcp?name=courtlistener-mcp-server&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsIkBjeWFuaGVhZHMvY291cnRsaXN0ZW5lci1tY3Atc2VydmVyIl19) [![Install in VS Code](https://img.shields.io/badge/VS_Code-Install_Server-0098FF?style=for-the-badge&logo=visualstudiocode&logoColor=white)](https://vscode.dev/redirect?url=vscode:mcp/install?%7B%22name%22%3A%22courtlistener-mcp-server%22%2C%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22%40cyanheads%2Fcourtlistener-mcp-server%22%5D%7D)
+[![Install in Claude Desktop](https://img.shields.io/badge/Install_in-Claude_Desktop-D97757?style=for-the-badge&logo=anthropic&logoColor=white)](https://github.com/cyanheads/courtlistener-mcp-server/releases/latest/download/courtlistener-mcp-server.mcpb) [![Install in Cursor](https://cursor.com/deeplink/mcp-install-dark.svg)](https://cursor.com/en/install-mcp?name=courtlistener-mcp-server&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsIkBjeWFuaGVhZHMvY291cnRsaXN0ZW5lci1tY3Atc2VydmVyIl0sImVudiI6eyJDT1VSVExJU1RFTkVSX0FQSV9UT0tFTiI6InlvdXItYXBpLXRva2VuIn19) [![Install in VS Code](https://img.shields.io/badge/VS_Code-Install_Server-0098FF?style=for-the-badge&logo=visualstudiocode&logoColor=white)](https://vscode.dev/redirect?url=vscode:mcp/install?%7B%22name%22%3A%22courtlistener-mcp-server%22%2C%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22%40cyanheads%2Fcourtlistener-mcp-server%22%5D%2C%22env%22%3A%7B%22COURTLISTENER_API_TOKEN%22%3A%22your-api-token%22%7D%7D)
 
 [![Framework](https://img.shields.io/badge/Built%20on-@cyanheads/mcp--ts--core-67E8F9?style=flat-square)](https://www.npmjs.com/package/@cyanheads/mcp-ts-core)
 
@@ -40,7 +40,7 @@ US case law and federal court records from CourtListener's 9M+ opinion corpus an
 | `courtlistener_get_citations` | Trace a cluster's citation network: opinions it cites (`citing`) or that cite it (`cited_by`) |
 | `courtlistener_lookup_citation` | Resolve every citation in a text (e.g. "410 U.S. 113") to cluster IDs and case metadata |
 | `courtlistener_search_dockets` | Search RECAP federal dockets by case name, party, attorney, court, and filing date |
-| `courtlistener_get_docket` | Fetch a federal docket's metadata and paged entry list with document availability |
+| `courtlistener_get_docket` | Fetch a federal docket's paged entries or selected filings' extracted text |
 | `courtlistener_get_parties` | Fetch the parties and attorneys of record on a RECAP docket |
 | `courtlistener_search_judges` | Search judges by name, appointing president, court, and political affiliation |
 | `courtlistener_get_judge` | Fetch a judge's positions, education, political affiliations, and ABA ratings |
@@ -55,6 +55,7 @@ US case law and federal court records from CourtListener's 9M+ opinion corpus an
 | Resource | Description |
 |:---|:---|
 | `courtlistener://reference/courts` | Jurisdiction codes, common court IDs, search type codes, rate limits, and the maintenance window |
+| `skill://courtlistener-guide/SKILL.md` | Research guide for identifier chains, text completion, citation treatment, and coverage limits |
 
 The jurisdiction codes are also listed on the `jurisdiction` parameter of `courtlistener_lookup_courts`, for clients that don't surface resources.
 
@@ -83,6 +84,7 @@ Result-page sizes accept positive integers and bound outgoing requests: 20 for s
 - Small responses use `kind: "full"`. Oversized variants or metadata return a bounded `outline`, then typed `page` responses through `retrieval.next_cursor`; repeat the original ID and selection with `cursor` until null.
 - Supplied `plain_text` is preserved; markup-only variants gain readable text with paragraphs, tables, lists, footnotes, and decoded entities. `html_text` retains raw source and renders as fenced text. Search/citation snippets use the same readable normalization.
 - `variants_completion` reports whether the bounded source walk finished and its remaining upstream variant cursor. `docket_enrichment` distinguishes `not_linked`, `resolved`, `source_fields_absent`, and `lookup_failed` with a sanitized failure category; cancellation propagates.
+- Primary continuation remains stable when optional docket enrichment changes. Oversized enrichment has its own `enrichment_retrieval.next_cursor`, passed as `enrichment_cursor` with the same cluster and selection. Keep enrichment chunks only while `source_id` is unchanged; a changed source restarts that stream. A metadata-only partial response can have a null primary cursor while enrichment continues. Legacy v1 cursors retain their original enrichment-sensitive behavior.
 
 ---
 
@@ -111,9 +113,9 @@ Result-page sizes accept positive integers and bound outgoing requests: 20 for s
 
 ### `courtlistener_get_docket` <sub>tool</sub>
 
-- `docket_id` is required; entries come 20 per page (CourtListener ignores `entries_page_size`), walked with `entries_page`
-- Returns docket metadata, `total_entries`, `next_cursor` (the next `entries_page` number), and `entries[]` whose `documents[]` carry `is_available`, `page_count`, and `filepath_local`; documents with `is_available: false` need PACER, and fetching them is not exposed
-- `total_entries` is `null` when CourtListener supplies no numeric total, including on the last page; the rendered total says `unknown`. It never substitutes the number of entries returned.
+- `docket_id` is required; entries come 20 per page (CourtListener ignores `entries_page_size`), walked with `entries_page` and top-level `next_cursor`. Without a document selection, returns docket metadata and `entries[]`; `total_entries` is null when upstream supplies no numeric total.
+- `document_ids` selects documents from the requested entries page. Selected responses carry `kind`, `selected_documents`, source/storage links, and raw `plain_text`; large records use `retrieval.next_cursor`, passed as `cursor` with the same docket ID, entries page, and selection. Listing-only fields are optional in selected responses.
+- `text_status` is `available`, `unavailable`, `not_extracted`, or `unknown`; extracted text can exist independently of `is_available`. IDs absent from the page fail as `document_not_on_page`; an entry without a matching docket relation fails as `document_ownership_unverified`. Selection adds no document-detail requests or page walks.
 
 ---
 
@@ -173,7 +175,7 @@ Result-page sizes accept positive integers and bound outgoing requests: 20 for s
 - `disclosure_id` is required; `categories` selects from `investments`, `debts`, `positions`, `reimbursements`, `non_investment_incomes`, `spouse_incomes`, `agreements`, and `gifts` (omit for all)
 - Returns filing metadata, `counts`, and the requested line-item rows, with coded value and income columns decoded to dollar ranges (`N` → `$250,001 - $500,000`); oversized selections use `outline` and cursor-driven `page` responses, including when a single row exceeds the budget.
 
-Opinion, audio, and disclosure retrieval bounds each serialized response surface (`structuredContent` and complete `content[]`) to 24,000 UTF-8 bytes. Repeat the original ID and unchanged sections/categories selection with `cursor: retrieval.next_cursor`. Catalog pages lead automatically to data pages. `retrieval.ranges` uses JSON Pointer paths and absolute exclusive ranges (`rows`, `code_points`, or `sections`); merge typed rows by absolute index, and concatenate `text_chunks` by their code-point ranges. Partial rows retain their source identity; omitted text is recoverable through its original field path. Metadata can also be paged. Structured strings remain unescaped; presentation escaping happens after slicing. A changed normalized source returns `stale_cursor`; restart without cursor. Source-completion cursors remain distinct from these retrieval cursors.
+Opinion, audio, disclosure, and selected docket-document retrieval bound each serialized response surface (`structuredContent` and complete `content[]`) to 24,000 UTF-8 bytes. Repeat the original identity and selection with `cursor: retrieval.next_cursor`; docket selections also repeat `entries_page`. Catalog pages lead automatically to data pages. `retrieval.ranges` uses JSON Pointer paths and absolute exclusive ranges (`rows`, `code_points`, or `sections`); merge typed rows by absolute index, and concatenate `text_chunks` by their code-point ranges. Partial rows retain their source identity; omitted text is recoverable through its original field path. Metadata can also be paged. Structured strings remain unescaped; presentation escaping happens after slicing. A changed normalized source returns `stale_cursor`; restart without cursor. Source-completion cursors remain distinct from these retrieval cursors.
 
 ---
 
@@ -181,6 +183,13 @@ Opinion, audio, and disclosure retrieval bounds each serialized response surface
 
 - Markdown reference: the 22 jurisdiction codes (rendered from the set `courtlistener_lookup_courts` validates against), common court IDs, search type codes, the published free-tier rate limits, and the weekly maintenance window (Thursdays 21:00–23:59 PT)
 - Static content, cacheable publicly for 24 hours
+
+---
+
+### `skill://courtlistener-guide/SKILL.md` <sub>resource</sub>
+
+- Identifier chains and research gates for case law, RECAP filings, judges, disclosures, and oral arguments
+- Also included in plugin installs, npm, Docker, and the desktop bundle as [courtlistener-guide](./skills/courtlistener-guide/SKILL.md)
 
 ---
 
@@ -204,59 +213,32 @@ Agent-friendly output:
 
 - Chaining IDs: `cluster_id`, `docket_id`, `person_id`, `audio_id`, and `disclosure_id` appear wherever they feed a follow-up call, with field descriptions naming the tool that takes each
 - Typed rate-limit errors: `reason: "rate_limited"` with `retryAfter` in seconds, whether CourtListener returned the 429 or the queue gave up before sending, in which case the message says no request was spent
-- Bounded retrieval: opinion, audio, and disclosure tools preserve small full responses and stream oversized selected records through an outline and resumable typed pages without truncating source text
+- Bounded retrieval: opinion, audio, disclosure, and selected docket-document responses preserve small full records and stream oversized selections through an outline and resumable typed pages without truncating source text
 - Coverage caveats inline: RECAP `coverage_note`, `court_resolution` on citation lookups, `truncated` on position history, and notices when a page-local filter empties a page that has more pages behind it
 
 ## Getting started
 
-### Public Hosted Instance
+Connect to the hosted instance, no install:
 
-A public instance is available at `https://courtlistener.caseyjhand.com/mcp` — no installation required. Point any MCP client at it via Streamable HTTP:
-
-```json
-{
-  "mcpServers": {
-    "courtlistener-mcp-server": {
-      "type": "streamable-http",
-      "url": "https://courtlistener.caseyjhand.com/mcp"
-    }
-  }
-}
+```sh
+claude mcp add --transport http courtlistener-mcp-server https://courtlistener.caseyjhand.com/mcp
 ```
 
-### Self-Hosted / Local
+Or run it locally:
 
-Add the following to your MCP client configuration file. Generate a free API token in your [CourtListener account settings](https://www.courtlistener.com/profile/settings/).
-
-```json
-{
-  "mcpServers": {
-    "courtlistener-mcp-server": {
-      "type": "stdio",
-      "command": "bunx",
-      "args": ["@cyanheads/courtlistener-mcp-server@latest"],
-      "env": {
-        "MCP_TRANSPORT_TYPE": "stdio",
-        "MCP_LOG_LEVEL": "info",
-        "COURTLISTENER_API_TOKEN": "your-api-token"
-      }
-    }
-  }
-}
+```sh
+claude mcp add courtlistener-mcp-server -e COURTLISTENER_API_TOKEN=your-api-token -- npx -y @cyanheads/courtlistener-mcp-server
 ```
 
-Or with npx (no Bun required):
+For other clients, add this to the MCP config file:
 
 ```json
 {
   "mcpServers": {
     "courtlistener-mcp-server": {
-      "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@cyanheads/courtlistener-mcp-server@latest"],
+      "args": ["-y", "@cyanheads/courtlistener-mcp-server"],
       "env": {
-        "MCP_TRANSPORT_TYPE": "stdio",
-        "MCP_LOG_LEVEL": "info",
         "COURTLISTENER_API_TOKEN": "your-api-token"
       }
     }
@@ -264,63 +246,7 @@ Or with npx (no Bun required):
 }
 ```
 
-Or with Docker:
-
-```json
-{
-  "mcpServers": {
-    "courtlistener-mcp-server": {
-      "type": "stdio",
-      "command": "docker",
-      "args": [
-        "run", "-i", "--rm",
-        "-e", "MCP_TRANSPORT_TYPE=stdio",
-        "-e", "COURTLISTENER_API_TOKEN=your-api-token",
-        "ghcr.io/cyanheads/courtlistener-mcp-server:latest"
-      ]
-    }
-  }
-}
-```
-
-For Streamable HTTP, set the transport and start the server:
-
-```sh
-MCP_TRANSPORT_TYPE=http MCP_HTTP_PORT=3010 COURTLISTENER_API_TOKEN=... bun run start:http
-# Server listens at http://localhost:3010/mcp
-```
-
-### Prerequisites
-
-- [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+).
-- A CourtListener API token from a free account at [courtlistener.com](https://www.courtlistener.com/sign-in/). The published free-tier limits are 5 requests per minute, 50 per hour, and 125 per day; actual limits vary by token tier, and [Free Law Project membership](https://free.law/donate/) raises them.
-
-### Installation
-
-1. **Clone the repository:**
-
-```sh
-git clone https://github.com/cyanheads/courtlistener-mcp-server.git
-```
-
-2. **Navigate into the directory:**
-
-```sh
-cd courtlistener-mcp-server
-```
-
-3. **Install dependencies:**
-
-```sh
-bun install
-```
-
-4. **Configure environment:**
-
-```sh
-cp .env.example .env
-# edit .env and set COURTLISTENER_API_TOKEN
-```
+Generate a token in your [CourtListener account settings](https://www.courtlistener.com/profile/settings/). Published free-tier limits are 5 requests per minute, 50 per hour, and 125 per day; limits vary by token tier, and [Free Law Project membership](https://free.law/donate/) raises them. For Docker or a source build, see [Running the server](#running-the-server).
 
 ## Configuration
 
@@ -349,6 +275,16 @@ See [`.env.example`](./.env.example) for the full list of optional overrides.
 
 ### Local development
 
+Requires [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+).
+
+- **Clone and install:**
+
+  ```sh
+  git clone https://github.com/cyanheads/courtlistener-mcp-server.git
+  cd courtlistener-mcp-server && bun install
+  cp .env.example .env   # set COURTLISTENER_API_TOKEN
+  ```
+
 - **Build and run:**
 
   ```sh
@@ -372,11 +308,10 @@ See [`.env.example`](./.env.example) for the full list of optional overrides.
 ### Docker
 
 ```sh
-docker build -t courtlistener-mcp-server .
-docker run --rm -e COURTLISTENER_API_TOKEN=your-token -p 3010:3010 courtlistener-mcp-server
+docker run --rm -e COURTLISTENER_API_TOKEN=your-token -p 3010:3010 ghcr.io/cyanheads/courtlistener-mcp-server:latest
 ```
 
-The Dockerfile defaults to HTTP transport, stateless session mode, and logs to `/var/log/courtlistener-mcp-server`. OpenTelemetry peer dependencies are installed by default — build with `--build-arg OTEL_ENABLED=false` to omit them.
+The image defaults to HTTP transport, stateless session mode, and logs to `/var/log/courtlistener-mcp-server`. For stdio, use `docker run -i --rm -e MCP_TRANSPORT_TYPE=stdio -e COURTLISTENER_API_TOKEN=your-token ghcr.io/cyanheads/courtlistener-mcp-server:latest`. To build locally, run `docker build -t courtlistener-mcp-server .`; OpenTelemetry peer dependencies are installed by default — build with `--build-arg OTEL_ENABLED=false` to omit them.
 
 ## Project structure
 
@@ -389,6 +324,7 @@ The Dockerfile defaults to HTTP transport, stateless session mode, and logs to `
 | `src/mcp-server/prompts` | Prompt definitions (`*.prompt.ts`). Legal research prompt. |
 | `src/services/courtlistener` | CourtListener API client (request pacing, retry, error classification), code tables, and the bundled court snapshot (`bun run courts:snapshot` regenerates it). |
 | `tests/` | Unit and integration tests mirroring `src/`. |
+| `skills/` | Published research guidance for agents calling the server. |
 
 ## Development guide
 

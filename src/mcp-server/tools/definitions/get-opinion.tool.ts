@@ -16,6 +16,7 @@ import {
   Retrieval,
   RetrievalCursor,
   readRetrievalCursor,
+  retrievalSourceId,
   retrieve,
 } from '@/services/courtlistener/retrieval.js';
 import { idFromUri } from '@/services/courtlistener/uri.js';
@@ -92,11 +93,14 @@ const OpinionVariant = z
 export const getOpinionTool = tool('courtlistener_get_opinion', {
   title: 'Get Court Opinion',
   description:
-    'Fetch text and metadata for an opinion cluster by cluster ID. Returns majority, concurrence and dissent variants with raw HTML and readable plain text, variants_completion for source coverage, and docket_enrichment. Oversized selections return outline then page responses; continue retrieval.next_cursor as cursor with the unchanged ID/sections selection until null. Obtain cluster IDs from courtlistener_search_opinions, courtlistener_lookup_citation, or docket results.',
+    'Fetch text and metadata for an opinion cluster by cluster ID. Returns majority, concurrence and dissent variants with raw HTML and readable plain text, variants_completion for source coverage, and docket_enrichment. Oversized selections return outline then page responses; continue retrieval.next_cursor as cursor with the unchanged ID/sections selection until null. Oversized docket backfill has independent enrichment_retrieval coordinates; continue its next_cursor as enrichment_cursor and discard prior enrichment slices when source_id changes. Obtain cluster IDs from courtlistener_search_opinions, courtlistener_lookup_citation, or docket results.',
   annotations: { readOnlyHint: true, idempotentHint: true },
 
   input: z.object({
     cursor: RetrievalCursor,
+    enrichment_cursor: RetrievalCursor.describe(
+      'Continue enrichment_retrieval.next_cursor independently of primary cursor. A changed docket summary restarts only enrichment slices.',
+    ),
     cluster_id: z
       .number()
       .int()
@@ -114,6 +118,26 @@ export const getOpinionTool = tool('courtlistener_get_opinion', {
   output: z
     .object({
       retrieval: Retrieval,
+      enrichment_retrieval: Retrieval.unwrap()
+        .extend({
+          source_id: z
+            .string()
+            .describe(
+              'Identity of the current docket backfill; discard previously collected enrichment slices when this changes.',
+            ),
+          sections: z
+            .array(
+              OUTLINE_VARIANT.shape.sections.element.describe(
+                'Enrichment metadata field descriptor.',
+              ),
+            )
+            .optional()
+            .describe('Current enrichment field catalog when this response pages its descriptors.'),
+        })
+        .optional()
+        .describe(
+          'Independent coordinates for oversized docket backfill fields. Paths refer to top-level fields, independently of primary retrieval ranges. Continue with enrichment_cursor; changed enrichment restarts at its own outline.',
+        ),
       variants_completion: Completion.partial({ next_cursor: true })
         .optional()
         .describe(
@@ -237,6 +261,12 @@ export const getOpinionTool = tool('courtlistener_get_opinion', {
 
   async handler(input, ctx) {
     const cursor = readRetrievalCursor(input.cursor, 'opinion', input.cluster_id, input.sections);
+    const enrichmentCursor = readRetrievalCursor(
+      input.enrichment_cursor,
+      'opinion_enrichment',
+      input.cluster_id,
+      input.sections,
+    );
     ctx.log.info('courtlistener_get_opinion', { cluster_id: input.cluster_id });
     const svc = getCourtListenerService();
     const cluster = await svc.getOpinionCluster(input.cluster_id, ctx);
@@ -329,14 +359,13 @@ export const getOpinionTool = tool('courtlistener_get_opinion', {
     const clusterMeta = {
       cluster_id: cluster.id,
       variants_completion: cluster.variants_completion,
-      docket_enrichment: docketEnrichment,
       case_name: cluster.case_name ?? '',
       case_name_full: cluster.case_name_full ?? '',
-      court: courtId ? resolveCourtName(courtId) : (cluster.court ?? ''),
-      court_id: courtId,
+      court: cluster.court ?? '',
+      court_id: cluster.court_id ?? '',
       date_filed: cluster.date_filed ?? '',
       docket_id: docketId,
-      docket_number: docketNumber,
+      docket_number: cluster.docket_number ?? '',
       judges: cluster.judges ?? '',
       citations,
       cite_count: cluster.citation_count ?? 0,
@@ -367,27 +396,120 @@ export const getOpinionTool = tool('courtlistener_get_opinion', {
       selected = opinions.filter((op) => wanted.has(`opinion_${op.id}`));
     }
 
-    return retrieve({
+    // Version-one tokens retain their original enriched digest and unit layout.
+    if (cursor?.v === 1) {
+      const { cluster_id, variants_completion, ...metadata } = clusterMeta;
+      return retrieve({
+        tool: 'opinion',
+        id: input.cluster_id,
+        selection: input.sections,
+        cursor,
+        view: {
+          cluster_id,
+          variants_completion,
+          docket_enrichment: docketEnrichment,
+          ...metadata,
+          court: courtId ? resolveCourtName(courtId) : (cluster.court ?? ''),
+          court_id: courtId,
+          docket_number: docketNumber,
+          opinions: selected,
+        },
+        groups: selected.map((op) => ({ name: `opinion_${op.id}`, value: op })),
+        required: [
+          'cluster_id',
+          'docket_id',
+          'cite_count',
+          'variants_completion',
+          'docket_enrichment',
+        ],
+        signal: ctx.signal,
+        finalize: finalizeOpinion,
+      });
+    }
+    const enrichment = {
+      docket_enrichment: docketEnrichment,
+      ...(!cluster.court_id
+        ? {
+            court: courtId ? resolveCourtName(courtId) : (cluster.court ?? ''),
+            court_id: courtId,
+          }
+        : {}),
+      ...(!cluster.docket_number ? { docket_number: docketNumber } : {}),
+    };
+    const sourceId = retrievalSourceId(enrichment);
+    const enrichmentPage = retrieve({
+      tool: 'opinion_enrichment',
+      id: input.cluster_id,
+      selection: input.sections,
+      cursor: enrichmentCursor?.digest === sourceId ? enrichmentCursor : undefined,
+      view: enrichment,
+      groups: [],
+      required: ['docket_enrichment'],
+      signal: ctx.signal,
+      // Reserve bounded room for primary coordinates/data; small backfill remains inline.
+      byteLimit: 6000,
+      finalize: (value) => ({
+        structuredContent: value as object,
+        content: formatRetrievalPage(value as object),
+      }),
+    });
+    const overlay = (value: unknown): Record<string, unknown> => {
+      const result = { ...(value as Record<string, unknown>) };
+      // Deferred live fields must not expose the primary placeholder as their value.
+      for (const key of Object.keys(enrichment)) delete result[key];
+      const {
+        kind: _kind,
+        retrieval,
+        sections,
+        retrieval_notice: _notice,
+        ...fields
+      } = enrichmentPage;
+      return {
+        ...result,
+        ...fields,
+        ...(retrieval && result.kind === 'full'
+          ? {
+              kind: 'page',
+              retrieval: { next_cursor: null, ranges: [], text_chunks: [] },
+            }
+          : {}),
+        ...(retrieval
+          ? {
+              enrichment_retrieval: {
+                ...retrieval,
+                source_id: sourceId,
+                ...(sections ? { sections } : {}),
+              },
+            }
+          : {}),
+      };
+    };
+    const primary = retrieve({
       tool: 'opinion',
+      cursorVersion: 2,
       id: input.cluster_id,
       selection: input.sections,
       cursor,
-      view: { ...clusterMeta, opinions: selected },
+      view: {
+        ...clusterMeta,
+        court: cluster.court_id ? resolveCourtName(cluster.court_id) : undefined,
+        opinions: selected,
+      },
+      sourceIdentity: { court: cluster.court ?? '' },
       groups: selected.map((op) => ({ name: `opinion_${op.id}`, value: op })),
-      required: [
-        'cluster_id',
-        'docket_id',
-        'cite_count',
-        'variants_completion',
-        'docket_enrichment',
-      ],
+      required: ['cluster_id', 'docket_id', 'cite_count', 'variants_completion'],
       signal: ctx.signal,
-      finalize: finalizeOpinion,
+      planningFinalize: finalizeOpinion,
+      finalize: (value) => finalizeOpinion(overlay(value)),
     });
+    return overlay(primary) as typeof primary & {
+      docket_enrichment: typeof docketEnrichment;
+      enrichment_retrieval?: NonNullable<z.infer<typeof Retrieval>> & { source_id: string };
+    };
   },
 
   format: (result) => {
-    if (result.retrieval) return formatRetrievalPage(result);
+    if (result.retrieval || result.enrichment_retrieval) return formatRetrievalPage(result);
     result = presentation(result);
     // Cheap cluster metadata — always present, so this header renders in every mode.
     // `kind` is rendered unconditionally: it's required in every response, so keying

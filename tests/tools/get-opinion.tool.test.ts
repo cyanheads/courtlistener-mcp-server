@@ -9,6 +9,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getOpinionTool } from '@/mcp-server/tools/definitions/get-opinion.tool.js';
 import type { CourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
 import * as svcModule from '@/services/courtlistener/courtlistener-service.js';
+import { retrieve } from '@/services/courtlistener/retrieval.js';
 import type { OpinionCluster } from '@/services/courtlistener/types.js';
 import { captureError } from '../helpers/capture-error.js';
 
@@ -58,6 +59,258 @@ const baseCluster: OpinionCluster = {
 };
 
 describe('getOpinionTool', () => {
+  it.each(['scotus', undefined])(
+    'keeps canonical court values consistent with retrieval chunks (source ID=%s)',
+    async (court_id) => {
+      const cluster = {
+        id: 1,
+        docket_id: 10,
+        court: 'Original court '.repeat(4000),
+        court_id,
+        sub_opinions: [{ id: 2, plain_text: 'body'.repeat(10000) }],
+      };
+      mockSvc.getOpinionCluster = vi.fn().mockResolvedValue(cluster);
+      mockSvc.getDocketSummary = vi
+        .fn()
+        .mockResolvedValue({ court_id: 'scotus', docket_number: '1' });
+      let cursor: string | undefined;
+      let body = '';
+      let firstCursor: string | undefined;
+      do {
+        const wire = await runToolContract(getOpinionTool, { cluster_id: 1, cursor });
+        expect(wire.isError, JSON.stringify(wire)).not.toBe(true);
+        const page = getOpinionTool.output.parse(wire.structuredContent);
+        expect(page.court).toBe('Supreme Court of the United States');
+        expect(page.retrieval?.text_chunks.some((chunk) => chunk.path === '/court')).not.toBe(true);
+        expect(
+          page.enrichment_retrieval?.text_chunks.some((chunk) => chunk.path === '/court'),
+        ).not.toBe(true);
+        expect(Buffer.byteLength(JSON.stringify(wire.structuredContent))).toBeLessThanOrEqual(
+          24_000,
+        );
+        expect(Buffer.byteLength(JSON.stringify(wire.content))).toBeLessThanOrEqual(24_000);
+        for (const chunk of page.retrieval?.text_chunks ?? []) {
+          if (chunk.path !== '/opinions/0/plain_text') continue;
+          const range = page.retrieval!.ranges.find(
+            (range) => range.path === chunk.path && range.unit === 'code_points',
+          )!;
+          expect(range.start).toBe(Array.from(body).length);
+          body += chunk.text;
+        }
+        cursor = page.retrieval?.next_cursor ?? undefined;
+        firstCursor ??= cursor;
+      } while (cursor);
+      expect(body).toBe('body'.repeat(10000));
+      cluster.court = 'Changed raw court';
+      const changed = await runToolContract(getOpinionTool, { cluster_id: 1, cursor: firstCursor });
+      expect(changed).toMatchObject({
+        isError: true,
+        structuredContent: { error: { data: { reason: 'stale_cursor' } } },
+      });
+    },
+  );
+
+  it('continues a version-one cursor using its original enriched layout', async () => {
+    const plainText = 'legacy 😀'.repeat(8000);
+    mockSvc.getOpinionCluster = vi.fn().mockResolvedValue({
+      ...baseCluster,
+      sub_opinions: [{ id: 1000, plain_text: plainText }],
+    });
+    const oldView = {
+      cluster_id: 100,
+      variants_completion: undefined,
+      docket_enrichment: { status: 'resolved' },
+      case_name: baseCluster.case_name,
+      case_name_full: baseCluster.case_name_full,
+      court: 'Supreme Court of the United States',
+      court_id: 'scotus',
+      date_filed: baseCluster.date_filed,
+      docket_id: 5000,
+      docket_number: '70-18',
+      judges: baseCluster.judges,
+      citations: ['410 U.S. 113'],
+      cite_count: 10000,
+      precedential_status: 'Published',
+      syllabus: baseCluster.syllabus,
+      posture: baseCluster.posture,
+      opinions: [
+        {
+          id: 1000,
+          type: '',
+          type_label: '',
+          author_id: null,
+          per_curiam: false,
+          html_text: '',
+          plain_text: plainText,
+          cites: [],
+          download_url: null,
+        },
+      ],
+    };
+    const first = retrieve({
+      tool: 'opinion',
+      id: 100,
+      view: oldView,
+      groups: [{ name: 'opinion_1000', value: oldView.opinions[0] }],
+      required: [
+        'cluster_id',
+        'docket_id',
+        'cite_count',
+        'variants_completion',
+        'docket_enrichment',
+      ],
+      finalize: (value) => {
+        const parsed = getOpinionTool.output.parse(value);
+        return { structuredContent: parsed, content: getOpinionTool.format!(parsed) };
+      },
+    });
+    const cursor = first.retrieval!.next_cursor!;
+    expect(JSON.parse(Buffer.from(cursor, 'base64url').toString()).v).toBe(1);
+    const wire = await runToolContract(getOpinionTool, { cluster_id: 100, cursor });
+    expect(wire.isError, JSON.stringify(wire)).not.toBe(true);
+    const page = getOpinionTool.output.parse(wire.structuredContent);
+    expect(page.retrieval!.ranges).toContainEqual(
+      expect.objectContaining({ path: '/opinions/0/plain_text', start: 0 }),
+    );
+    expect(page.retrieval!.text_chunks[0]?.text).toBe(
+      plainText.slice(0, page.retrieval!.text_chunks[0]!.text.length),
+    );
+  });
+
+  it.each(['court', 'completion', 'text'] as const)(
+    'still rejects changed original %s source on both surfaces',
+    async (mutation) => {
+      const cluster = {
+        ...baseCluster,
+        court: 'Original court',
+        variants_completion: { complete: false, next_cursor: 'remaining' },
+        sub_opinions: [{ id: 1000, plain_text: 'source'.repeat(10000) }],
+      };
+      mockSvc.getOpinionCluster = vi.fn().mockResolvedValue(cluster);
+      const first = await runToolContract(getOpinionTool, { cluster_id: 100 });
+      const cursor = getOpinionTool.output.parse(first.structuredContent).retrieval!.next_cursor!;
+      if (mutation === 'court') cluster.court = 'Changed original court';
+      if (mutation === 'completion') cluster.variants_completion.complete = true;
+      if (mutation === 'text') cluster.sub_opinions[0]!.plain_text = 'changed';
+      const wire = await runToolContract(getOpinionTool, { cluster_id: 100, cursor });
+      expect(wire).toMatchObject({
+        isError: true,
+        structuredContent: {
+          error: {
+            data: {
+              reason: 'stale_cursor',
+              recovery: { hint: expect.stringContaining('Restart') },
+            },
+          },
+        },
+      });
+      expect(
+        wire.content.map((block) => (block.type === 'text' ? block.text : '')).join('\n'),
+      ).toContain('stale_cursor');
+    },
+  );
+
+  it('rejects malformed enrichment cursors before upstream I/O', async () => {
+    const wire = await runToolContract(getOpinionTool, { cluster_id: 100, enrichment_cursor: '!' });
+    expect(wire).toMatchObject({
+      isError: true,
+      structuredContent: { error: { data: { reason: 'invalid_cursor' } } },
+    });
+    expect(mockSvc.getOpinionCluster).not.toHaveBeenCalled();
+    expect(
+      wire.content.map((block) => (block.type === 'text' ? block.text : '')).join('\n'),
+    ).toContain('invalid_cursor');
+  });
+
+  it('marks metadata-only overflow partial even when the primary selection is empty', async () => {
+    mockSvc.getOpinionCluster = vi.fn().mockResolvedValue({ ...baseCluster, sub_opinions: [] });
+    mockSvc.getDocketSummary = vi
+      .fn()
+      .mockResolvedValue({ court_id: 'scotus', docket_number: 'metadata'.repeat(10000) });
+    const wire = await runToolContract(getOpinionTool, { cluster_id: 100 });
+    expect(wire.isError).not.toBe(true);
+    expect(wire.structuredContent).toMatchObject({
+      kind: 'page',
+      opinions: [],
+      retrieval: { next_cursor: null },
+      enrichment_retrieval: { next_cursor: expect.any(String) },
+    });
+  });
+
+  it('rejects a past-end enrichment position without discarding the valid primary position', async () => {
+    mockSvc.getOpinionCluster = vi.fn().mockResolvedValue({
+      ...baseCluster,
+      sub_opinions: [{ id: 1000, plain_text: 'primary'.repeat(10000) }],
+    });
+    mockSvc.getDocketSummary = vi
+      .fn()
+      .mockResolvedValue({ court_id: 'scotus', docket_number: 'large'.repeat(10000) });
+    const first = getOpinionTool.output.parse(
+      (await runToolContract(getOpinionTool, { cluster_id: 100 })).structuredContent,
+    );
+    const decoded = JSON.parse(
+      Buffer.from(first.enrichment_retrieval!.next_cursor!, 'base64url').toString(),
+    );
+    decoded.index = 9999;
+    const enrichment_cursor = Buffer.from(JSON.stringify(decoded)).toString('base64url');
+    const wire = await runToolContract(getOpinionTool, {
+      cluster_id: 100,
+      cursor: first.retrieval!.next_cursor!,
+      enrichment_cursor,
+    });
+    expect(wire).toMatchObject({
+      isError: true,
+      structuredContent: { error: { data: { reason: 'invalid_cursor' } } },
+    });
+    expect(
+      wire.content.map((block) => (block.type === 'text' ? block.text : '')).join('\n'),
+    ).toContain('invalid_cursor');
+    const resumed = await runToolContract(getOpinionTool, {
+      cluster_id: 100,
+      cursor: first.retrieval!.next_cursor!,
+    });
+    expect(resumed.isError).not.toBe(true);
+  });
+  it('characterizes primary source court precedence and small docket backfill', async () => {
+    mockSvc.getOpinionCluster = vi.fn().mockResolvedValue({
+      ...baseCluster,
+      court_id: 'ca9',
+      docket_number: 'source-number',
+    });
+    const wire = await runToolContract(getOpinionTool, { cluster_id: 100 });
+    expect(wire.isError).not.toBe(true);
+    expect(wire.structuredContent).toMatchObject({
+      kind: 'full',
+      court_id: 'ca9',
+      docket_number: 'source-number',
+      docket_enrichment: { status: 'resolved' },
+    });
+  });
+
+  it.each([true, false])(
+    'continues primary text across docket outcome changes (resolved first=%s)',
+    async (resolvedFirst) => {
+      mockSvc.getOpinionCluster = vi.fn().mockResolvedValue({
+        ...baseCluster,
+        sub_opinions: [{ id: 1000, plain_text: 'primary 😀'.repeat(8000) }],
+      });
+      const summary = vi.fn();
+      const success = { court_id: 'scotus', docket_number: 'backfill' };
+      const failure = new McpError(JsonRpcErrorCode.NotFound, 'Unavailable');
+      if (resolvedFirst) summary.mockResolvedValueOnce(success).mockRejectedValue(failure);
+      else summary.mockRejectedValueOnce(failure).mockResolvedValue(success);
+      mockSvc.getDocketSummary = summary;
+      const first = await runToolContract(getOpinionTool, { cluster_id: 100 });
+      const cursor = (first.structuredContent as { retrieval: { next_cursor: string } }).retrieval
+        .next_cursor;
+      const next = await runToolContract(getOpinionTool, { cluster_id: 100, cursor });
+      expect(next.isError, JSON.stringify(next)).not.toBe(true);
+      expect(next.structuredContent).toMatchObject({
+        docket_enrichment: { status: resolvedFirst ? 'lookup_failed' : 'resolved' },
+      });
+    },
+  );
+
   it('carries capped completion through selection and text output', async () => {
     mockSvc.getOpinionCluster = vi.fn().mockResolvedValue({
       ...baseCluster,

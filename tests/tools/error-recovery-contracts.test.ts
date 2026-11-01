@@ -89,7 +89,11 @@ describe('declared handler error recovery', () => {
         expect.arrayContaining([
           expect.objectContaining({
             type: 'text',
-            text: expect.stringContaining(contract.recovery),
+            text: expect.stringContaining(
+              definition === getOpinionTool
+                ? 'Re-call without sections to list the retrievable opinion\\_\\<id> names, then request one of those.'
+                : contract.recovery,
+            ),
           }),
         ]),
       );

@@ -54,14 +54,11 @@ await createApp({
     getFinancialDisclosureTool,
   ],
   resources: [courtsReferenceResource],
+  skills: 'skills',
   prompts: [legalResearchPrompt],
   landing: { requireAuth: false },
   instructions:
-    'CourtListener MCP server — access 9M+ US court opinions, RECAP federal dockets, judge records, citation networks, and oral arguments.\n' +
-    '- Start with courtlistener_lookup_courts to discover court IDs before filtering searches\n' +
-    '- CourtListener publishes free-tier limits of 5 req/min, 50/hr, 125/day, but actual limits vary by token tier. This server queues its own requests to the minute and hour windows, so a short burst waits rather than failing; a rate-limit error means the wait outlasted the call — honor its Retry-After\n' +
-    '- courtlistener_lookup_citation resolves citation strings (e.g., "410 U.S. 113") to cluster IDs\n' +
-    '- courtlistener_get_citations traces precedent networks (direction="cited_by" for downstream influence)',
+    'Search US opinions, RECAP federal dockets, judges, citations, oral arguments, and disclosures. Resolve unfamiliar court IDs with courtlistener_lookup_courts; opinion search and courtlistener_lookup_citation return cluster IDs for courtlistener_get_opinion and courtlistener_get_citations, distinct from individual opinion IDs. Read the relevant variants before interpreting citation treatment, and check source completeness separately from retrieval continuation. CourtListener requires an API token; published free-tier limits are 5 requests/minute, 50/hour, and 125/day, with limits varying by token tier. The server queues requests within its minute/hour budgets; honor Retry-After on rate-limit errors. The courtlistener-guide skill covers identifier chains and research gates.',
   setup(core) {
     initCourtListenerService(
       { ...getServerConfig(), mcpServerVersion: core.config.mcpServerVersion },
