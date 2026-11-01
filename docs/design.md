@@ -670,7 +670,7 @@ cursor: z.string().optional()
 
 **Oral argument detail retrieval.** `courtlistener_get_oral_argument` takes an audio ID from search and returns recording metadata and the available transcript. Long transcripts and metadata follow the same bounded retrieval contract as opinions and disclosures.
 
-**Document retrieval not exposed.** RECAP documents with `is_available: true` have a `filepath_local` URL pointing to a stored PDF. Fetching and parsing PDFs adds significant handler complexity (binary fetch, format conversion) and is gated on PACER account status for unavailable documents. The tool surface surfaces document metadata and availability so agents know what exists — actual retrieval is left to the user.
+**Embedded filing text without PDF extraction.** `courtlistener_get_docket` returns extracted text embedded in the requested entries page when `document_ids` selects records with verified docket ownership. Text availability is independent of the stored PDF's `is_available` flag. Source and storage links remain available, but the server does not download or parse PDFs, purchase PACER documents, or extract missing text.
 
 ---
 
