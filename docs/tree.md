@@ -1,6 +1,6 @@
 # courtlistener-mcp-server - Directory Structure
 
-Generated on: 2026-10-18 08:57:18
+Generated on: 2026-11-01 03:37:50
 
 ```text
 courtlistener-mcp-server/
@@ -44,6 +44,8 @@ courtlistener-mcp-server/
 │   ├── add-resource/
 │   │   └── SKILL.md
 │   ├── add-service/
+│   │   └── SKILL.md
+│   ├── add-skill/
 │   │   └── SKILL.md
 │   ├── add-test/
 │   │   └── SKILL.md
@@ -142,6 +144,9 @@ courtlistener-mcp-server/
 │   ├── prune-musl-packages.ts
 │   ├── release-github.ts
 │   └── tree.ts
+├── skills/
+│   └── courtlistener-guide/
+│       └── SKILL.md
 ├── src/
 │   ├── config/
 │   │   └── server-config.ts
@@ -188,6 +193,8 @@ courtlistener-mcp-server/
 │   │   └── server-config.test.ts
 │   ├── helpers/
 │   │   └── capture-error.ts
+│   ├── packaging/
+│   │   └── agent-doc-entries.test.ts
 │   ├── prompts/
 │   │   └── legal-research.prompt.test.ts
 │   ├── resources/
@@ -243,7 +250,9 @@ courtlistener-mcp-server/
 ├── Dockerfile
 ├── LICENSE
 ├── manifest.json
+├── mcp.json
 ├── package.json
+├── plugin.json
 ├── README.md
 ├── server.json
 ├── tsconfig.build.json
