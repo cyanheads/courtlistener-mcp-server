@@ -15,6 +15,30 @@
 import { COURT_ATTRIBUTES, COURT_FULL_NAMES } from './court-names-data.js';
 import { COURT_JURISDICTION_LABELS } from './jurisdictions.js';
 
+const courtIdsByLowercase = new Map(
+  Object.keys(COURT_FULL_NAMES).map((id) => [id.toLowerCase(), id]),
+);
+
+/** Canonicalize a search filter while leaving the live court vocabulary open. */
+export function normalizeCourtFilter(filter: string | undefined): string | undefined {
+  const ids = filter
+    ?.split(/[\s,]+/)
+    .filter(Boolean)
+    .map((id) =>
+      Object.hasOwn(COURT_FULL_NAMES, id) ? id : (courtIdsByLowercase.get(id.toLowerCase()) ?? id),
+    );
+  return ids?.length ? ids.join(' ') : undefined;
+}
+
+/** Explain snapshot misses after an empty search without treating them as invalid. */
+export function courtFilterGuidance(filter: string | undefined): string {
+  const ids = normalizeCourtFilter(filter)?.split(' ') ?? [];
+  const missing = [...new Set(ids.filter((id) => !Object.hasOwn(COURT_FULL_NAMES, id)))];
+  return missing.length
+    ? ` Court IDs absent from the local snapshot: ${missing.join(', ')}. Verify them with courtlistener_lookup_courts.`
+    : '';
+}
+
 /**
  * Resolve a court identifier to its display name.
  * Returns the official `full_name` for known courts, otherwise the identifier

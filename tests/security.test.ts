@@ -603,9 +603,12 @@ describe('sparse upstream payload handling', () => {
     const input = searchDocketsTool.input.parse({ q: 'sparse' });
     const result = await searchDocketsTool.handler(input, ctx);
     expect(result.results[0]!.sample_documents).toHaveLength(0);
-    expect(result.results[0]!.parties).toEqual([]);
-    expect(result.results[0]!.attorneys).toEqual([]);
-    expect(result.results[0]!.firms).toEqual([]);
+    expect(result.results[0]!.party_count).toBeNull();
+    expect(result.results[0]!.attorney_count).toBeNull();
+    expect(result.results[0]!.firm_count).toBeNull();
+    expect(result.results[0]).not.toHaveProperty('parties');
+    expect(result.results[0]).not.toHaveProperty('attorneys');
+    expect(result.results[0]).not.toHaveProperty('firms');
   });
 
   it('searchOralArgumentsTool handles sparse upstream with null fields', async () => {

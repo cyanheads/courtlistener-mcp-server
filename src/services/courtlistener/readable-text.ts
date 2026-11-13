@@ -67,6 +67,11 @@ export function readableText(markup: string): string {
     .trim();
 }
 
+/** Remove upstream search highlighting from labels without changing unmarked values. */
+export function unhighlight(value: string): string {
+  return value.includes('<mark>') ? readableText(value) : value;
+}
+
 /** Preserve source line endings while escaping sliced text; framework inline escaping normalizes CRLF. */
 export function escapeText(value: string): string {
   return value.replace(/[&<>\\`*_{}[\]()#+.!|~-]/g, (char) => {

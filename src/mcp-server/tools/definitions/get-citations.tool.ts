@@ -6,7 +6,12 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { citingOffset } from '@/services/courtlistener/citing-offset.js';
-import { getCourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
+import { courtFilterGuidance } from '@/services/courtlistener/court-names.js';
+import {
+  getCourtListenerService,
+  OPINION_ORDERS,
+  OPINION_STATUSES,
+} from '@/services/courtlistener/courtlistener-service.js';
 import { findInvalidDates, ISO_DATE_HINT } from '@/services/courtlistener/dates.js';
 import {
   Completion,
@@ -19,7 +24,7 @@ import { escapeText, readableText } from '@/services/courtlistener/readable-text
 export const getCitationsTool = tool('courtlistener_get_citations', {
   title: 'Get Citation Network',
   description:
-    'Retrieve the citation network for an opinion cluster. Supports two directions: "cited_by" (opinions that cite this one — measures precedential influence) and "citing" (opinions this one cites — reveals the authority chain relied on). This is the primary tool for tracing legal precedent chains. Note: the free tier supports shallow traversal — following 1–2 hops of a single case is practical; deep multi-hop analysis burns through the daily budget quickly.',
+    'Retrieve the citation network for an opinion cluster. "cited_by" lists opinions that cite this cluster; "citing" lists opinions it cites. Result rows default to Published in both directions; select statuses to expand or narrow the search. The free tier supports shallow traversal and deep multi-hop analysis can exhaust the request budget.',
   annotations: { readOnlyHint: true, openWorldHint: true, idempotentHint: false },
 
   input: z.object({
@@ -39,13 +44,25 @@ export const getCitationsTool = tool('courtlistener_get_citations', {
       .string()
       .optional()
       .describe(
-        'Filter results to a specific court (e.g., "scotus", "ca9"). Applies to both directions.',
+        'Filter by one court ID or a space-separated list (e.g., "scotus ca9"). Applies to both directions. Find IDs with courtlistener_lookup_courts.',
       ),
     filed_after: z
       .string()
       .optional()
       .describe(
         'Limit to citations filed after this date (ISO 8601). For "cited_by", useful for "how has this precedent been applied recently?"',
+      ),
+    filed_before: z.string().optional().describe('Latest filing date (YYYY-MM-DD), inclusive.'),
+    statuses: z
+      .array(z.enum(OPINION_STATUSES))
+      .min(1)
+      .optional()
+      .describe('Publication statuses to include in either direction. Omit for Published only.'),
+    order_by: z
+      .enum(OPINION_ORDERS)
+      .optional()
+      .describe(
+        'Sort cited_by results upstream. Omit for relevance. Use citeCount desc for most cited.',
       ),
     page_size: z
       .number()
@@ -100,7 +117,7 @@ export const getCitationsTool = tool('courtlistener_get_citations', {
             snippet: z
               .string()
               .describe(
-                'Matched text excerpt from the related opinion, taken from the first opinion variant in the cluster that carries one; empty string when none does. It is a relevance preview for the cluster, not necessarily text surrounding the citation itself.',
+                'Opening excerpt from the first opinion variant that supplies one; empty string when none does.',
               ),
           })
           .describe('Related opinion in the citation network.'),
@@ -118,7 +135,7 @@ export const getCitationsTool = tool('courtlistener_get_citations', {
       .number()
       .optional()
       .describe(
-        'Exact total for the fetched direction when source variants are complete; absent when total_is_partial is true. For cited_by this counts matching clusters after filters; for citing it counts distinct cited opinions before any filter, which can exceed the cluster rows.',
+        'Exact total when source variants are complete. For cited_by this counts clusters matching the filters, with Published as the default status. For citing it counts distinct cited opinions before any filter, which can exceed the cluster rows. Absent when total_is_partial is true.',
       ),
     notice: z
       .string()
@@ -156,8 +173,14 @@ export const getCitationsTool = tool('courtlistener_get_citations', {
     {
       reason: 'invalid_date',
       code: JsonRpcErrorCode.ValidationError,
-      when: 'filed_after is not a valid ISO 8601 calendar date.',
-      recovery: 'Pass filed_after as a real YYYY-MM-DD calendar date, for example 2020-01-01.',
+      when: 'filed_after or filed_before is not a valid ISO 8601 calendar date.',
+      recovery: 'Pass each date filter as a real YYYY-MM-DD calendar date, for example 2020-01-01.',
+    },
+    {
+      reason: 'unsupported_citation_order',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'order_by was supplied with the citing direction.',
+      recovery: 'Omit order_by for citing or use the cited_by direction.',
     },
   ],
 
@@ -169,7 +192,10 @@ export const getCitationsTool = tool('courtlistener_get_citations', {
 
     // Guard before the service call: a malformed date would otherwise spend three of the
     // free tier's daily requests to reach a 400 from the /search/ endpoint.
-    const invalidDates = findInvalidDates({ filed_after: input.filed_after });
+    const invalidDates = findInvalidDates({
+      filed_after: input.filed_after,
+      filed_before: input.filed_before,
+    });
     if (invalidDates.length > 0) {
       throw ctx.fail(
         'invalid_date',
@@ -177,7 +203,12 @@ export const getCitationsTool = tool('courtlistener_get_citations', {
       );
     }
 
-    if (input.direction === 'citing') citingOffset(input.cursor);
+    if (input.direction === 'citing') {
+      if (input.order_by !== undefined) {
+        throw ctx.fail('unsupported_citation_order', 'order_by applies only to cited_by.');
+      }
+      citingOffset(input.cursor);
+    }
 
     const svc = getCourtListenerService();
 
@@ -185,13 +216,21 @@ export const getCitationsTool = tool('courtlistener_get_citations', {
       clusterId: input.cluster_id,
       court: input.court,
       filed_after: input.filed_after,
+      ...(input.filed_before !== undefined && { filed_before: input.filed_before }),
+      ...(input.statuses !== undefined && { statuses: input.statuses }),
       page_size: Math.min(input.page_size, 20),
       cursor: input.cursor,
     };
 
     const data =
       input.direction === 'cited_by'
-        ? await svc.getCitedBy(citationParams, ctx)
+        ? await svc.getCitedBy(
+            {
+              ...citationParams,
+              ...(input.order_by !== undefined && { order_by: input.order_by }),
+            },
+            ctx,
+          )
         : await svc.getCiting(citationParams, ctx);
 
     // Both directions fetch the source cluster to resolve opinion IDs, so the case name
@@ -207,8 +246,7 @@ export const getCitationsTool = tool('courtlistener_get_citations', {
       date_filed: r.dateFiled ?? '',
       citations: r.citation ?? [],
       cite_count: r.citeCount ?? 0,
-      // v4 nests the matched excerpt under each opinion variant; nothing marks which
-      // one matched, so take the first that carries one (same rule as search_opinions).
+      // Generated citation searches leave highlighting off and keep the opening excerpt.
       snippet: readableText((r.opinions ?? []).find((o) => o.snippet)?.snippet ?? ''),
     }));
 
@@ -229,17 +267,20 @@ export const getCitationsTool = tool('courtlistener_get_citations', {
       const filters: string[] = [];
       if (input.court) filters.push(`court="${input.court}"`);
       if (input.filed_after) filters.push(`filed_after=${input.filed_after}`);
+      if (input.filed_before) filters.push(`filed_before=${input.filed_before}`);
+      if (input.statuses) filters.push(`statuses=${input.statuses.join(', ')}`);
       const filterHint = filters.length > 0 ? ` with filters: ${filters.join(', ')}` : '';
-      if (input.direction === 'citing' && filters.length > 0 && data.nextCursor !== null) {
+      const courtGuidance = courtFilterGuidance(input.court);
+      if (input.direction === 'citing' && data.nextCursor !== null) {
         // "citing" pages the cited-opinion list, then filters each page upstream, so a
         // narrow filter can zero a page while later pages still hold matches — say which
         // it is rather than letting an exhausted-looking response stand.
         ctx.enrich.notice(
-          `No opinions cited by cluster ${input.cluster_id} matched ${filters.join(', ')} on this page, but more pages remain. The filters narrow each page after the cited-opinion list is sliced — pass cursor=${data.nextCursor} to check the next page.`,
+          `No opinions cited by cluster ${input.cluster_id} matched on this page${filterHint}, but more pages remain. The cited-opinion list is sliced before search. Pass cursor=${data.nextCursor} to check the next page.${courtGuidance}`,
         );
       } else {
         ctx.enrich.notice(
-          `No opinions found ${dirLabel} cluster ${input.cluster_id}${filterHint}. Try the opposite direction, remove filters, or verify the cluster ID.`,
+          `No opinions found ${dirLabel} cluster ${input.cluster_id}${filterHint}. Try the opposite direction, remove filters, or verify the cluster ID.${courtGuidance}`,
         );
       }
     }

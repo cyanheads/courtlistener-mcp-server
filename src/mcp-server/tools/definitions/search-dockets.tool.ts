@@ -5,6 +5,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { courtFilterGuidance } from '@/services/courtlistener/court-names.js';
 import { getCourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
 import { findInvalidDates, ISO_DATE_HINT } from '@/services/courtlistener/dates.js';
 import {
@@ -20,7 +21,7 @@ const COVERAGE_NOTE =
 export const searchDocketsTool = tool('courtlistener_search_dockets', {
   title: 'Search Federal Court Dockets',
   description:
-    'Search RECAP federal court dockets. Query terms match case name, docket number, party, and attorney names; filters narrow by party name, court, and filing date. RECAP is a crowd-sourced mirror of PACER (the federal court filing system) — coverage varies by court and date. Returns docket metadata with the parties, attorneys, and firms of record, plus up to 3 sample document entries per docket. Use courtlistener_lookup_courts to find court IDs.',
+    'Search RECAP federal court dockets by case name, docket number, party, attorney, court, or filing date. Returns docket metadata, indexed roster counts, and up to three sample filings per docket. Select roster names with include or use courtlistener_get_parties for docket-scoped detail. RECAP coverage varies by court and date.',
   annotations: { readOnlyHint: true, openWorldHint: true, idempotentHint: false },
 
   input: z.object({
@@ -28,13 +29,13 @@ export const searchDocketsTool = tool('courtlistener_search_dockets', {
       .string()
       .trim()
       .describe(
-        'Query terms matched against case name, docket number, party names, and attorney names. Example: "Apple Inc patent infringement".',
+        'Query terms matched against case name, docket number, party names, and attorney names. Use "*" for a filter-only search.',
       ),
     court: z
       .string()
       .optional()
       .describe(
-        'Filter to a specific federal court ID (e.g., "dnd", "cacd", "deb" for Delaware Bankruptcy). Use courtlistener_lookup_courts to find court IDs.',
+        'Filter by one federal court ID or a space-separated list (e.g., "cand cacd"). Find IDs with courtlistener_lookup_courts.',
       ),
     party_name: z
       .string()
@@ -44,6 +45,10 @@ export const searchDocketsTool = tool('courtlistener_search_dockets', {
       ),
     filed_after: z.string().optional().describe('Earliest case filing date (ISO 8601).'),
     filed_before: z.string().optional().describe('Latest case filing date (ISO 8601).'),
+    include: z
+      .array(z.enum(['parties', 'attorneys', 'firms']))
+      .optional()
+      .describe('Select which indexed name arrays to include. Omit for counts only.'),
     page_size: z
       .number()
       .int()
@@ -104,13 +109,24 @@ export const searchDocketsTool = tool('courtlistener_search_dockets', {
               .describe(
                 'Basis of federal jurisdiction (e.g. "Federal Question"); empty string when not recorded.',
               ),
-            parties: z.array(z.string()).describe('Party names listed in this docket.'),
+            party_count: z
+              .number()
+              .nullable()
+              .describe('Indexed party name count, or null if the roster is absent.'),
+            attorney_count: z
+              .number()
+              .nullable()
+              .describe('Indexed attorney name count, or null if the roster is absent.'),
+            firm_count: z
+              .number()
+              .nullable()
+              .describe('Indexed firm name count, or null if the roster is absent.'),
+            parties: z.array(z.string()).optional().describe('Indexed party names when requested.'),
             attorneys: z
               .array(z.string())
-              .describe('Attorney names of record on this docket; empty when none are recorded.'),
-            firms: z
-              .array(z.string())
-              .describe('Law firm names of record on this docket; empty when none are recorded.'),
+              .optional()
+              .describe('Indexed attorney names when requested.'),
+            firms: z.array(z.string()).optional().describe('Indexed firm names when requested.'),
             sample_documents: z
               .array(
                 z
@@ -168,7 +184,9 @@ export const searchDocketsTool = tool('courtlistener_search_dockets', {
 
   // Agent-facing context: total match count and recovery hint on empty pages.
   enrichment: {
-    totalCount: z.number().describe('Total matching dockets.'),
+    totalCount: z
+      .number()
+      .describe('Matching dockets. CourtListener estimates the count for large result sets.'),
     notice: z
       .string()
       .optional()
@@ -200,8 +218,7 @@ export const searchDocketsTool = tool('courtlistener_search_dockets', {
       reason: 'empty_query',
       code: JsonRpcErrorCode.ValidationError,
       when: 'q is empty or whitespace-only after trimming — no request is sent.',
-      recovery:
-        'Supply search terms in q — a case name, party name, docket number, or attorney name.',
+      recovery: 'Supply search terms in q, or use q: "*" for a filter-only search.',
     },
     {
       reason: 'invalid_date',
@@ -218,10 +235,7 @@ export const searchDocketsTool = tool('courtlistener_search_dockets', {
     // free tier's published 125 daily requests (actual limits vary by token tier) on
     // input that cannot return useful data.
     if (!input.q) {
-      throw ctx.fail(
-        'empty_query',
-        'The q parameter is empty or whitespace-only. Supply search terms — e.g. q: "Apple Inc patent infringement".',
-      );
+      throw ctx.fail('empty_query', 'The q parameter is empty or whitespace-only.');
     }
 
     const invalidDates = findInvalidDates({
@@ -250,6 +264,7 @@ export const searchDocketsTool = tool('courtlistener_search_dockets', {
       ctx,
     );
 
+    const include = new Set(input.include);
     const results = data.results.map((r) => ({
       docket_id: r.docket_id,
       case_name: r.caseName ?? '',
@@ -266,9 +281,12 @@ export const searchDocketsTool = tool('courtlistener_search_dockets', {
       jury_demand: r.juryDemand ?? '',
       suit_nature: r.suitNature ?? '',
       jurisdiction_type: r.jurisdictionType ?? '',
-      parties: r.party ?? [],
-      attorneys: r.attorney ?? [],
-      firms: r.firm ?? [],
+      party_count: r.party?.length ?? null,
+      attorney_count: r.attorney?.length ?? null,
+      firm_count: r.firm?.length ?? null,
+      ...(include.has('parties') && { parties: r.party ?? [] }),
+      ...(include.has('attorneys') && { attorneys: r.attorney ?? [] }),
+      ...(include.has('firms') && { firms: r.firm ?? [] }),
       sample_documents: (r.recap_documents ?? []).slice(0, 3).map((d) => ({
         id: d.id,
         description: d.description ?? '',
@@ -296,7 +314,7 @@ export const searchDocketsTool = tool('courtlistener_search_dockets', {
       if (input.filed_before) filters.push(`filed_before=${input.filed_before}`);
       const filterHint = filters.length > 0 ? ` with filters: ${filters.join(', ')}` : '';
       ctx.enrich.notice(
-        `No dockets matched "${input.q}"${filterHint}. Try broadening filters or revising search terms.`,
+        `No dockets matched "${input.q}"${filterHint}. Try broadening filters or revising search terms.${courtFilterGuidance(input.court)}`,
       );
     }
 
@@ -320,7 +338,6 @@ export const searchDocketsTool = tool('courtlistener_search_dockets', {
       lines.push(
         '\n> No dockets matched the query. Try broadening filters or revising search terms.',
       );
-      return [{ type: 'text', text: lines.join('\n') }];
     }
 
     for (const r of result.results) {
@@ -338,9 +355,21 @@ export const searchDocketsTool = tool('courtlistener_search_dockets', {
       if (r.suit_nature) lines.push(`**Nature of suit:** ${r.suit_nature}`);
       if (r.jurisdiction_type) lines.push(`**Jurisdiction:** ${r.jurisdiction_type}`);
       if (r.jury_demand) lines.push(`**Jury demand:** ${r.jury_demand}`);
-      if (r.parties.length > 0) lines.push(`**Parties:** ${r.parties.join(', ')}`);
-      if (r.attorneys.length > 0) lines.push(`**Attorneys:** ${r.attorneys.join(', ')}`);
-      if (r.firms.length > 0) lines.push(`**Firms:** ${r.firms.join(', ')}`);
+      lines.push(
+        `**Indexed names:** ${r.party_count ?? 'unknown'} parties | ${r.attorney_count ?? 'unknown'} attorneys | ${r.firm_count ?? 'unknown'} firms`,
+      );
+      if (r.parties)
+        lines.push(
+          `**Parties:** ${r.parties.join(', ') || (r.party_count === null ? 'Roster unavailable' : 'None indexed')}`,
+        );
+      if (r.attorneys)
+        lines.push(
+          `**Attorneys:** ${r.attorneys.join(', ') || (r.attorney_count === null ? 'Roster unavailable' : 'None indexed')}`,
+        );
+      if (r.firms)
+        lines.push(
+          `**Firms:** ${r.firms.join(', ') || (r.firm_count === null ? 'Roster unavailable' : 'None indexed')}`,
+        );
       if (r.pacer_case_id) lines.push(`**PACER ID:** ${r.pacer_case_id}`);
 
       if (r.sample_documents.length > 0) {

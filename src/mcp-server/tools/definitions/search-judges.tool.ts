@@ -5,6 +5,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { courtFilterGuidance } from '@/services/courtlistener/court-names.js';
 import { getCourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
 import {
   formatPageSizing,
@@ -30,11 +31,16 @@ function selectCurrentPosition(positions: PersonSearchPosition[]): PersonSearchP
 export const searchJudgesTool = tool('courtlistener_search_judges', {
   title: 'Search Judges',
   description:
-    'Search judge/person records by name, appointing president, court, political affiliation, or demographic. Returns biographical data, current position, and appointment summary. Use courtlistener_get_judge for full appointment history and education records.',
+    'Search judge/person records by name, appointing president, court, or political affiliation. Returns biographical data, current position, and appointment summary. Use courtlistener_get_judge for full appointment history and education records.',
   annotations: { readOnlyHint: true, openWorldHint: true, idempotentHint: false },
 
   input: z.object({
-    q: z.string().trim().describe('Search query — judge name, court, city, or relevant keywords.'),
+    q: z
+      .string()
+      .trim()
+      .describe(
+        'Search query for judge name, court, city, or keywords. Use "*" for a filter-only search.',
+      ),
     appointer: z
       .string()
       .optional()
@@ -45,7 +51,7 @@ export const searchJudgesTool = tool('courtlistener_search_judges', {
       .string()
       .optional()
       .describe(
-        'Filter to judges who have held a position at this court (e.g., "scotus", "ca9"). Use court_id strings from courtlistener_lookup_courts.',
+        'Filter to judges who have held a position at one of these courts. Pass a court ID or a space-separated list (e.g., "scotus ca9"). Find IDs with courtlistener_lookup_courts.',
       ),
     political_affiliation: z
       .enum(['d', 'r', 'i', 'l', 'g', 'u'])
@@ -196,7 +202,7 @@ export const searchJudgesTool = tool('courtlistener_search_judges', {
       reason: 'empty_query',
       code: JsonRpcErrorCode.ValidationError,
       when: 'q is empty or whitespace-only after trimming — no request is sent.',
-      recovery: 'Supply search terms in q — a judge name, court, or city to match against.',
+      recovery: 'Supply search terms in q, or use q: "*" for a filter-only search.',
     },
   ],
 
@@ -207,10 +213,7 @@ export const searchJudgesTool = tool('courtlistener_search_judges', {
     // free tier's published 125 daily requests (actual limits vary by token tier) and
     // return unrelated records.
     if (!input.q) {
-      throw ctx.fail(
-        'empty_query',
-        'The q parameter is empty or whitespace-only. Supply search terms — e.g. q: "Sotomayor".',
-      );
+      throw ctx.fail('empty_query', 'The q parameter is empty or whitespace-only.');
     }
 
     const svc = getCourtListenerService();
@@ -273,7 +276,7 @@ export const searchJudgesTool = tool('courtlistener_search_judges', {
       if (input.political_affiliation) filters.push(`affiliation=${input.political_affiliation}`);
       const filterHint = filters.length > 0 ? ` with filters: ${filters.join(', ')}` : '';
       ctx.enrich.notice(
-        `No judges matched "${input.q}"${filterHint}. Try broadening filters or revising search terms.`,
+        `No judges matched "${input.q}"${filterHint}. Try broadening filters or revising search terms.${courtFilterGuidance(input.court)}`,
       );
     }
 
@@ -295,7 +298,6 @@ export const searchJudgesTool = tool('courtlistener_search_judges', {
       lines.push(
         '\n> No judges matched the query. Try broadening filters or revising search terms.',
       );
-      return [{ type: 'text', text: lines.join('\n') }];
     }
 
     for (const r of result.results) {

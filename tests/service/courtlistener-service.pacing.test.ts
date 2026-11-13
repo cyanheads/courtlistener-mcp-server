@@ -106,7 +106,7 @@ describe('request pacing (#69)', () => {
     expect(err).toBeInstanceOf(McpError);
     expect(err.code).toBe(JsonRpcErrorCode.RateLimited);
     expect(err.data).toMatchObject({ reason: 'rate_limited', retryable: false, retryAfter: '60' });
-    expect(err.message).toContain('no request was sent');
+    expect(err.message).toContain('this request was not sent');
     // The shed is published under the declared reason, so it carries the declared hint.
     expect((err.data as { recovery?: { hint?: string } }).recovery?.hint).toContain(
       'Wait out the Retry-After interval',

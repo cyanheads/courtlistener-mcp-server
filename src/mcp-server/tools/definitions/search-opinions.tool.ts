@@ -5,20 +5,25 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { getCourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
+import { courtFilterGuidance } from '@/services/courtlistener/court-names.js';
+import {
+  getCourtListenerService,
+  OPINION_ORDERS,
+  OPINION_STATUSES,
+} from '@/services/courtlistener/courtlistener-service.js';
 import { findInvalidDates, ISO_DATE_HINT } from '@/services/courtlistener/dates.js';
 import {
   formatPageSizing,
   PageSizing,
   pageSizing,
 } from '@/services/courtlistener/page-metadata.js';
-import { escapeText, readableText } from '@/services/courtlistener/readable-text.js';
+import { escapeText, readableText, unhighlight } from '@/services/courtlistener/readable-text.js';
 import { toStorageUrl } from '@/services/courtlistener/uri.js';
 
 export const searchOpinionsTool = tool('courtlistener_search_opinions', {
   title: 'Search Court Opinions',
   description:
-    'Full-text search across 9M+ written US court opinions with field-level filtering. Returns opinion cluster summaries with case metadata, citations, matched text snippets, and the individual opinion variants filed in each case. Supports CourtListener field syntax (caseName:"roe v wade", court_id:scotus, judge:"Alito") and boolean operators (AND, OR, NOT). Use courtlistener_lookup_courts to find court IDs. CourtListener publishes free-tier limits of 5 req/min, 50/hr, 125/day; actual limits vary by token tier.',
+    'Full-text search across 9M+ written US court opinions with field-level filtering. Returns opinion cluster summaries with case metadata, citations, text previews, and individual opinion variants. Supports CourtListener field syntax (caseName:"roe v wade", court_id:scotus, judge:"Alito") and boolean operators (AND, OR, NOT). Use courtlistener_lookup_courts to find court IDs. CourtListener publishes free-tier limits of 5 req/min, 50/hr, 125/day; actual limits vary by token tier.',
   annotations: { readOnlyHint: true, openWorldHint: true, idempotentHint: false },
 
   input: z.object({
@@ -26,13 +31,13 @@ export const searchOpinionsTool = tool('courtlistener_search_opinions', {
       .string()
       .trim()
       .describe(
-        'Full-text query. Supports field syntax (caseName:"roe v wade", court_id:scotus, judge:"Alito") and boolean operators (AND, OR, NOT). Use plain English for semantic-style queries or legal citations.',
+        'Full-text query. Use "*" for a filter-only search. Supports field syntax (caseName:"roe v wade", court_id:scotus, judge:"Alito") and boolean operators (AND, OR, NOT).',
       ),
     court: z
       .string()
       .optional()
       .describe(
-        'Filter to a specific court by court ID (e.g., "scotus", "ca9", "nyed"). Use courtlistener_lookup_courts to find court IDs.',
+        'Filter by one court ID or a space-separated list (e.g., "scotus ca9"). Use courtlistener_lookup_courts to find court IDs.',
       ),
     filed_after: z
       .string()
@@ -47,21 +52,13 @@ export const searchOpinionsTool = tool('courtlistener_search_opinions', {
         'Latest filing date (ISO 8601). Narrows search to opinions filed before or on this date.',
       ),
     status: z
-      .enum([
-        'Published',
-        'Unpublished',
-        'Errata',
-        'Separate',
-        'In-chambers',
-        'Relating-to',
-        'Unknown',
-      ])
+      .enum(OPINION_STATUSES)
       .optional()
       .describe(
         'Opinion publication status. "Published": precedential. "Unpublished": not citable as precedent in most jurisdictions. "Errata": corrections. "Separate": separate opinion filed outside main cluster. "In-chambers": single-justice order. "Relating-to": companion or related-case order. Omit to use CourtListener’s Published default.',
       ),
     order_by: z
-      .enum(['score desc', 'dateFiled desc', 'dateFiled asc', 'citeCount desc'])
+      .enum(OPINION_ORDERS)
       .optional()
       .default('score desc')
       .describe(
@@ -82,6 +79,10 @@ export const searchOpinionsTool = tool('courtlistener_search_opinions', {
       .describe(
         "Pagination cursor from a previous response's next_cursor field. Omit for the first page.",
       ),
+    include: z
+      .array(z.enum(['cites']))
+      .optional()
+      .describe('Include cited opinion IDs for each variant with ["cites"].'),
   }),
 
   output: z.object({
@@ -115,7 +116,7 @@ export const searchOpinionsTool = tool('courtlistener_search_opinions', {
             snippet: z
               .string()
               .describe(
-                'Matched text excerpt, taken from the first entry in opinions[] that carries one; empty string when no variant has an excerpt. CourtListener does not mark which variant the search matched, so treat this as a relevance preview for the cluster, not as an excerpt attributable to a specific opinion — read opinions[] to attribute it.',
+                'Preview from the first opinion variant with an excerpt. Uses query context when available. Filter-only or field-only queries may yield opening text or an empty excerpt.',
               ),
             opinions: z
               .array(
@@ -154,6 +155,7 @@ export const searchOpinionsTool = tool('courtlistener_search_opinions', {
                       ),
                     cites: z
                       .array(z.number())
+                      .optional()
                       .describe(
                         'Opinion IDs this variant cites. These are opinion-level IDs, not cluster IDs — courtlistener_get_opinion and courtlistener_get_citations both take a cluster_id, so do not pass these values to them directly.',
                       ),
@@ -209,8 +211,7 @@ export const searchOpinionsTool = tool('courtlistener_search_opinions', {
       reason: 'empty_query',
       code: JsonRpcErrorCode.ValidationError,
       when: 'q is empty or whitespace-only after trimming — no request is sent.',
-      recovery:
-        'Supply search terms in q — a case name, legal concept, or CourtListener field expression.',
+      recovery: 'Supply search terms in q, or use q: "*" for a filter-only search.',
     },
     {
       reason: 'invalid_date',
@@ -227,10 +228,7 @@ export const searchOpinionsTool = tool('courtlistener_search_opinions', {
     // free tier's published 125 daily requests (actual limits vary by token tier) on
     // input that cannot return useful data.
     if (!input.q) {
-      throw ctx.fail(
-        'empty_query',
-        'The q parameter is empty or whitespace-only. Supply search terms — e.g. q: "qualified immunity" or q: caseName:"roe v wade".',
-      );
+      throw ctx.fail('empty_query', 'The q parameter is empty or whitespace-only.');
     }
 
     const invalidDates = findInvalidDates({
@@ -260,18 +258,19 @@ export const searchOpinionsTool = tool('courtlistener_search_opinions', {
       ctx,
     );
 
+    const includeCites = input.include?.includes('cites');
     const results = data.results.map((r) => {
       const variants = r.opinions ?? [];
       return {
         cluster_id: r.cluster_id,
-        case_name: r.caseName ?? '',
-        case_name_full: r.caseNameFull ?? '',
+        case_name: unhighlight(r.caseName ?? ''),
+        case_name_full: unhighlight(r.caseNameFull ?? ''),
         court: r.court ?? '',
         court_id: r.court_id ?? '',
         date_filed: r.dateFiled ?? '',
-        docket_number: r.docketNumber ?? '',
+        docket_number: unhighlight(r.docketNumber ?? ''),
         docket_id: r.docket_id ?? 0,
-        citations: r.citation ?? [],
+        citations: (r.citation ?? []).map(unhighlight),
         cite_count: r.citeCount ?? 0,
         judges: r.judge ?? '',
         status: r.status ?? '',
@@ -285,7 +284,7 @@ export const searchOpinionsTool = tool('courtlistener_search_opinions', {
           per_curiam: o.per_curiam ?? false,
           download_url: o.download_url ?? null,
           local_path: toStorageUrl(o.local_path ?? null),
-          cites: o.cites ?? [],
+          ...(includeCites && { cites: o.cites ?? [] }),
         })),
       };
     });
@@ -305,7 +304,7 @@ export const searchOpinionsTool = tool('courtlistener_search_opinions', {
       if (input.status) filters.push(`status=${input.status}`);
       const filterHint = filters.length > 0 ? ` with filters: ${filters.join(', ')}` : '';
       ctx.enrich.notice(
-        `No opinions matched "${input.q}"${filterHint}. Try broadening filters, checking field syntax, or revising search terms.`,
+        `No opinions matched "${input.q}"${filterHint}. Try broadening filters, checking field syntax, or revising search terms.${courtFilterGuidance(input.court)}`,
       );
     }
 
@@ -327,7 +326,6 @@ export const searchOpinionsTool = tool('courtlistener_search_opinions', {
       lines.push(
         '\n> No opinions matched the query. Try broadening filters or revising search terms.',
       );
-      return [{ type: 'text', text: lines.join('\n') }];
     }
 
     for (const r of result.results) {
@@ -355,8 +353,10 @@ export const searchOpinionsTool = tool('courtlistener_search_opinions', {
           lines.push(`  - Opinion ID ${o.id} — ${o.type}${curiam}${author}`);
           if (o.local_path) lines.push(`    CourtListener copy: ${o.local_path}`);
           if (o.download_url) lines.push(`    Court copy (download_url): ${o.download_url}`);
-          if (o.cites.length > 0) {
+          if (o.cites?.length) {
             lines.push(`    Cites ${o.cites.length} opinions: ${o.cites.join(', ')}`);
+          } else if (o.cites) {
+            lines.push('    Cites 0 opinions.');
           }
         }
       }

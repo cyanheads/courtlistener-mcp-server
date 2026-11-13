@@ -25,7 +25,7 @@ const REPORT_TYPE_LABELS: Record<number, string> = {
 export const searchFinancialDisclosuresTool = tool('courtlistener_search_financial_disclosures', {
   title: 'Search Financial Disclosures',
   description:
-    "Search federal judicial financial disclosure filings — the annual reports judges file on investments, gifts, debts, outside positions, and income. Filter by judge (person ID from courtlistener_search_judges) and/or filing year; the year filter is applied to the fetched page only (CourtListener has no server-side year filter), so page through with cursor to reach a judge's filings for a year that fall on later pages. Returns per-filing metadata, category counts, itemized gifts, and a link to the source PDF. Line-item investments (often hundreds per filing, with coded values) are summarized as counts; the linked PDF carries the full itemization. Use this for judicial-ethics and recusal research after identifying a judge's person ID.",
+    'Search federal judicial financial disclosure filings by judge (person ID from courtlistener_search_judges) and filing year. The year filter applies to the fetched page only; follow the cursor to find matches on later pages. Returns filing metadata, category counts, itemized gifts, and the source PDF link. Use courtlistener_get_financial_disclosure for decoded investment line items.',
   annotations: { readOnlyHint: true, openWorldHint: true, idempotentHint: false },
 
   input: z.object({

@@ -3,10 +3,12 @@
  * @module tests/service/court-names.test
  */
 
+import { threadCpuUsage } from 'node:process';
 import { describe, expect, it } from 'vitest';
 import {
   listSnapshotCourtIds,
   listUnclassifiedCourtIds,
+  normalizeCourtFilter,
   resolveCourtName,
 } from '@/services/courtlistener/court-names.js';
 import {
@@ -15,6 +17,49 @@ import {
   COURT_SNAPSHOT_DATE,
 } from '@/services/courtlistener/court-names-data.js';
 import { COURT_JURISDICTION_LABELS } from '@/services/courtlistener/jurisdictions.js';
+
+describe('normalizeCourtFilter', () => {
+  it.each([
+    ['   ', undefined],
+    ['SCOTUS', 'scotus'],
+    ['  scotus,CA9\tnysd ', 'scotus ca9 nysd'],
+    ['txctapp13A TXCTAPP13b newCourtId', 'txctapp13A txctapp13B newCourtId'],
+  ])('normalizes %j without rejecting IDs', (input, expected) => {
+    expect(normalizeCourtFilter(input)).toBe(expected);
+  });
+
+  it.each([
+    {
+      name: 'long token ending in a line break',
+      make: (size: number) => `${'7'.repeat(size - 2)}\ny`,
+      max: 320_000,
+    },
+    {
+      name: 'line breaks between tokens',
+      make: (size: number) => 'x \r\n'.repeat(size / 4),
+      max: 80_000,
+    },
+    { name: 'separator runs', make: (size: number) => `x${','.repeat(size - 2)}y`, max: 80_000 },
+  ])('scans $name in bounded CPU time', { timeout: 0 }, ({ make, max }) => {
+    const measure = (input: string, calls: number) => {
+      const start = threadCpuUsage();
+      for (let call = 0; call < calls; call++) normalizeCourtFilter(input);
+      const elapsed = threadCpuUsage(start);
+      return (elapsed.user + elapsed.system) / calls;
+    };
+    const small = make(5_000);
+    for (let size = 10_000; size <= max; size *= 2) {
+      const large = make(size);
+      const samples = Array.from({ length: 5 }, () => {
+        const baseline = measure(small, 40);
+        const cpuMicros = measure(large, 4);
+        return { growth: cpuMicros / baseline, cpuMicros };
+      });
+      expect(Math.min(...samples.map((sample) => sample.cpuMicros))).toBeLessThan(80_000);
+      expect(Math.min(...samples.map((sample) => sample.growth))).toBeLessThan(256);
+    }
+  });
+});
 
 describe('resolveCourtName', () => {
   it.each(['constructor', '__proto__', 'toString'])('preserves unmapped %s', (id) => {

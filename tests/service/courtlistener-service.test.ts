@@ -219,7 +219,7 @@ describe('service correctness contracts', () => {
     'Errata',
     'Separate',
     'Unknown',
-  ])('sends the exact upstream status key for %s', async (status) => {
+  ] as const)('sends the exact upstream status key for %s', async (status) => {
     const svc = new CourtListenerService(makeMockConfig(), makeMockStorage());
     mockFetchResponse();
     await svc.searchOpinions({ q: 'test', status }, createMockContext());

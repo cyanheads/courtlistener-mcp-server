@@ -126,23 +126,27 @@ describe.each(searches)('$name characterization', (definition) => {
     expect(result.structuredContent).toMatchObject({
       error: {
         code: JsonRpcErrorCode.InvalidParams,
-        data: { status: 400, body, responseBody: body },
+        data: { status: 400 },
       },
     });
+    expect(result.structuredContent).not.toHaveProperty('error.data.body');
+    expect(result.structuredContent).not.toHaveProperty('error.data.responseBody');
+    if (body) expect(JSON.stringify(result.content)).not.toContain(body);
     expect(JSON.stringify(result)).not.toContain('invalid_query');
     expect(JSON.stringify(result.content)).toContain('Status: 400');
     expect(fetchStub).toHaveBeenCalledOnce();
   });
 
-  it('preserves a truncated error body without interpreting its embedded diagnostic', async () => {
+  it('keeps a truncated error body private without interpreting its embedded diagnostic', async () => {
     const body = JSON.stringify({ padding: 'x'.repeat(2000), detail });
     fetchStub.mockImplementation(async () => new Response(body, { status: 400 }));
     const result = await runToolContract(definition, { q: 'case' });
     expect(result.structuredContent).toMatchObject({
       error: { code: JsonRpcErrorCode.InvalidParams, data: { status: 400 } },
     });
-    const { error } = result.structuredContent as { error: { data: { body: string } } };
-    expect(error.data.body.length).toBeLessThan(body.length);
+    expect(result.structuredContent).not.toHaveProperty('error.data.body');
+    expect(result.structuredContent).not.toHaveProperty('error.data.responseBody');
+    expect(JSON.stringify(result.content)).not.toContain('x'.repeat(50));
     expect(JSON.stringify(result)).not.toContain('invalid_query');
     expect(fetchStub).toHaveBeenCalledOnce();
   });

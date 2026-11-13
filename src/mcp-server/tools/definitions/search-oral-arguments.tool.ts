@@ -5,6 +5,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { courtFilterGuidance } from '@/services/courtlistener/court-names.js';
 import { getCourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
 import { findInvalidDates, ISO_DATE_HINT } from '@/services/courtlistener/dates.js';
 import {
@@ -12,6 +13,7 @@ import {
   PageSizing,
   pageSizing,
 } from '@/services/courtlistener/page-metadata.js';
+import { escapeText, readableText, unhighlight } from '@/services/courtlistener/readable-text.js';
 import { toStorageUrl } from '@/services/courtlistener/uri.js';
 
 export const searchOralArgumentsTool = tool('courtlistener_search_oral_arguments', {
@@ -25,9 +27,14 @@ export const searchOralArgumentsTool = tool('courtlistener_search_oral_arguments
       .string()
       .trim()
       .describe(
-        'Query terms matched against case name and transcribed argument text (where available).',
+        'Query terms matched against case name and transcribed argument text. Use "*" for a filter-only search.',
       ),
-    court: z.string().optional().describe('Filter to a specific court (e.g., "scotus", "ca9").'),
+    court: z
+      .string()
+      .optional()
+      .describe(
+        'Filter by one court ID or a space-separated list (e.g., "scotus ca9"). Find IDs with courtlistener_lookup_courts.',
+      ),
     argued_after: z
       .string()
       .optional()
@@ -85,7 +92,9 @@ export const searchOralArgumentsTool = tool('courtlistener_search_oral_arguments
               ),
             snippet: z
               .string()
-              .describe('Transcript excerpt where available; empty string if no transcript.'),
+              .describe(
+                'Transcript excerpt with query context when available; empty string when upstream supplies none.',
+              ),
           })
           .describe('Oral argument recording.'),
       )
@@ -130,7 +139,7 @@ export const searchOralArgumentsTool = tool('courtlistener_search_oral_arguments
       reason: 'empty_query',
       code: JsonRpcErrorCode.ValidationError,
       when: 'q is empty or whitespace-only after trimming — no request is sent.',
-      recovery: 'Supply search terms in q — a case name or words spoken during the argument.',
+      recovery: 'Supply search terms in q, or use q: "*" for a filter-only search.',
     },
     {
       reason: 'invalid_date',
@@ -147,10 +156,7 @@ export const searchOralArgumentsTool = tool('courtlistener_search_oral_arguments
     // free tier's published 125 daily requests (actual limits vary by token tier) on
     // input that cannot return useful data.
     if (!input.q) {
-      throw ctx.fail(
-        'empty_query',
-        'The q parameter is empty or whitespace-only. Supply search terms — e.g. q: "qualified immunity".',
-      );
+      throw ctx.fail('empty_query', 'The q parameter is empty or whitespace-only.');
     }
 
     const invalidDates = findInvalidDates({
@@ -180,19 +186,19 @@ export const searchOralArgumentsTool = tool('courtlistener_search_oral_arguments
 
     const results = data.results.map((r) => ({
       audio_id: r.id,
-      case_name: r.caseName ?? '',
+      case_name: unhighlight(r.caseName ?? ''),
       court: r.court ?? '',
       court_id: r.court_id ?? '',
       date_argued: r.dateArgued ?? null,
       docket_id: r.docket_id ?? 0,
-      docket_number: r.docketNumber ?? '',
-      judges: r.judge ?? '',
+      docket_number: unhighlight(r.docketNumber ?? ''),
+      judges: unhighlight(r.judge ?? ''),
       panel_ids: r.panel_ids ?? [],
       duration_seconds: r.duration ?? 0,
       download_url: r.download_url ?? null,
       // Upstream serves local_path as a bare relative path — resolve it to a fetchable URL.
       local_path: toStorageUrl(r.local_path ?? null),
-      snippet: r.snippet ?? '',
+      snippet: readableText(r.snippet ?? ''),
     }));
 
     ctx.log.info('courtlistener_search_oral_arguments complete', {
@@ -208,7 +214,7 @@ export const searchOralArgumentsTool = tool('courtlistener_search_oral_arguments
       if (input.argued_before) filters.push(`argued_before=${input.argued_before}`);
       const filterHint = filters.length > 0 ? ` with filters: ${filters.join(', ')}` : '';
       ctx.enrich.notice(
-        `No oral argument recordings matched "${input.q}"${filterHint}. Try broadening date range or court filters.`,
+        `No oral argument recordings matched "${input.q}"${filterHint}. Try broadening date range or court filters.${courtFilterGuidance(input.court)}`,
       );
     }
 
@@ -228,7 +234,6 @@ export const searchOralArgumentsTool = tool('courtlistener_search_oral_arguments
 
     if (result.results.length === 0) {
       lines.push('\n> No oral argument recordings matched the query.');
-      return [{ type: 'text', text: lines.join('\n') }];
     }
 
     for (const r of result.results) {
@@ -245,7 +250,7 @@ export const searchOralArgumentsTool = tool('courtlistener_search_oral_arguments
       if (r.panel_ids.length > 0) lines.push(`**Panel IDs:** ${r.panel_ids.join(', ')}`);
       if (r.download_url) lines.push(`**Court copy (download_url):** ${r.download_url}`);
       if (r.local_path) lines.push(`**CourtListener copy (local_path):** ${r.local_path}`);
-      if (r.snippet) lines.push(`*${r.snippet}*`);
+      if (r.snippet) lines.push(`*${escapeText(r.snippet)}*`);
     }
 
     if (result.next_cursor) {

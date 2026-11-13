@@ -112,7 +112,10 @@ describe('searchOpinionsTool', () => {
   });
   it('preserves nested opinion data on both contract response surfaces', async () => {
     mockSvc.searchOpinions = vi.fn().mockResolvedValue(baseResult);
-    const result = await runToolContract(searchOpinionsTool, { q: 'abortion rights' });
+    const result = await runToolContract(searchOpinionsTool, {
+      q: 'abortion rights',
+      include: ['cites'],
+    });
 
     expect(result.isError).not.toBe(true);
     expect(result.structuredContent).toMatchObject({
@@ -147,7 +150,10 @@ describe('searchOpinionsTool', () => {
       });
       expect(result.content).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({ type: 'text', text: expect.stringContaining(hint) }),
+          expect.objectContaining({
+            type: 'text',
+            text: expect.stringContaining(hint.replace('*', '\\*')),
+          }),
         ]),
       );
       expect(mockSvc.searchOpinions).not.toHaveBeenCalled();
@@ -227,7 +233,7 @@ describe('searchOpinionsTool', () => {
     it('surfaces the variants with local_path resolved to a storage URL', async () => {
       mockSvc.searchOpinions = vi.fn().mockResolvedValue(baseResult);
       const ctx = createMockContext({ errors: searchOpinionsTool.errors });
-      const input = searchOpinionsTool.input.parse({ q: 'abortion rights' });
+      const input = searchOpinionsTool.input.parse({ q: 'abortion rights', include: ['cites'] });
       const result = await searchOpinionsTool.handler(input, ctx);
 
       expect(result.results[0]!.opinions).toEqual([

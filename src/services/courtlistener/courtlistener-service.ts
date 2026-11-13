@@ -24,7 +24,7 @@ import {
 } from '@cyanheads/mcp-ts-core/utils';
 import { citingOffset } from './citing-offset.js';
 import { expandCode } from './codes.js';
-import { resolveCourtName } from './court-names.js';
+import { normalizeCourtFilter, resolveCourtName } from './court-names.js';
 import type {
   AttorneyDetail,
   AttorneyRelationship,
@@ -52,6 +52,41 @@ import { idFromUri } from './uri.js';
 
 const REQUEST_TIMEOUT_MS = 30_000;
 const ERROR_BODY_LIMIT = 500;
+
+/** Case-law search facets named by CourtListener. */
+export const OPINION_STATUSES = [
+  'Published',
+  'Unpublished',
+  'Errata',
+  'Separate',
+  'In-chambers',
+  'Relating-to',
+  'Unknown',
+] as const;
+
+type OpinionStatus = (typeof OPINION_STATUSES)[number];
+
+/** Supported orderings for opinion search. */
+export const OPINION_ORDERS = [
+  'score desc',
+  'dateFiled desc',
+  'dateFiled asc',
+  'citeCount desc',
+] as const;
+
+type CitationSearch = {
+  clusterId: number;
+  court?: string | undefined;
+  filed_after?: string | undefined;
+  filed_before?: string | undefined;
+  statuses?: readonly OpinionStatus[] | undefined;
+  page_size?: number | undefined;
+  cursor?: string | undefined;
+};
+
+function statusFilters(statuses: readonly OpinionStatus[] | undefined) {
+  return Object.fromEntries(statuses?.map((status) => [`stat_${status}`, 'on']) ?? []);
+}
 
 /** Exact query-validation messages from CourtListener's cl/search/exception.py. */
 const QUERY_VALIDATION_DETAILS = new Set([
@@ -243,12 +278,10 @@ function buildRateLimitMessage(retryAfter: string | null): string {
 }
 
 /**
- * Message for a request the pacer refused a slot to. Says no request was sent, so
- * the agent knows its per-day budget is untouched and the wait is local bookkeeping
- * rather than a fresh refusal from upstream.
+ * Message for a request the pacer refused a slot to. No upstream quota was spent on this request.
  */
 function buildPacedOutMessage(retryAfter: string): string {
-  return `CourtListener rate limit reached — no request slot opened within this call's wait budget, so no request was sent. Retry-After: ${retryAfter}s. ${RATE_LIMIT_WINDOWS_NOTE}`;
+  return `CourtListener rate limit reached — no request slot opened within the wait budget, so this request was not sent. Retry-After: ${retryAfter}s. ${RATE_LIMIT_WINDOWS_NOTE}`;
 }
 
 /**
@@ -580,7 +613,7 @@ export class CourtListenerService {
       court?: string | undefined;
       filed_after?: string | undefined;
       filed_before?: string | undefined;
-      status?: string | undefined;
+      status?: OpinionStatus | undefined;
       order_by?: string | undefined;
       page_size?: number | undefined;
       cursor?: string | undefined;
@@ -593,25 +626,12 @@ export class CourtListenerService {
       order_by: params.order_by ?? 'score desc',
       filed_after: params.filed_after,
       filed_before: params.filed_before,
-      court: params.court,
+      court: normalizeCourtFilter(params.court),
+      highlight: 'on',
       count: params.page_size ?? 10,
       cursor: params.cursor,
+      ...statusFilters(params.status ? [params.status] : undefined),
     };
-
-    // Map status to CourtListener stat_* params
-    if (params.status) {
-      const statusMap: Record<string, string> = {
-        Published: 'stat_Published',
-        Unpublished: 'stat_Unpublished',
-        Errata: 'stat_Errata',
-        Separate: 'stat_Separate',
-        'In-chambers': 'stat_In-chambers',
-        'Relating-to': 'stat_Relating-to',
-        Unknown: 'stat_Unknown',
-      };
-      const key = statusMap[params.status];
-      if (key) query[key] = 'on';
-    }
 
     const data = await this.get<CourtListenerPage<OpinionSearchResult>>(
       '/search/',
@@ -684,7 +704,7 @@ export class CourtListenerService {
     const query: Record<string, string | number | boolean | undefined> = {
       q: params.q,
       type: 'r',
-      court: params.court,
+      court: normalizeCourtFilter(params.court),
       party_name: params.party_name,
       filed_after: params.filed_after,
       filed_before: params.filed_before,
@@ -771,7 +791,7 @@ export class CourtListenerService {
       q: params.q,
       type: 'p',
       appointer: params.appointer,
-      court: params.court,
+      court: normalizeCourtFilter(params.court),
       political_affiliation: params.political_affiliation,
       count: params.page_size ?? 10,
       cursor: params.cursor,
@@ -880,7 +900,8 @@ export class CourtListenerService {
     const query: Record<string, string | number | boolean | undefined> = {
       q: params.q,
       type: 'oa',
-      court: params.court,
+      court: normalizeCourtFilter(params.court),
+      highlight: 'on',
       argued_after: params.argued_after,
       argued_before: params.argued_before,
       count: params.page_size ?? 10,
@@ -911,13 +932,7 @@ export class CourtListenerService {
    * count, the filters, and the pages all describe the same set.
    */
   async getCitedBy(
-    params: {
-      clusterId: number;
-      court?: string | undefined;
-      filed_after?: string | undefined;
-      page_size?: number | undefined;
-      cursor?: string | undefined;
-    },
+    params: CitationSearch & { order_by?: (typeof OPINION_ORDERS)[number] | undefined },
     ctx: Context,
   ): Promise<{
     total: number;
@@ -943,10 +958,13 @@ export class CourtListenerService {
     const query: Record<string, string | number | boolean | undefined> = {
       q: opinionIds.map((id) => `cites:(${id})`).join(' OR '),
       type: 'o',
-      court: params.court,
+      court: normalizeCourtFilter(params.court),
       filed_after: params.filed_after,
+      filed_before: params.filed_before,
+      order_by: params.order_by,
       count: params.page_size ?? 10,
       cursor: params.cursor,
+      ...statusFilters(params.statuses),
     };
 
     const data = await this.get<CourtListenerPage<OpinionSearchResult>>('/search/', query, ctx);
@@ -963,19 +981,13 @@ export class CourtListenerService {
   /**
    * Get opinions cited by this cluster ("citing" direction). Fetches cluster detail to get
    * citation IDs. `total` counts the distinct cited *opinions* before any filter, while
-   * `results` are the *clusters* upstream matched under `court`/`filed_after` — several
+   * `results` are the *clusters* upstream matched under the active filters — several
    * cited opinions in one case collapse to a single row. The cursor walks the cited-ID
    * list rather than the filtered results, so a narrow filter can empty a page while pages
    * remain; the tool distinguishes that from "no citations" on the response.
    */
   async getCiting(
-    params: {
-      clusterId: number;
-      court?: string | undefined;
-      filed_after?: string | undefined;
-      page_size?: number | undefined;
-      cursor?: string | undefined;
-    },
+    params: CitationSearch,
     ctx: Context,
   ): Promise<{
     total: number;
@@ -1015,9 +1027,11 @@ export class CourtListenerService {
     const query: Record<string, string | number | boolean | undefined> = {
       q: pageIds.map((id) => `id:(${id})`).join(' OR '),
       type: 'o',
-      court: params.court,
+      court: normalizeCourtFilter(params.court),
       filed_after: params.filed_after,
+      filed_before: params.filed_before,
       count: pageSize,
+      ...statusFilters(params.statuses),
     };
 
     const data = await this.get<CourtListenerPage<OpinionSearchResult>>('/search/', query, ctx);

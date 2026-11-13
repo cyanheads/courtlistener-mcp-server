@@ -79,7 +79,8 @@ describe('searchDocketsTool', () => {
       court_id: 'cand',
       jury_demand: 'Both',
     });
-    expect(result.results[0]!.parties).toEqual(['Apple Inc.', 'Samsung Electronics']);
+    expect(result.results[0]!.party_count).toBe(2);
+    expect(result.results[0]).not.toHaveProperty('parties');
     expect(result.results[0]!.sample_documents).toHaveLength(1);
     expect(result.coverage_note).toBeTruthy();
 
@@ -94,7 +95,10 @@ describe('searchDocketsTool', () => {
     it('reads parties from `party`, not the `party_name` input filter', async () => {
       mockSvc.searchDockets = vi.fn().mockResolvedValue(baseDocketResult);
       const ctx = createMockContext({ errors: searchDocketsTool.errors });
-      const input = searchDocketsTool.input.parse({ q: 'Apple Samsung patent' });
+      const input = searchDocketsTool.input.parse({
+        q: 'Apple Samsung patent',
+        include: ['parties'],
+      });
       const result = await searchDocketsTool.handler(input, ctx);
 
       expect(result.results[0]!.parties).toEqual(['Apple Inc.', 'Samsung Electronics']);
@@ -125,7 +129,10 @@ describe('searchDocketsTool', () => {
     it('surfaces attorneys, firms, and the remaining adjacent docket fields', async () => {
       mockSvc.searchDockets = vi.fn().mockResolvedValue(baseDocketResult);
       const ctx = createMockContext({ errors: searchDocketsTool.errors });
-      const input = searchDocketsTool.input.parse({ q: 'Apple Samsung patent' });
+      const input = searchDocketsTool.input.parse({
+        q: 'Apple Samsung patent',
+        include: ['attorneys', 'firms'],
+      });
       const result = await searchDocketsTool.handler(input, ctx);
 
       expect(result.results[0]).toMatchObject({
@@ -179,9 +186,9 @@ describe('searchDocketsTool', () => {
       const result = await searchDocketsTool.handler(input, ctx);
 
       expect(result.results[0]).toMatchObject({
-        parties: [],
-        attorneys: [],
-        firms: [],
+        party_count: null,
+        attorney_count: null,
+        firm_count: null,
         case_name_full: '',
         suit_nature: '',
         jurisdiction_type: '',
@@ -337,6 +344,9 @@ describe('searchDocketsTool', () => {
           jury_demand: 'Both',
           suit_nature: 'Patent',
           jurisdiction_type: 'Federal Question',
+          party_count: 2,
+          attorney_count: 1,
+          firm_count: 1,
           parties: ['Apple Inc.', 'Samsung'],
           attorneys: ['Diane Cafferata Hutnyan'],
           firms: ['Quinn Emanuel Urquhart & Sullivan LLP'],

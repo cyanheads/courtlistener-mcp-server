@@ -85,6 +85,7 @@ describe('declared handler error recovery', () => {
       expect(result.structuredContent).toMatchObject({
         error: { code: contract.code, data: { reason, recovery: { hint: contract.recovery } } },
       });
+      if (reason === 'empty_query') expect(contract.recovery).toContain('q: "*"');
       expect(result.content).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -92,7 +93,9 @@ describe('declared handler error recovery', () => {
             text: expect.stringContaining(
               definition === getOpinionTool
                 ? 'Re-call without sections to list the retrievable opinion\\_\\<id> names, then request one of those.'
-                : contract.recovery,
+                : reason === 'empty_query'
+                  ? contract.recovery.replace('*', '\\*')
+                  : contract.recovery,
             ),
           }),
         ]),
