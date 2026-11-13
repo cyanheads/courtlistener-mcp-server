@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.10.0](changelog/0.10.x/0.10.0.md) — 2026-11-13 · ⚠️ Breaking
+
+Search with finer citation and court filters, and page through records with fewer requests.
+
 ## [0.9.0](changelog/0.9.x/0.9.0.md) — 2026-10-31 · ⚠️ Breaking
 
 Selected RECAP filing text and stable opinion continuation across docket backfill changes.
