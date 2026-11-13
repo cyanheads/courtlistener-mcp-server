@@ -59,6 +59,40 @@ const baseCluster: OpinionCluster = {
 };
 
 describe('getOpinionTool', () => {
+  it('distinguishes an unselected text copy from missing local opinion text', async () => {
+    mockSvc.getOpinionCluster = vi.fn().mockResolvedValue({
+      ...baseCluster,
+      sub_opinions: [
+        {
+          ...baseCluster.sub_opinions[0],
+          html: '',
+          plain_text: 'Plain opinion body.',
+        },
+      ],
+    });
+    const html = await runToolContract(getOpinionTool, { cluster_id: 100, text: 'html' });
+    expect(html.structuredContent).toMatchObject({ opinions: [{ html_text: '' }] });
+    expect(html.structuredContent).not.toHaveProperty('opinions.0.plain_text');
+    expect(JSON.stringify(html.content)).not.toContain('Opinion text not stored locally');
+
+    const plain = await runToolContract(getOpinionTool, { cluster_id: 100, text: 'plain' });
+    expect(plain.structuredContent).toMatchObject({
+      opinions: [{ plain_text: 'Plain opinion body.' }],
+    });
+    expect(plain.structuredContent).not.toHaveProperty('opinions.0.html_text');
+    expect(JSON.stringify(plain.content)).toContain('Plain opinion body');
+
+    mockSvc.getOpinionCluster = vi.fn().mockResolvedValue({
+      ...baseCluster,
+      sub_opinions: [{ ...baseCluster.sub_opinions[0], html: '', plain_text: '' }],
+    });
+    const absent = await runToolContract(getOpinionTool, { cluster_id: 100 });
+    expect(absent.structuredContent).toMatchObject({
+      opinions: [{ html_text: '', plain_text: '' }],
+    });
+    expect(JSON.stringify(absent.content)).toContain('Opinion text not stored locally');
+  });
+
   it.each(['scotus', undefined])(
     'keeps canonical court values consistent with retrieval chunks (source ID=%s)',
     async (court_id) => {
@@ -102,7 +136,11 @@ describe('getOpinionTool', () => {
       } while (cursor);
       expect(body).toBe('body'.repeat(10000));
       cluster.court = 'Changed raw court';
-      const changed = await runToolContract(getOpinionTool, { cluster_id: 1, cursor: firstCursor });
+      const changed = await runToolContract(
+        getOpinionTool,
+        { cluster_id: 1, cursor: firstCursor },
+        { context: { tenantId: 'cold-replay' } },
+      );
       expect(changed).toMatchObject({
         isError: true,
         structuredContent: { error: { data: { reason: 'stale_cursor' } } },
@@ -192,7 +230,11 @@ describe('getOpinionTool', () => {
       if (mutation === 'court') cluster.court = 'Changed original court';
       if (mutation === 'completion') cluster.variants_completion.complete = true;
       if (mutation === 'text') cluster.sub_opinions[0]!.plain_text = 'changed';
-      const wire = await runToolContract(getOpinionTool, { cluster_id: 100, cursor });
+      const wire = await runToolContract(
+        getOpinionTool,
+        { cluster_id: 100, cursor },
+        { context: { tenantId: 'cold-replay' } },
+      );
       expect(wire).toMatchObject({
         isError: true,
         structuredContent: {

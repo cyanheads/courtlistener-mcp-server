@@ -5,7 +5,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { formatOutline, OUTLINE_VARIANT } from '@cyanheads/mcp-ts-core/utils';
+import { formatOutline, markdownLink, OUTLINE_VARIANT } from '@cyanheads/mcp-ts-core/utils';
 import { getCourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
 import { presentation } from '@/services/courtlistener/readable-text.js';
 import {
@@ -15,7 +15,8 @@ import {
   readRetrievalCursor,
   retrieve,
 } from '@/services/courtlistener/retrieval.js';
-import { idFromUri, personIdFromUri } from '@/services/courtlistener/uri.js';
+import { readRetrievalSnapshot } from '@/services/courtlistener/retrieval-snapshot.js';
+import { idFromUri, personIdFromUri, toStorageUrl } from '@/services/courtlistener/uri.js';
 
 /** Record fields; optional output fields remain recoverable through page paths. */
 const OralArgumentDetail = z.object({
@@ -25,6 +26,7 @@ const OralArgumentDetail = z.object({
   docket_id: z.number().describe('Associated docket ID; 0 if not linked.'),
   duration_seconds: z.number().describe('Recording duration in seconds.'),
   download_url: z.string().nullable().describe('Direct MP3 download URL; null if not available.'),
+  local_path: z.string().nullable().describe('CourtListener-hosted MP3 URL; null if not stored.'),
   judges: z.string().describe('Free-text judge names; often empty on this endpoint.'),
   panel_ids: z
     .array(z.number())
@@ -43,7 +45,7 @@ const SECTION_NAMES = Object.keys(OralArgumentDetail.shape);
 export const getOralArgumentTool = tool('courtlistener_get_oral_argument', {
   title: 'Get Oral Argument',
   description:
-    'Fetch an oral argument recording by audio_id from courtlistener_search_oral_arguments. Returns case metadata, panel IDs, duration, MP3 URL, docket and available transcript. Oversized text or metadata returns outline then page responses; continue retrieval.next_cursor as cursor with the unchanged ID/sections selection until null. The argument date comes from search or the linked docket.',
+    'Fetch an oral argument recording by audio_id from courtlistener_search_oral_arguments or courtlistener_get_docket. Returns case metadata, panel IDs, duration, court and CourtListener MP3 URLs, docket and available transcript. Oversized text or metadata returns outline then page responses; continue retrieval.next_cursor as cursor with the unchanged ID/sections selection until null. The argument date comes from search or the linked docket.',
   annotations: { readOnlyHint: true, idempotentHint: true },
 
   input: z.object({
@@ -64,6 +66,10 @@ export const getOralArgumentTool = tool('courtlistener_get_oral_argument', {
 
   output: z.object({
     retrieval: Retrieval,
+    source_fetched_at: z.iso
+      .datetime()
+      .optional()
+      .describe('UTC time the oral argument source fetch completed.'),
     kind: z
       .enum(['full', 'outline', 'page'])
       .describe(
@@ -147,7 +153,14 @@ export const getOralArgumentTool = tool('courtlistener_get_oral_argument', {
     }
 
     const svc = getCourtListenerService();
-    const audio = await svc.getOralArgument(input.id, ctx);
+    const { value: audio, fetchedAt } = await readRetrievalSnapshot({
+      service: svc,
+      tenantId: ctx.tenantId,
+      source: ['audio', input.id, [...new Set(input.sections)].sort()],
+      continuing: cursor !== undefined,
+      signal: ctx.signal,
+      fetch: () => svc.getOralArgument(input.id, ctx),
+    });
 
     // docket arrives as a resource URI — extract the numeric ID.
     let docketId = 0;
@@ -183,21 +196,29 @@ export const getOralArgumentTool = tool('courtlistener_get_oral_argument', {
     });
 
     const includeTranscript = !input.sections?.length || input.sections.includes('transcript');
-    return retrieve({
+    const page = retrieve({
       tool: 'audio',
+      cursorVersion: cursor?.v ?? 2,
       id: input.id,
       selection: input.sections,
       cursor,
-      view: { ...meta, ...(includeTranscript ? { transcript } : {}) },
+      view: {
+        ...meta,
+        ...(cursor?.v === 1 ? {} : { local_path: toStorageUrl(audio.local_path_mp3 ?? null) }),
+        ...(includeTranscript ? { transcript } : {}),
+      },
       groups: includeTranscript ? [{ name: 'transcript', value: transcript }] : [],
       required: ['oral_argument_id', 'docket_id', 'duration_seconds', 'has_transcript'],
       signal: ctx.signal,
-      finalize: finalizeAudio,
+      planningFinalize: planAudio,
+      finalize: (value) => finalizeAudio({ ...(value as object), source_fetched_at: fetchedAt }),
     });
+    return { ...page, source_fetched_at: fetchedAt };
   },
 
   format: (result) => {
     if (result.retrieval) return formatRetrievalPage(result);
+    const { download_url, local_path } = result;
     result = presentation(result);
     // Outline arm — rendered whenever `sections` is present (independent of `kind`).
     const outlineBlocks = result.sections
@@ -212,6 +233,7 @@ export const getOralArgumentTool = tool('courtlistener_get_oral_argument', {
     // `kind` is required in every response and renders unconditionally — keying it off
     // an arm would hide the discriminator from content[]-only clients.
     const lines: string[] = [`## ${result.case_name ?? ''}`, `**Response mode:** ${result.kind}`];
+    if (result.source_fetched_at) lines.push(`**Source fetched at:** ${result.source_fetched_at}`);
 
     const meta: string[] = [];
     if (result.oral_argument_id !== undefined)
@@ -231,7 +253,14 @@ export const getOralArgumentTool = tool('courtlistener_get_oral_argument', {
     if (result.panel_ids && result.panel_ids.length > 0) {
       lines.push(`**Panel IDs:** ${result.panel_ids.join(', ')}`);
     }
-    if (result.download_url) lines.push(`**Download:** ${result.download_url}`);
+    if (download_url !== undefined)
+      lines.push(
+        `**Download:** ${download_url === null ? 'null' : markdownLink('Court MP3', download_url)}`,
+      );
+    if (local_path !== undefined)
+      lines.push(
+        `**CourtListener copy:** ${local_path === null ? 'null' : markdownLink('CourtListener MP3', local_path)}`,
+      );
     if (result.has_transcript !== undefined) {
       lines.push(`**Transcript available:** ${result.has_transcript ? 'yes' : 'no'}`);
     }
@@ -248,4 +277,10 @@ function finalizeAudio(value: unknown): { structuredContent: object; content: un
   const format = getOralArgumentTool.format;
   if (!format) throw new Error('Bounded retrieval requires the production formatter.');
   return { structuredContent: parsed, content: format(parsed) };
+}
+
+/** Keep the inline/deferred layout from issued cursor positions. */
+function planAudio(value: unknown): { structuredContent: object; content: unknown[] } {
+  const parsed = getOralArgumentTool.output.parse(value);
+  return { structuredContent: parsed, content: formatRetrievalPage(parsed, false) };
 }

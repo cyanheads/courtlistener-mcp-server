@@ -132,7 +132,7 @@ describe('getDocketTool', () => {
       absolute_url: '/docket/8000/1/source/',
     });
     mockSvc.getDocket = vi.fn().mockResolvedValue(docket);
-    const call = (cursor?: string, extra = {}) =>
+    const call = (cursor?: string, extra = {}, tenantId = 'default') =>
       getDocketTool.handler(
         getDocketTool.input.parse({
           docket_id: 8000,
@@ -140,7 +140,7 @@ describe('getDocketTool', () => {
           cursor,
           ...extra,
         }),
-        createMockContext({ errors: getDocketTool.errors }),
+        createMockContext({ errors: getDocketTool.errors, tenantId }),
       );
     const first = await call();
     expect(first.kind).toBe('outline');
@@ -176,7 +176,9 @@ describe('getDocketTool', () => {
     Object.assign(docket.docket_entries[0]!.recap_documents[0]!, {
       plain_text: `${source}changed`,
     });
-    await expect(call(token)).rejects.toMatchObject({ data: { reason: 'stale_cursor' } });
+    await expect(call(token, {}, 'cold-replay')).rejects.toMatchObject({
+      data: { reason: 'stale_cursor' },
+    });
   });
 
   it('rejects invalid selector shapes and cursor without selection', async () => {
@@ -262,6 +264,38 @@ describe('getDocketTool', () => {
     );
     // the real upstream types validate against the declared output schema
     expect(() => getDocketTool.output.parse(result)).not.toThrow();
+  });
+
+  it('returns valid linked IDs and case metadata on both listing surfaces', async () => {
+    mockSvc.getDocket = vi.fn().mockResolvedValue({
+      ...baseDocket,
+      clusters: [
+        '/api/rest/v4/clusters/32/',
+        '/api/rest/v4/documents/9/',
+        '/api/rest/v4/clusters/12/',
+      ],
+      audio_files: ['/api/rest/v4/audio/107253/'],
+      date_argued: '2026-10-29',
+      nature_of_suit: '',
+      appeal_from_str: 'Southern District',
+      date_last_filing: '2025-08-28',
+    });
+    const wire = await runToolContract(getDocketTool, { docket_id: 8000 });
+    expect(wire.structuredContent).toMatchObject({
+      cluster_ids: [32, 12],
+      audio_ids: [107253],
+      date_argued: '2026-10-29',
+      suit_nature: null,
+      appeal_from: 'Southern District',
+      date_last_filing: '2025-08-28',
+    });
+    expect(wire.content[0]).toMatchObject({
+      text: expect.stringContaining('**Opinion cluster IDs:** 32, 12'),
+    });
+    expect(wire.content[0]).toMatchObject({
+      text: expect.stringContaining('**Audio IDs:** 107253'),
+    });
+    expect(mockSvc.getDocket).toHaveBeenCalledTimes(1);
   });
 
   it('resolves a known court_id to its display name', async () => {
@@ -353,7 +387,7 @@ describe('getDocketTool', () => {
               document_number: '70-1', // PACER attachment numbering — not integer-parseable
               attachment_number: 1,
               description: 'Exhibit A',
-              is_available: true,
+              is_available: false,
               page_count: 3,
               filepath_local: 'https://storage.courtlistener.com/recap/already-absolute.pdf',
             },
@@ -369,6 +403,11 @@ describe('getDocketTool', () => {
       'https://storage.courtlistener.com/recap/already-absolute.pdf',
     );
     expect(() => getDocketTool.output.parse(result)).not.toThrow();
+    expect(getDocketTool.format?.(getDocketTool.output.parse(result))[0]).toMatchObject({
+      text: expect.stringContaining(
+        '[requires PACER] [RECAP file](<https://storage.courtlistener.com/recap/already-absolute.pdf>)',
+      ),
+    });
   });
 
   it('formats output with case_name_full, jury_demand, and entry/doc IDs', () => {

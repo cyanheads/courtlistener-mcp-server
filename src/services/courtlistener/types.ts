@@ -141,13 +141,18 @@ export interface DocketSearchResult {
 
 /** Full docket from /dockets/{id}/. */
 export interface Docket {
+  appeal_from_str?: string | null;
   assigned_to_str: string | null;
+  audio_files?: string[];
   case_name: string;
   case_name_full: string;
   cause: string;
+  clusters?: string[];
   court: string;
   court_id?: string;
+  date_argued?: string | null;
   date_filed: string;
+  date_last_filing?: string | null;
   date_terminated: string | null;
   docket_entries: DocketEntry[];
   /** Total entry count from /docket-entries/; null when upstream supplies no numeric count. */
@@ -163,6 +168,7 @@ export interface Docket {
   id: number;
   jurisdiction_type: string;
   jury_demand: string;
+  nature_of_suit?: string | null;
   pacer_case_id: string | null;
   referred_to_str: string | null;
 }
@@ -624,6 +630,7 @@ export interface Audio {
   id: number;
   /** Free-text judge names; frequently empty on this endpoint. */
   judges: string;
+  local_path_mp3?: string | null;
   /** Person resource URIs for the panel judges (e.g. ".../people/77/") — extract each id and chain to get_judge. */
   panel: string[];
   source: string;

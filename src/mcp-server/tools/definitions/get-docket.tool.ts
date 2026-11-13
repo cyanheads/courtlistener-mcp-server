@@ -20,6 +20,7 @@ import {
   readRetrievalCursor,
   retrieve,
 } from '@/services/courtlistener/retrieval.js';
+import { readRetrievalSnapshot } from '@/services/courtlistener/retrieval-snapshot.js';
 import { idFromUri, toStorageUrl } from '@/services/courtlistener/uri.js';
 
 const SelectedDocument = z.object({
@@ -51,7 +52,9 @@ const SelectedDocket = z.object({
   next_cursor: z
     .string()
     .nullable()
-    .describe('Next entries page; independent of retrieval.next_cursor.'),
+    .describe(
+      'Next entries page as a numeric string; convert to a number for entries_page. Independent of retrieval.next_cursor.',
+    ),
   document_ids: z
     .array(z.number())
     .optional()
@@ -78,26 +81,15 @@ const SelectedDocket = z.object({
     .optional()
     .describe('Deferred selected-document groups.'),
   retrieval: Retrieval,
+  source_fetched_at: z.iso
+    .datetime()
+    .optional()
+    .describe('UTC time the selected docket source fetch completed.'),
   retrieval_notice: z
     .string()
     .optional()
     .describe('Instructions for reconstructing selected source records.'),
 });
-
-/** Keep selected source and storage URLs directly navigable on the text surface. */
-function formatSelectedDocket(result: z.infer<typeof SelectedDocket>) {
-  const blocks = formatRetrievalPage(result);
-  const links: string[] = [];
-  for (const document of result.selected_documents ?? []) {
-    if (document.source_url) links.push(markdownLink('CourtListener source', document.source_url));
-    if (document.filepath_local) links.push(markdownLink('RECAP file', document.filepath_local));
-  }
-  return blocks.map((block, index) =>
-    index === 0 && links.length
-      ? { ...block, text: `${block.text}\n\n${links.join('\n\n')}` }
-      : block,
-  );
-}
 
 export const getDocketTool = tool('courtlistener_get_docket', {
   title: 'Get Docket',
@@ -127,7 +119,7 @@ export const getDocketTool = tool('courtlistener_get_docket', {
       .optional()
       .default(1)
       .describe(
-        'Page of docket entries to fetch (1-indexed). Docket entries are page-paginated at 20 per page; pass the next_cursor from a previous response here to page through large cases.',
+        'Docket entries use ascending entry number, 20 per page, up to page 100. Pass the numeric value of the top-level next_cursor as entries_page to continue. For a positive total_entries, ceil(total_entries / 20) locates the last page if it is at most 100. A null total gives no last-page calculation. Use filing dates to identify recent filings.',
       ),
     entries_page_size: z
       .number()
@@ -151,6 +143,16 @@ export const getDocketTool = tool('courtlistener_get_docket', {
         .describe('Court display name for major federal courts; the court identifier otherwise.'),
       court_id: z.string().describe('Court identifier — the stable value for filtering.'),
       date_filed: z.string().describe('Date the case was filed.'),
+      cluster_ids: z
+        .array(z.number())
+        .describe('Linked opinion cluster IDs for courtlistener_get_opinion.'),
+      audio_ids: z
+        .array(z.number())
+        .describe('Linked recording IDs for courtlistener_get_oral_argument.'),
+      date_argued: z.string().nullable().describe('Date of oral argument; null if absent.'),
+      suit_nature: z.string().nullable().describe('Nature of suit; null if absent.'),
+      appeal_from: z.string().nullable().describe('Court or venue appealed from; null if absent.'),
+      date_last_filing: z.string().nullable().describe('Date of last filing; null if absent.'),
       date_terminated: z
         .string()
         .nullable()
@@ -173,7 +175,7 @@ export const getDocketTool = tool('courtlistener_get_docket', {
         .string()
         .nullable()
         .describe(
-          'Next page number to pass as the `entries_page` argument (docket entries are page-paginated); null when this is the last page.',
+          'Next entries page as a numeric string; convert to a number for the entries_page argument. Null when this is the last page.',
         ),
       entries: z
         .array(
@@ -309,20 +311,38 @@ export const getDocketTool = tool('courtlistener_get_docket', {
       entries_page_size: input.entries_page_size,
     });
     const svc = getCourtListenerService();
-    const docket = await svc.getDocket(
-      input.docket_id,
-      Math.min(input.entries_page_size, 50),
-      input.entries_page,
-      ctx,
-    );
+    const fetchDocket = () =>
+      svc.getDocket(
+        input.docket_id,
+        Math.min(input.entries_page_size, 50),
+        input.entries_page,
+        ctx,
+      );
 
     if (selection) {
-      const wanted = new Set(selection);
-      const selected = (docket.docket_entries ?? [])
-        .flatMap((entry) =>
-          (entry.recap_documents ?? [])
-            .filter((document) => wanted.has(document.id))
-            .map((document) => {
+      const {
+        value: { docketId, nextCursor, documents },
+        fetchedAt,
+      } = await readRetrievalSnapshot({
+        service: svc,
+        tenantId: ctx.tenantId,
+        source: [
+          'docket_documents',
+          input.docket_id,
+          input.entries_page,
+          input.entries_page_size,
+          selection,
+        ],
+        continuing: cursor !== undefined,
+        signal: ctx.signal,
+        fetch: async () => {
+          const docket = await fetchDocket();
+          const wanted = new Set(selection);
+          const documents = (docket.docket_entries ?? []).flatMap((entry) => {
+            const matches = (entry.recap_documents ?? []).filter((document) =>
+              wanted.has(document.id),
+            );
+            if (matches.length > 0) {
               const owner =
                 typeof entry.docket === 'number'
                   ? entry.docket
@@ -335,61 +355,79 @@ export const getDocketTool = tool('courtlistener_get_docket', {
                   'The selected entry does not explicitly belong to the requested docket.',
                   { entry_id: entry.id },
                 );
-              return {
-                id: document.id,
-                entry_id: entry.id,
-                document_number:
-                  document.document_number == null ? null : String(document.document_number),
-                attachment_number: document.attachment_number ?? null,
-                description: document.description ?? '',
-                is_available: document.is_available ?? null,
-                page_count: document.page_count ?? null,
-                filepath_local: toStorageUrl(document.filepath_local ?? null),
-                source_url: document.absolute_url
-                  ? new URL(document.absolute_url, 'https://www.courtlistener.com').href
-                  : null,
-                ...(document.plain_text !== undefined ? { plain_text: document.plain_text } : {}),
-                text_status: document.plain_text
-                  ? ('available' as const)
-                  : document.is_available === false
-                    ? ('unavailable' as const)
-                    : document.is_available === true
-                      ? ('not_extracted' as const)
-                      : ('unknown' as const),
-              };
-            }),
-        )
+            }
+            return matches.map((document) => ({ document, entryId: entry.id }));
+          });
+          const found = new Set(documents.map(({ document }) => document.id));
+          const missing = selection.filter((id) => !found.has(id));
+          if (missing.length)
+            throw ctx.fail(
+              'document_not_on_page',
+              'Selected documents are not present on this entries page.',
+              { document_ids: missing, entries_page: input.entries_page },
+            );
+          return {
+            docketId: docket.id,
+            nextCursor: docket.docket_entries_next_page ?? null,
+            documents,
+          };
+        },
+      });
+      const selected = documents
+        .map(({ document, entryId }) => ({
+          id: document.id,
+          entry_id: entryId,
+          document_number:
+            document.document_number == null ? null : String(document.document_number),
+          attachment_number: document.attachment_number ?? null,
+          description: document.description ?? '',
+          is_available: document.is_available ?? null,
+          page_count: document.page_count ?? null,
+          filepath_local: toStorageUrl(document.filepath_local ?? null),
+          source_url: document.absolute_url
+            ? new URL(document.absolute_url, 'https://www.courtlistener.com').href
+            : null,
+          ...(document.plain_text !== undefined ? { plain_text: document.plain_text } : {}),
+          text_status: document.plain_text
+            ? ('available' as const)
+            : document.is_available === false
+              ? ('unavailable' as const)
+              : document.is_available === true
+                ? ('not_extracted' as const)
+                : ('unknown' as const),
+        }))
         .sort((a, b) => a.id - b.id);
-      const found = new Set(selected.map((document) => document.id));
-      const missing = selection.filter((id) => !found.has(id));
-      if (missing.length)
-        throw ctx.fail(
-          'document_not_on_page',
-          'Selected documents are not present on this entries page.',
-          { document_ids: missing, entries_page: input.entries_page },
-        );
-      return retrieve({
+      const page = retrieve({
         tool: retrievalTool,
         id: input.docket_id,
         selection: selection.map(String),
         cursor,
         view: {
-          docket_id: docket.id,
+          docket_id: docketId,
           entries_page: input.entries_page,
-          next_cursor: docket.docket_entries_next_page ?? null,
+          next_cursor: nextCursor,
           document_ids: selection,
           selected_documents: selected,
         },
         groups: [{ name: 'selected_documents', value: selected }],
         required: ['docket_id', 'entries_page', 'next_cursor'],
         signal: ctx.signal,
-        finalize: (value) => {
+        planningFinalize: (value) => {
           const parsed = SelectedDocket.parse(value);
-          return { structuredContent: parsed, content: formatSelectedDocket(parsed) };
+          return { structuredContent: parsed, content: formatRetrievalPage(parsed, false) };
+        },
+        finalize: (value) => {
+          const parsed = SelectedDocket.parse({
+            ...(value as object),
+            source_fetched_at: fetchedAt,
+          });
+          return { structuredContent: parsed, content: formatRetrievalPage(parsed) };
         },
       });
+      return { ...page, source_fetched_at: fetchedAt };
     }
 
+    const docket = await fetchDocket();
     const entries = (docket.docket_entries ?? []).map((e) => ({
       id: e.id,
       entry_number: e.entry_number ?? null,
@@ -421,6 +459,12 @@ export const getDocketTool = tool('courtlistener_get_docket', {
       case_name_full: docket.case_name_full ?? '',
       court: resolveCourtName(docket.court_id),
       court_id: docket.court_id ?? '',
+      cluster_ids: (docket.clusters ?? []).flatMap((uri) => idFromUri(uri, 'clusters') ?? []),
+      audio_ids: (docket.audio_files ?? []).flatMap((uri) => idFromUri(uri, 'audio') ?? []),
+      date_argued: docket.date_argued || null,
+      suit_nature: docket.nature_of_suit || null,
+      appeal_from: docket.appeal_from_str || null,
+      date_last_filing: docket.date_last_filing || null,
       date_filed: docket.date_filed ?? '',
       date_terminated: docket.date_terminated ?? null,
       docket_number: docket.docket_number ?? '',
@@ -439,7 +483,7 @@ export const getDocketTool = tool('courtlistener_get_docket', {
   },
 
   format: (result) => {
-    if (result.kind) return formatSelectedDocket({ ...result, kind: result.kind });
+    if (result.kind) return formatRetrievalPage(result);
     const lines: string[] = [
       `## ${result.case_name}`,
       formatPageSizing(result.page_sizing),
@@ -452,6 +496,17 @@ export const getDocketTool = tool('courtlistener_get_docket', {
     }
     if (result.assigned_to) lines.push(`**Judge:** ${result.assigned_to}`);
     if (result.referred_to) lines.push(`**Referred to:** ${result.referred_to}`);
+    if (result.cluster_ids)
+      lines.push(`**Opinion cluster IDs:** ${result.cluster_ids.join(', ') || 'none'}`);
+    if (result.audio_ids) lines.push(`**Audio IDs:** ${result.audio_ids.join(', ') || 'none'}`);
+    if (result.date_argued !== undefined)
+      lines.push(`**Argued:** ${result.date_argued ?? 'unknown'}`);
+    if (result.suit_nature !== undefined)
+      lines.push(`**Nature of suit:** ${result.suit_nature ?? 'unknown'}`);
+    if (result.appeal_from !== undefined)
+      lines.push(`**Appeal from:** ${result.appeal_from ?? 'unknown'}`);
+    if (result.date_last_filing !== undefined)
+      lines.push(`**Last filing:** ${result.date_last_filing ?? 'unknown'}`);
     if (result.cause) lines.push(`**Cause:** ${result.cause}`);
     if (result.jury_demand) lines.push(`**Jury demand:** ${result.jury_demand}`);
     if (result.jurisdiction_type) lines.push(`**Jurisdiction:** ${result.jurisdiction_type}`);
@@ -467,13 +522,12 @@ export const getDocketTool = tool('courtlistener_get_docket', {
           `\n**Entry ID:** ${e.id} | **#${e.entry_number ?? 'N/A'}** (${e.date_filed}): ${e.description}`,
         );
         for (const d of e.documents) {
-          const avail = d.is_available
-            ? `[available${d.filepath_local ? `: ${d.filepath_local}` : ''}]`
-            : '[requires PACER]';
+          const avail = d.is_available ? '[available]' : '[requires PACER]';
+          const file = d.filepath_local ? ` ${markdownLink('RECAP file', d.filepath_local)}` : '';
           const pages = d.page_count != null ? `, ${d.page_count}pp` : '';
           const attach = d.attachment_number != null ? ` attachment #${d.attachment_number}` : '';
           lines.push(
-            `  - Doc ID ${d.id} #${d.document_number ?? 'N/A'}${attach}: ${d.description}${pages} ${avail}`,
+            `  - Doc ID ${d.id} #${d.document_number ?? 'N/A'}${attach}: ${d.description}${pages} ${avail}${file}`,
           );
         }
       }

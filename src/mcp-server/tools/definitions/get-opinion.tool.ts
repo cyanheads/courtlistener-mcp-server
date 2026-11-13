@@ -5,7 +5,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
-import { formatOutline, OUTLINE_VARIANT } from '@cyanheads/mcp-ts-core/utils';
+import { formatOutline, markdownLink, OUTLINE_VARIANT } from '@cyanheads/mcp-ts-core/utils';
 import { expandCode } from '@/services/courtlistener/codes.js';
 import { resolveCourtName } from '@/services/courtlistener/court-names.js';
 import { getCourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
@@ -19,6 +19,7 @@ import {
   retrievalSourceId,
   retrieve,
 } from '@/services/courtlistener/retrieval.js';
+import { readRetrievalSnapshot } from '@/services/courtlistener/retrieval-snapshot.js';
 import { idFromUri } from '@/services/courtlistener/uri.js';
 
 /**
@@ -93,11 +94,17 @@ const OpinionVariant = z
 export const getOpinionTool = tool('courtlistener_get_opinion', {
   title: 'Get Court Opinion',
   description:
-    'Fetch text and metadata for an opinion cluster by cluster ID. Returns majority, concurrence and dissent variants with raw HTML and readable plain text, variants_completion for source coverage, and docket_enrichment. Oversized selections return outline then page responses; continue retrieval.next_cursor as cursor with the unchanged ID/sections selection until null. Oversized docket backfill has independent enrichment_retrieval coordinates; continue its next_cursor as enrichment_cursor and discard prior enrichment slices when source_id changes. Obtain cluster IDs from courtlistener_search_opinions, courtlistener_lookup_citation, or docket results.',
+    'Fetch text and metadata for an opinion cluster by cluster ID. Returns opinion variants with raw HTML and readable plain text by default, variants_completion for source coverage, and docket_enrichment. Choose text: plain or html for a single text representation. Oversized selections return a labeled variant outline then page responses; repeat the same ID, sections and text when continuing retrieval.next_cursor. Oversized docket backfill has independent enrichment_retrieval coordinates; continue its next_cursor as enrichment_cursor and discard prior enrichment slices when source_id changes. Obtain cluster IDs from courtlistener_search_opinions, courtlistener_lookup_citation, or docket results.',
   annotations: { readOnlyHint: true, idempotentHint: true },
 
   input: z.object({
     cursor: RetrievalCursor,
+    text: z
+      .enum(['plain', 'html', 'both'])
+      .default('both')
+      .describe(
+        'Opinion text representation. Both is the default. Plain preserves supplied text or derives readable text from markup. Repeat this choice with continuation cursors.',
+      ),
     enrichment_cursor: RetrievalCursor.describe(
       'Continue enrichment_retrieval.next_cursor independently of primary cursor. A changed docket summary restarts only enrichment slices.',
     ),
@@ -161,6 +168,12 @@ export const getOpinionTool = tool('courtlistener_get_opinion', {
         .describe('Linked-docket enrichment outcome, independent of opinion text availability.'),
       // Bounded identity stays present; oversized metadata is recoverable by path.
       cluster_id: z.number().describe('Opinion cluster ID.'),
+      source_fetched_at: z.iso
+        .datetime()
+        .optional()
+        .describe(
+          'UTC time the opinion source fetch completed. Linked docket enrichment is read separately.',
+        ),
       case_name: z.string().describe('Short case name.'),
       case_name_full: z.string().describe('Full case name with parties.'),
       court: z.string().describe('Court display name.'),
@@ -186,15 +199,17 @@ export const getOpinionTool = tool('courtlistener_get_opinion', {
         .describe(
           'Fetched variants; variants_completion describes source coverage. Pages can contain partial typed variants; omitted text is recoverable through retrieval.text_chunks at original field paths.',
         ),
-      // Outline arm — one section per opinion variant. Reuses OUTLINE_VARIANT's shape;
-      // the section element gets an object-level describe (the framework schema describes
-      // only name/bytes) and the re-call notice is named retrieval_notice to read as
-      // domain data (a field literally named `notice` reads as agent-facing context).
       sections: z
         .array(
-          OUTLINE_VARIANT.shape.sections.element.describe(
-            'A retrievable opinion variant (opinion_<id>) and its serialized byte size.',
-          ),
+          OUTLINE_VARIANT.shape.sections.element
+            .extend({
+              type_label: OpinionVariant.shape.type_label.describe(
+                'Variant type label. A label too large for the catalog remains available in the variant data.',
+              ),
+              author_id: OpinionVariant.shape.author_id.optional(),
+              per_curiam: OpinionVariant.shape.per_curiam.optional(),
+            })
+            .describe('A retrievable opinion variant (opinion_<id>) and its serialized byte size.'),
         )
         .optional()
         .describe(
@@ -260,16 +275,30 @@ export const getOpinionTool = tool('courtlistener_get_opinion', {
   ],
 
   async handler(input, ctx) {
-    const cursor = readRetrievalCursor(input.cursor, 'opinion', input.cluster_id, input.sections);
+    const primaryTool = input.text === 'both' ? 'opinion' : `opinion:${input.text}`;
+    const enrichmentTool =
+      input.text === 'both' ? 'opinion_enrichment' : `opinion_enrichment:${input.text}`;
+    const cursor = readRetrievalCursor(input.cursor, primaryTool, input.cluster_id, input.sections);
     const enrichmentCursor = readRetrievalCursor(
       input.enrichment_cursor,
-      'opinion_enrichment',
+      enrichmentTool,
       input.cluster_id,
       input.sections,
     );
     ctx.log.info('courtlistener_get_opinion', { cluster_id: input.cluster_id });
     const svc = getCourtListenerService();
-    const cluster = await svc.getOpinionCluster(input.cluster_id, ctx);
+    const { value: cluster, fetchedAt } = await readRetrievalSnapshot({
+      service: svc,
+      tenantId: ctx.tenantId,
+      source: [primaryTool, input.cluster_id, [...new Set(input.sections)].sort()],
+      continuing: cursor?.v === 2,
+      signal: ctx.signal,
+      fetch: () => svc.getOpinionCluster(input.cluster_id, ctx),
+    });
+    const withFetchedAt = (value: unknown) => ({
+      ...(value as object),
+      source_fetched_at: fetchedAt,
+    });
 
     // Normalize citation strings
     const citations = (cluster.citations ?? []).map((c) => `${c.volume} ${c.reporter} ${c.page}`);
@@ -314,41 +343,34 @@ export const getOpinionTool = tool('courtlistener_get_opinion', {
       }
     }
 
-    const opinions = (cluster.sub_opinions ?? []).map((op) => ({
-      id: op.id,
-      type: op.type ?? '',
-      type_label: expandCode(OPINION_TYPE_LABELS, op.type),
-      author_id: op.author_id ?? null,
-      per_curiam: op.per_curiam ?? false,
+    const opinions = (cluster.sub_opinions ?? []).map((op) => {
       // CourtListener spreads opinion text across source-dependent variant fields;
       // `html` is often empty (e.g. pre-2000 case law) while `html_with_citations`
       // carries the full text. Fall back across variants, preferring the richest.
-      html_text:
+      const htmlText =
         op.html_with_citations ||
         op.html ||
         op.html_columbia ||
         op.html_lawbox ||
         op.xml_harvard ||
         op.html_anon_2020 ||
-        '',
-      plain_text:
-        op.plain_text ||
-        readableText(
-          op.html_with_citations ||
-            op.html ||
-            op.html_columbia ||
-            op.html_lawbox ||
-            op.xml_harvard ||
-            op.html_anon_2020 ||
-            '',
-        ),
-      // opinions_cited are URI strings — extract the numeric ID from each
-      cites: (op.opinions_cited ?? []).flatMap((uri) => {
-        const id = idFromUri(String(uri), 'opinions');
-        return id !== null ? [id] : [];
-      }),
-      download_url: op.download_url ?? null,
-    }));
+        '';
+      return {
+        id: op.id,
+        type: op.type ?? '',
+        type_label: expandCode(OPINION_TYPE_LABELS, op.type),
+        author_id: op.author_id ?? null,
+        per_curiam: op.per_curiam ?? false,
+        html_text: htmlText,
+        plain_text: op.plain_text || readableText(htmlText),
+        // opinions_cited are URI strings — extract the numeric ID from each
+        cites: (op.opinions_cited ?? []).flatMap((uri) => {
+          const id = idFromUri(String(uri), 'opinions');
+          return id !== null ? [id] : [];
+        }),
+        download_url: op.download_url ?? null,
+      };
+    });
 
     ctx.log.info('courtlistener_get_opinion complete', {
       cluster_id: input.cluster_id,
@@ -396,11 +418,24 @@ export const getOpinionTool = tool('courtlistener_get_opinion', {
       selected = opinions.filter((op) => wanted.has(`opinion_${op.id}`));
     }
 
+    const projected =
+      input.text === 'both'
+        ? selected
+        : selected.map(({ html_text, plain_text, ...variant }) => ({
+            ...variant,
+            ...(input.text === 'plain' ? { plain_text } : { html_text }),
+          }));
+    const groups = projected.map((op) => ({
+      name: `opinion_${op.id}`,
+      value: op,
+      catalog: { type_label: op.type_label, author_id: op.author_id, per_curiam: op.per_curiam },
+    }));
+
     // Version-one tokens retain their original enriched digest and unit layout.
     if (cursor?.v === 1) {
       const { cluster_id, variants_completion, ...metadata } = clusterMeta;
-      return retrieve({
-        tool: 'opinion',
+      const primary = retrieve({
+        tool: primaryTool,
         id: input.cluster_id,
         selection: input.sections,
         cursor,
@@ -414,7 +449,7 @@ export const getOpinionTool = tool('courtlistener_get_opinion', {
           docket_number: docketNumber,
           opinions: selected,
         },
-        groups: selected.map((op) => ({ name: `opinion_${op.id}`, value: op })),
+        groups,
         required: [
           'cluster_id',
           'docket_id',
@@ -423,8 +458,10 @@ export const getOpinionTool = tool('courtlistener_get_opinion', {
           'docket_enrichment',
         ],
         signal: ctx.signal,
-        finalize: finalizeOpinion,
+        planningFinalize: planOpinion,
+        finalize: (value) => finalizeOpinion(withFetchedAt(value)),
       });
+      return { ...primary, source_fetched_at: fetchedAt };
     }
     const enrichment = {
       docket_enrichment: docketEnrichment,
@@ -438,7 +475,7 @@ export const getOpinionTool = tool('courtlistener_get_opinion', {
     };
     const sourceId = retrievalSourceId(enrichment);
     const enrichmentPage = retrieve({
-      tool: 'opinion_enrichment',
+      tool: enrichmentTool,
       id: input.cluster_id,
       selection: input.sections,
       cursor: enrichmentCursor?.digest === sourceId ? enrichmentCursor : undefined,
@@ -467,6 +504,7 @@ export const getOpinionTool = tool('courtlistener_get_opinion', {
       return {
         ...result,
         ...fields,
+        source_fetched_at: fetchedAt,
         ...(retrieval && result.kind === 'full'
           ? {
               kind: 'page',
@@ -485,7 +523,7 @@ export const getOpinionTool = tool('courtlistener_get_opinion', {
       };
     };
     const primary = retrieve({
-      tool: 'opinion',
+      tool: primaryTool,
       cursorVersion: 2,
       id: input.cluster_id,
       selection: input.sections,
@@ -493,23 +531,28 @@ export const getOpinionTool = tool('courtlistener_get_opinion', {
       view: {
         ...clusterMeta,
         court: cluster.court_id ? resolveCourtName(cluster.court_id) : undefined,
-        opinions: selected,
+        opinions: projected,
       },
-      sourceIdentity: { court: cluster.court ?? '' },
-      groups: selected.map((op) => ({ name: `opinion_${op.id}`, value: op })),
+      sourceIdentity: {
+        court: cluster.court ?? '',
+        ...(input.text === 'both' ? {} : { originalVariants: selected }),
+      },
+      groups,
       required: ['cluster_id', 'docket_id', 'cite_count', 'variants_completion'],
       signal: ctx.signal,
-      planningFinalize: finalizeOpinion,
+      planningFinalize: planOpinion,
       finalize: (value) => finalizeOpinion(overlay(value)),
     });
     return overlay(primary) as typeof primary & {
       docket_enrichment: typeof docketEnrichment;
+      source_fetched_at: string;
       enrichment_retrieval?: NonNullable<z.infer<typeof Retrieval>> & { source_id: string };
     };
   },
 
   format: (result) => {
     if (result.retrieval || result.enrichment_retrieval) return formatRetrievalPage(result);
+    const originalOpinions = result.opinions;
     result = presentation(result);
     // Cheap cluster metadata — always present, so this header renders in every mode.
     // `kind` is rendered unconditionally: it's required in every response, so keying
@@ -519,6 +562,7 @@ export const getOpinionTool = tool('courtlistener_get_opinion', {
       `**Cluster ID:** ${result.cluster_id} | **Court:** ${result.court} (${result.court_id}) | **Filed:** ${result.date_filed}`,
       `**Docket:** ${result.docket_number} (ID: ${result.docket_id}) | **Status:** ${result.precedential_status} | **Cited by:** ${result.cite_count}`,
       `**Response mode:** ${result.kind}`,
+      ...(result.source_fetched_at ? [`**Source fetched at:** ${result.source_fetched_at}`] : []),
       ...(result.variants_completion
         ? [
             `**Variants:** complete=${result.variants_completion.complete}; upstream variant cursor=${result.variants_completion.next_cursor ?? 'none'}.`,
@@ -542,20 +586,24 @@ export const getOpinionTool = tool('courtlistener_get_opinion', {
     if (result.posture) lines.push(`**Posture:** ${result.posture}`);
 
     // Full arm — opinion variants. Guarded so outline mode (opinions omitted) skips it.
-    for (const op of result.opinions ?? []) {
+    for (const [index, op] of (result.opinions ?? []).entries()) {
       lines.push(`\n### Opinion (${op.type_label})`);
       lines.push(
         `**ID:** ${op.id} | **Type code:** ${op.type} | **Per Curiam:** ${op.per_curiam ? 'Yes' : 'No'}`,
       );
       if (op.author_id != null) lines.push(`**Author ID:** ${op.author_id}`);
       if (op.cites?.length) lines.push(`**Cites:** ${op.cites.join(', ')}`);
-      if (op.download_url) lines.push(`**Download:** ${op.download_url}`);
+      const downloadUrl = originalOpinions?.[index]?.download_url;
+      if (downloadUrl !== undefined)
+        lines.push(
+          `**Download:** ${downloadUrl === null ? 'null' : markdownLink('Open URL', downloadUrl)}`,
+        );
 
       // Full opinion text — no truncation; overflow is handled by the outline arm.
       // plain_text is shown first as it is typically cleaner.
       if (op.plain_text) lines.push(`\n${op.plain_text}`);
       if (op.html_text) lines.push(`\n**html_text:** ${op.html_text}`);
-      if (!op.plain_text && !op.html_text && op.download_url) {
+      if (op.plain_text === '' && op.html_text === '' && op.download_url) {
         lines.push(
           `\n*Opinion text not stored locally. Use download_url to retrieve the document.*`,
         );
@@ -581,4 +629,10 @@ function finalizeOpinion(value: unknown): { structuredContent: object; content: 
   const format = getOpinionTool.format;
   if (!format) throw new Error('Bounded retrieval requires the production formatter.');
   return { structuredContent: parsed, content: format(parsed) };
+}
+
+/** Keep the inline/deferred layout from issued cursor positions. */
+function planOpinion(value: unknown): { structuredContent: object; content: unknown[] } {
+  const parsed = getOpinionTool.output.parse(value);
+  return { structuredContent: parsed, content: formatRetrievalPage(parsed, false) };
 }

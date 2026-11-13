@@ -5,6 +5,7 @@
 import { createHash } from 'node:crypto';
 import { z } from '@cyanheads/mcp-ts-core';
 import { requestCancelled, validationError } from '@cyanheads/mcp-ts-core/errors';
+import { markdownLink } from '@cyanheads/mcp-ts-core/utils';
 import { escapeText, fenceSource } from './readable-text.js';
 
 /** Independent ceiling for each completed serialized MCP success surface. */
@@ -16,7 +17,7 @@ export const RetrievalCursor = z
   .max(1024)
   .optional()
   .describe(
-    'Retrieval next_cursor from the previous response. Repeat the original ID and sections/categories selection unchanged; omit to start.',
+    'Retrieval next_cursor from the previous response. Repeat the original ID and sections/categories selection unchanged. Matching continuations can reuse source for five minutes from source_fetched_at; omit cursor to fetch fresh source.',
   );
 
 /** Explicit source coordinates for typed rows, text slices and catalog pages. */
@@ -74,7 +75,13 @@ type Cursor = Position & { v: 1 | 2; binding: string; digest: string };
 type Row = { path: string; index: number; total: number };
 type TextIndex = { total: number; checkpoints: number[] };
 type Unit = { path: string; value: Json; rows: Row[]; text?: TextIndex };
-type Descriptor = { name: string; bytes: number };
+type Descriptor = {
+  name: string;
+  bytes: number;
+  type_label?: string;
+  author_id?: number | null;
+  per_curiam?: boolean;
+};
 
 const CursorShape = z
   .object({
@@ -120,6 +127,18 @@ function invalidCursor(): never {
   );
 }
 
+function urlLabel(path: string, field: string): string | undefined {
+  if (path.startsWith('/selected_documents/')) {
+    if (field === 'source_url') return 'CourtListener source';
+    if (field === 'filepath_local') return 'RECAP file';
+  }
+  if (path === '/pdf_url') return 'Open PDF';
+  if (path === '/download_url') return 'Court MP3';
+  if (path === '/local_path') return 'CourtListener MP3';
+  if (path.startsWith('/opinions/') && field === 'download_url') return 'Open URL';
+  return undefined;
+}
+
 /** Reject malformed/cross-request cursors before any upstream request. */
 export function readRetrievalCursor(
   token: string | undefined,
@@ -141,8 +160,11 @@ export function readRetrievalCursor(
   return parsed.data;
 }
 
-/** Render every field of a bounded page, with safe source-markup fencing. */
-export function formatRetrievalPage(result: object): { type: 'text'; text: string }[] {
+/** Render bounded fields. Legacy placement uses prose URL widths for issued cursors. */
+export function formatRetrievalPage(
+  result: object,
+  linkUrls = true,
+): { type: 'text'; text: string }[] {
   const lines: string[] = [`**Response mode:** ${(result as { kind?: string }).kind}`];
   const retrieval = (result as { retrieval?: NonNullable<z.infer<typeof Retrieval>> }).retrieval;
   const starts = new Map<string, number>();
@@ -153,9 +175,15 @@ export function formatRetrievalPage(result: object): { type: 'text'; text: strin
   const visit = (value: unknown, path: string) => {
     if (value === undefined) return;
     if (typeof value === 'string') {
-      lines.push(
-        `**${escapeText(path)}:** ${path.endsWith('/html_text') ? fenceSource(value) : escapeText(value)}`,
-      );
+      const field = path.slice(path.lastIndexOf('/') + 1);
+      const label = linkUrls ? urlLabel(path, field) : undefined;
+      const rendered =
+        field === 'html_text'
+          ? fenceSource(value)
+          : label
+            ? markdownLink(label, value)
+            : escapeText(value);
+      lines.push(`**${escapeText(path)}:** ${rendered}`);
     } else if (Array.isArray(value)) {
       if (path === '/sections') lines.push(`${value.length} sections available`);
       if (!value.length) lines.push(`**${escapeText(path)}:** []`);
@@ -194,7 +222,7 @@ export function retrieve<T extends object>(options: {
   view: T;
   /** Original source values that bind the cursor but are normalized out of the emitted view. */
   sourceIdentity?: object;
-  groups: { name: string; value: unknown }[];
+  groups: { name: string; value: unknown; catalog?: Omit<Descriptor, 'name' | 'bytes'> }[];
   required: string[];
   signal?: AbortSignal | undefined;
   finalize: (value: unknown) => { structuredContent: object; content: unknown[] };
@@ -304,8 +332,16 @@ export function retrieve<T extends object>(options: {
       add(`/${pointer(key)}`, value);
     }
   }
-  for (const group of options.groups)
-    descriptors.push({ name: group.name, bytes: bytes(group.value) });
+  for (const group of options.groups) {
+    const { type_label, ...metadata } = group.catalog ?? {};
+    descriptors.push({
+      name: group.name,
+      bytes: bytes(group.value),
+      ...metadata,
+      // The complete label remains on the variant's ordinary data path.
+      ...(type_label !== undefined && bytes(type_label) <= 256 ? { type_label } : {}),
+    });
+  }
   for (const key of groupKeys) {
     const value = source[key];
     if (value !== undefined) add(`/${pointer(key)}`, value);

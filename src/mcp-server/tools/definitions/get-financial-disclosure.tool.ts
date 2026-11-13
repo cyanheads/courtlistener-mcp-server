@@ -6,7 +6,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { formatOutline, OUTLINE_VARIANT } from '@cyanheads/mcp-ts-core/utils';
+import { formatOutline, markdownLink, OUTLINE_VARIANT } from '@cyanheads/mcp-ts-core/utils';
 import { getCourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
 import { presentation } from '@/services/courtlistener/readable-text.js';
 import {
@@ -16,11 +16,11 @@ import {
   readRetrievalCursor,
   retrieve,
 } from '@/services/courtlistener/retrieval.js';
+import { readRetrievalSnapshot } from '@/services/courtlistener/retrieval-snapshot.js';
 import type {
   Agreement,
   Debt,
   DisclosurePosition,
-  FinancialDisclosure,
   FinancialGift,
   Investment,
   NonInvestmentIncome,
@@ -365,6 +365,10 @@ export const getFinancialDisclosureTool = tool('courtlistener_get_financial_disc
   output: z
     .object({
       retrieval: Retrieval,
+      source_fetched_at: z.iso
+        .datetime()
+        .optional()
+        .describe('UTC time the financial disclosure source fetch completed.'),
       // Bounded identity stays present; oversized metadata follows retrieval paths.
       disclosure_id: z.number().describe('Financial disclosure ID.'),
       person_id: z
@@ -472,7 +476,14 @@ export const getFinancialDisclosureTool = tool('courtlistener_get_financial_disc
       categories: input.categories,
     });
     const svc = getCourtListenerService();
-    const d: FinancialDisclosure = await svc.getFinancialDisclosure(input.disclosure_id, ctx);
+    const { value: d, fetchedAt } = await readRetrievalSnapshot({
+      service: svc,
+      tenantId: ctx.tenantId,
+      source: ['disclosure', input.disclosure_id, [...new Set(input.categories)].sort()],
+      continuing: cursor !== undefined,
+      signal: ctx.signal,
+      fetch: () => svc.getFinancialDisclosure(input.disclosure_id, ctx),
+    });
 
     const counts = {
       investments: d.investments.length,
@@ -534,7 +545,7 @@ export const getFinancialDisclosureTool = tool('courtlistener_get_financial_disc
       returned_categories: Object.keys(arrays),
     });
 
-    return retrieve({
+    const page = retrieve({
       tool: 'disclosure',
       id: input.disclosure_id,
       selection: input.categories,
@@ -551,12 +562,16 @@ export const getFinancialDisclosureTool = tool('courtlistener_get_financial_disc
         'counts',
       ],
       signal: ctx.signal,
-      finalize: finalizeDisclosure,
+      planningFinalize: planDisclosure,
+      finalize: (value) =>
+        finalizeDisclosure({ ...(value as object), source_fetched_at: fetchedAt }),
     });
+    return { ...page, source_fetched_at: fetchedAt };
   },
 
   format: (result) => {
     if (result.retrieval) return formatRetrievalPage(result);
+    const { pdf_url } = result;
     result = presentation(result);
     // Cheap filing metadata — always present, so this header renders in every mode.
     const lines: string[] = [
@@ -568,10 +583,14 @@ export const getFinancialDisclosureTool = tool('courtlistener_get_financial_disc
         : '**Response:** full itemization',
     ];
     const c = result.counts;
+    if (result.source_fetched_at) lines.push(`**Source fetched at:** ${result.source_fetched_at}`);
     lines.push(
       `**Counts:** ${c.investments} investments, ${c.gifts} gifts, ${c.debts} debts, ${c.positions} positions, ${c.reimbursements} reimbursements, ${c.agreements} agreements, ${c.non_investment_incomes} non-investment incomes, ${c.spouse_incomes} spouse incomes`,
     );
-    if (result.pdf_url) lines.push(`**Source PDF:** ${result.pdf_url}`);
+    if (pdf_url !== undefined)
+      lines.push(
+        `**Source PDF:** ${pdf_url === null ? 'null' : markdownLink('Open PDF', pdf_url)}`,
+      );
 
     // Full arm — one block per requested category. Each field is interpolated
     // unconditionally so both client surfaces carry the complete row.
@@ -634,4 +653,10 @@ function finalizeDisclosure(value: unknown): { structuredContent: object; conten
   const format = getFinancialDisclosureTool.format;
   if (!format) throw new Error('Bounded retrieval requires the production formatter.');
   return { structuredContent: parsed, content: format(parsed) };
+}
+
+/** Keep the inline/deferred layout from issued cursor positions. */
+function planDisclosure(value: unknown): { structuredContent: object; content: unknown[] } {
+  const parsed = getFinancialDisclosureTool.output.parse(value);
+  return { structuredContent: parsed, content: formatRetrievalPage(parsed, false) };
 }

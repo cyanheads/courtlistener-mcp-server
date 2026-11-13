@@ -11,8 +11,135 @@ import { getOralArgumentTool } from '@/mcp-server/tools/definitions/get-oral-arg
 import { searchOpinionsTool } from '@/mcp-server/tools/definitions/search-opinions.tool.js';
 import * as service from '@/services/courtlistener/courtlistener-service.js';
 import { fenceSource, readableText } from '@/services/courtlistener/readable-text.js';
+import { formatRetrievalPage, retrieve } from '@/services/courtlistener/retrieval.js';
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.useRealTimers();
+});
+
+it('labels opinion outlines and binds a plain-only continuation to its text mode', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  const plain = 'Body 😀. '.repeat(5000);
+  vi.spyOn(service, 'getCourtListenerService').mockReturnValue({
+    getOpinionCluster: async () => ({
+      id: 1,
+      sub_opinions: [
+        { id: 2, type: '020lead', author_id: 7, plain_text: plain, html: '<p>markup</p>' },
+      ],
+    }),
+  } as unknown as service.CourtListenerService);
+  const input = { cluster_id: 1, text: 'plain' } as const;
+  const first = await runToolContract(getOpinionTool, input);
+  const outline = getOpinionTool.output.parse(first.structuredContent);
+  expect(outline.sections?.[0]).toMatchObject({
+    name: 'opinion_2',
+    type_label: 'lead-opinion',
+    author_id: 7,
+    per_curiam: false,
+  });
+  expect(first.content[0]).toMatchObject({ text: expect.stringContaining('lead\\-opinion') });
+  const crossMode = await runToolContract(getOpinionTool, {
+    cluster_id: 1,
+    cursor: outline.retrieval?.next_cursor ?? undefined,
+  });
+  expect(crossMode.structuredContent).toMatchObject({
+    error: { data: { reason: 'invalid_cursor' } },
+  });
+  const result = await walk((cursor) => runToolContract(getOpinionTool, { ...input, cursor }));
+  expect(result.chunks.get('/opinions/0/plain_text')).toBe(plain);
+  expect(result.pages.some((page) => JSON.stringify(page).includes('html_text'))).toBe(false);
+
+  const html = await runToolContract(getOpinionTool, { cluster_id: 1, text: 'html' });
+  const htmlPage = getOpinionTool.output.parse(html.structuredContent);
+  expect(htmlPage.opinions?.[0]?.html_text).toBe('<p>markup</p>');
+  expect(htmlPage.opinions?.[0]?.plain_text).toBeUndefined();
+  expect(html.content[0]).toMatchObject({ text: expect.stringContaining('<p>markup</p>') });
+
+  const both = await runToolContract(getOpinionTool, { cluster_id: 1 });
+  expect(await runToolContract(getOpinionTool, { cluster_id: 1, text: 'both' })).toEqual(both);
+  const bothCursor =
+    getOpinionTool.output.parse(both.structuredContent).retrieval?.next_cursor ?? undefined;
+  expect(bothCursor).toBeTypeOf('string');
+  const defaultPage = await runToolContract(getOpinionTool, { cluster_id: 1, cursor: bothCursor });
+  expect(
+    await runToolContract(getOpinionTool, {
+      cluster_id: 1,
+      text: 'both',
+      cursor: bothCursor,
+    }),
+  ).toEqual(defaultPage);
+});
+
+it('adds the CourtListener MP3 to audio detail and preserves the court URL', async () => {
+  const download_url = 'https://court.example/oral-argument.mp3';
+  const local_path = 'https://storage.courtlistener.com/mp3/recording.mp3';
+  vi.spyOn(service, 'getCourtListenerService').mockReturnValue({
+    getOralArgument: async () => ({ id: 8, download_url, local_path_mp3: 'mp3/recording.mp3' }),
+  } as unknown as service.CourtListenerService);
+  const wire = await runToolContract(getOralArgumentTool, { id: 8 });
+  expect(wire.structuredContent).toMatchObject({ download_url, local_path });
+  expect(wire.content[0]).toMatchObject({ text: expect.stringContaining(`(<${local_path}>)`) });
+});
+
+it('continues old audio cursors with their original projection', async () => {
+  const transcript = 'One original line 😀. '.repeat(8000);
+  vi.spyOn(service, 'getCourtListenerService').mockReturnValue({
+    getOralArgument: async () => ({
+      id: 8,
+      stt_transcript: transcript,
+      local_path_mp3: 'mp3/new.mp3',
+    }),
+  } as unknown as service.CourtListenerService);
+  const old = retrieve({
+    tool: 'audio',
+    id: 8,
+    view: {
+      oral_argument_id: 8,
+      case_name: '',
+      case_name_full: '',
+      docket_id: 0,
+      duration_seconds: 0,
+      download_url: null,
+      judges: '',
+      panel_ids: [],
+      has_transcript: true,
+      transcript,
+    },
+    groups: [{ name: 'transcript', value: transcript }],
+    required: ['oral_argument_id', 'docket_id', 'duration_seconds', 'has_transcript'],
+    finalize: (value) => ({
+      structuredContent: getOralArgumentTool.output.parse(value),
+      content: formatRetrievalPage(getOralArgumentTool.output.parse(value), false),
+    }),
+  });
+  let cursor = old.retrieval?.next_cursor;
+  const slices: string[] = [];
+  while (cursor) {
+    const wire = await runToolContract(getOralArgumentTool, { id: 8, cursor });
+    const page = getOralArgumentTool.output.parse(wire.structuredContent);
+    expect(page.local_path).toBeUndefined();
+    slices.push(...(page.retrieval?.text_chunks.map((chunk) => chunk.text) ?? []));
+    expect(page.retrieval?.next_cursor).not.toBe(cursor);
+    cursor = page.retrieval?.next_cursor;
+  }
+  expect(slices.join('')).toBe(transcript);
+});
+
+it('recovers an oversized unmapped opinion label from ordinary variant data', async () => {
+  const type = 'custom 😀 '.repeat(5000);
+  vi.spyOn(service, 'getCourtListenerService').mockReturnValue({
+    getOpinionCluster: async () => ({
+      id: 1,
+      sub_opinions: [{ id: 2, type, author_id: null, per_curiam: true }],
+    }),
+  } as unknown as service.CourtListenerService);
+  const result = await walk((cursor) => runToolContract(getOpinionTool, { cluster_id: 1, cursor }));
+  expect(result.pages[0]?.sections).toMatchObject([
+    { name: 'opinion_2', author_id: null, per_curiam: true },
+  ]);
+  expect(result.chunks.get('/opinions/0/type_label')).toBe(type);
+});
 
 it('keeps the measured parse-plus-production-format success invariant explicit', () => {
   for (const definition of [getOpinionTool, getOralArgumentTool, getFinancialDisclosureTool]) {
@@ -295,7 +422,7 @@ it('exhausts selected audio text and metadata exactly at the completed content b
     retrieval: { next_cursor: null },
     has_transcript: true,
   });
-  expect(result.maxContent).toBe(24_000);
+  expect(result.maxContent).toBe(23_999);
 });
 
 it('reconstructs metadata-only opinion overflow, a string-array entry, raw source and completion', async () => {
@@ -377,7 +504,13 @@ it('rejects bound/malformed cursors before I/O and stale records with a restart 
   }
   expect(fetch).not.toHaveBeenCalled();
   fetch.mockResolvedValue({ id: 1, stt_transcript: 'changed' });
-  expect(await runToolContract(getOralArgumentTool, { id: 1, cursor })).toMatchObject({
+  expect(
+    await runToolContract(
+      getOralArgumentTool,
+      { id: 1, cursor },
+      { context: { tenantId: 'cold-replay' } },
+    ),
+  ).toMatchObject({
     isError: true,
     structuredContent: { error: { data: { reason: 'stale_cursor' } } },
   });

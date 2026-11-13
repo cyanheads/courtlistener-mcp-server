@@ -224,6 +224,56 @@ it('rejects stale, cross-request, malformed and past-end cursors and propagates 
   expect(() => retrieve({ ...options, signal: AbortSignal.abort() })).toThrow(/cancelled/);
 });
 
+it('links complete retrieval URLs while keeping fragments and prose literal', () => {
+  const url = 'https://example.org/a-b?q=(one)&copy=two';
+  const text = formatRetrievalPage({
+    kind: 'page',
+    pdf_url: url,
+    prose: url,
+    retrieval: {
+      next_cursor: null,
+      ranges: [],
+      text_chunks: [{ path: '/pdf_url', text: url }],
+    },
+  })[0]?.text;
+  expect(text?.split(`(<${url}>)`)).toHaveLength(2);
+  expect(text?.split('example\\.org')).toHaveLength(3);
+});
+
+it('keeps retrieval URL rendering CPU growth bounded', () => {
+  const sample = (query: string) => {
+    const page = { kind: 'page', pdf_url: `https://example.org/?q=${query}` };
+    const repeats = Math.max(4, Math.floor(100_000 / query.length));
+    const start = process.threadCpuUsage();
+    for (let attempt = 0; attempt < repeats; attempt++) formatRetrievalPage(page);
+    const elapsed = process.threadCpuUsage(start);
+    return (elapsed.user + elapsed.system) / repeats;
+  };
+  const shapes = [
+    { make: (size: number) => '1'.repeat(size), max: 320_000 },
+    { make: (size: number) => '&amp'.repeat(size / 4), max: 80_000 },
+    { make: (size: number) => `${'<a'.repeat(size / 2)}>`, max: 80_000 },
+    { make: (size: number) => `${'§1 x'.repeat(size / 4)}\ny`, max: 80_000 },
+    { make: (size: number) => '  \r\n'.repeat(size / 4), max: 80_000 },
+  ];
+  for (const { make, max } of shapes) {
+    const baseline = make(5_000);
+    for (let size = 10_000; size <= max; size *= 2) {
+      const input = make(size);
+      let bestCpu = Infinity;
+      let bestGrowth = Infinity;
+      for (let trial = 0; trial < 5; trial++) {
+        const baselineCpu = Math.max(0.25, sample(baseline));
+        const cpu = sample(input);
+        bestCpu = Math.min(bestCpu, cpu);
+        bestGrowth = Math.min(bestGrowth, cpu / baselineCpu);
+      }
+      expect(bestCpu).toBeLessThan(50_000);
+      expect(bestGrowth).toBeLessThan(256);
+    }
+  }
+}, 0);
+
 it('leaves small and empty responses full without retrieval metadata', () => {
   expect(walk({ id: 1, rows: [] })).toHaveLength(1);
   expect(walk({ id: 1, rows: [{ id: 2, text: '' }] })[0]).toMatchObject({ kind: 'full' });
