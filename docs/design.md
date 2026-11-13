@@ -7,16 +7,19 @@
 | Name | Description | Key Inputs | Annotations |
 |:-----|:------------|:-----------|:------------|
 | `courtlistener_search_opinions` | Full-text search across 9M+ written court opinions with field-level filtering | `q`, `court`, `filed_after`, `filed_before`, `status`, `order_by`, `page_size` | `readOnlyHint`, `openWorldHint` |
-| `courtlistener_get_opinion` | Fetch the full text and metadata for a single opinion cluster by cluster ID | `cluster_id` | `readOnlyHint`, `idempotentHint` |
-| `courtlistener_get_citations` | Retrieve the citation network for an opinion: what it cites, and what cites it | `cluster_id`, `direction`, `page_size` | `readOnlyHint`, `openWorldHint` |
+| `courtlistener_get_opinion` | Fetch the text and metadata for an opinion cluster, with bounded continuation | `cluster_id`, `sections`, `text`, `cursor` | `readOnlyHint`, `idempotentHint` |
+| `courtlistener_get_citations` | Retrieve the citation network for an opinion: what it cites, and what cites it | `cluster_id`, `direction`, `statuses`, `court`, `filed_after`, `filed_before`, `order_by`, `page_size` | `readOnlyHint`, `openWorldHint` |
 | `courtlistener_search_dockets` | Search RECAP federal court dockets with party name, attorney, court, and date filters | `q`, `court`, `filed_after`, `filed_before`, `party_name`, `page_size` | `readOnlyHint`, `openWorldHint` |
 | `courtlistener_get_docket` | Fetch docket metadata and entries for a single federal case by docket ID | `docket_id` | `readOnlyHint`, `idempotentHint` |
 | `courtlistener_get_parties` | Fetch parties and attorneys of record for a RECAP federal docket | `docket_id`, `cursor`, `page_size` | `readOnlyHint`, `idempotentHint` |
-| `courtlistener_search_judges` | Search judge/person records by name, appointing president, court, political affiliation, or demographic | `q`, `appointer`, `court`, `political_affiliation`, `page_size` | `readOnlyHint`, `openWorldHint` |
+| `courtlistener_search_judges` | Search judge/person records by name, appointing president, court, or political affiliation | `q`, `appointer`, `court`, `political_affiliation`, `page_size` | `readOnlyHint`, `openWorldHint` |
 | `courtlistener_get_judge` | Fetch biographical profile, appointment history, and education for a single judge | `person_id` | `readOnlyHint`, `idempotentHint` |
 | `courtlistener_lookup_courts` | List courts filtered by jurisdiction type, active/inactive status, and scraper coverage | `jurisdiction`, `status`, `has_opinion_scraper` | `readOnlyHint`, `openWorldHint` |
 | `courtlistener_lookup_citation` | Resolve legal citations (e.g., "410 U.S. 113") to cluster IDs and case metadata — one entry per citation found in the input | `citation` | `readOnlyHint`, `idempotentHint` |
 | `courtlistener_search_oral_arguments` | Search appellate oral argument audio recordings by case name, court, and date argued | `q`, `court`, `argued_after`, `argued_before`, `page_size` | `readOnlyHint`, `openWorldHint` |
+| `courtlistener_get_oral_argument` | Retrieve recording metadata, court and storage links, and available transcript | `id`, `sections`, `cursor` | `readOnlyHint`, `idempotentHint` |
+| `courtlistener_search_financial_disclosures` | Find judicial disclosure filings by judge and year | `judge_id`, `year`, `cursor` | `readOnlyHint`, `openWorldHint` |
+| `courtlistener_get_financial_disclosure` | Retrieve decoded disclosure line items with bounded continuation | `disclosure_id`, `categories`, `cursor` | `readOnlyHint`, `idempotentHint` |
 
 ---
 
@@ -69,15 +72,15 @@ Single service, single base URL. Auth via `Authorization: Token <token>` header.
 | Parties/attorneys | get (by docket) | `/parties/?docket={id}`, `/attorneys/` (batch) |
 | Judge/person | search, get | `/search/?type=p`, `/people/{id}/` |
 | Court | list/filter | `/courts/` |
-| Oral argument | search | `/search/?type=oa` |
-| Citations | cited-by, cites | `/search/?q=cites:(id)&type=o`, `/opinions-cited/?citing_opinion={id}` |
+| Oral argument | search, get | `/search/?type=oa`, `/audio/{id}/` |
+| Financial disclosure | search, get | `/financial-disclosures/`, `/financial-disclosures/{id}/` |
+| Citations | cited-by, cites | `/search/?q=cites:(id)&type=o`, `/search/?q=id:(id)&type=o` after resolving cluster variants |
 | Citation string | resolve | `/citation-lookup/` (POST, auth required) |
 
 **Not tooled (excluded):**
 - RECAP upload, email, fetch (`/recap/`, `/recap-email/`, `/recap-fetch/`) — write operations
 - Alerts/docket-alerts — user account management
 - Tags/docket-tags — organizational tooling
-- Financial disclosures — separate domain; data quality and ID linkage complexity not justified for initial release
 - Visualizations — SCOTUS-specific, niche utility
 - Party cross-docket aggregation or entity-resolution across cases
 
@@ -89,7 +92,7 @@ Single service, single base URL. Auth via `Authorization: Token <token>` header.
 2. `CourtListenerService` — base client with auth, retry, rate-limit error classification
 3. `courtlistener_search_opinions` — primary entry point for most workflows
 4. `courtlistener_get_opinion` — single cluster fetch
-5. `courtlistener_get_citations` — citation network via search + optional opinions-cited
+5. `courtlistener_get_citations` — citation network via search and variant citation lists
 6. `courtlistener_lookup_citation` — citation string resolver (POST to `/citation-lookup/`)
 7. `courtlistener_search_judges` + `courtlistener_get_judge`
 8. `courtlistener_lookup_courts` — reference data
@@ -106,6 +109,10 @@ Each step is independently testable.
 
 Search the 9M+ opinion corpus. Returns a list of opinion cluster summaries with embedded opinion snippets.
 
+Keyword searches accept `q: "*"` for filter-only queries. Search and citation `court` filters resolve known IDs case-insensitively to canonical spelling and normalize space/comma separators. Unfamiliar IDs retain their casing; bundled IDs inform empty-result guidance but never exclude a live ID. Opinion and oral search request highlighting and remove its markup; generated citation searches retain opening excerpts. A preview uses the first variant that supplies one and is not evidence of citation treatment.
+
+Opinion search omits `opinions[].cites` unless `include: ["cites"]` is selected. The complete array then retains its source order and field path without another upstream request.
+
 **Input schema:**
 ```ts
 q: z.string()
@@ -120,6 +127,7 @@ status: z.enum(['Published', 'Unpublished', 'Errata', 'Separate', 'In-chambers',
   .describe('Opinion publication status. "Published": precedential. "Unpublished": not citable as precedent in most jurisdictions. "Errata": corrections. "Separate": separate opinion filed outside main cluster. "In-chambers": single-justice order. "Relating-to": companion or related-case order. Omit to use CourtListener’s Published default.'),
 order_by: z.enum(['score desc', 'dateFiled desc', 'dateFiled asc', 'citeCount desc']).optional().default('score desc')
   .describe('Result ordering. "score desc" (default) ranks by relevance. "citeCount desc" surfaces most-cited opinions first.'),
+include: z.array(z.enum(['cites'])).optional(), // full per-variant cited opinion IDs
 page_size: z.number().int().min(1).optional().default(20)
   .describe('Positive requested size, bounded to 20 upstream; page_sizing reports requested, bounded and actual rows.'),
 cursor: z.string().optional()
@@ -129,7 +137,7 @@ cursor: z.string().optional()
 **Output:**
 ```ts
 {
-  total_count: number,          // total matching opinions
+  totalCount: number,           // total matching opinions
   results: Array<{
     cluster_id: number,         // primary ID for follow-up calls
     case_name: string,
@@ -143,7 +151,7 @@ cursor: z.string().optional()
     cite_count: number,         // how many times this opinion has been cited
     judges: string,
     status: string,
-    snippet: string,            // matched text excerpt
+    snippet: string,            // upstream query context; filter-only queries can return opening text
   }>,
   next_cursor: string | null,   // pagination token
 }
@@ -163,11 +171,14 @@ Fetch text and metadata for an opinion cluster. A cluster groups all opinions fi
 
 Primary cursor identity and coordinates derive from cluster and opinion fields before optional docket backfill. Live docket enrichment is applied when fitting the final response, so its success or failure cannot invalidate new primary cursors or move their ranges. Oversized backfill has an independent `enrichment_cursor` / `enrichment_retrieval` stream; collect its chunks only within one `source_id`, restarting when that ID changes. A metadata-only page can finish primary retrieval while enrichment remains. Legacy v1 primary cursors retain their historical digest/layout semantics.
 
+Outline entries expose variant labels, author IDs, and per-curiam flags. An oversized label stays recoverable on its variant's data path. `text: "plain" | "html" | "both"` chooses text representations without changing variant metadata; omission retains both and existing cursor bindings. Plain text falls back to readable markup when the source lacks a text copy. Non-default text modes have distinct cursor bindings.
+
 **Input schema:**
 ```ts
 cluster_id: z.number().int()
   .describe('Opinion cluster ID — identifies a case decision and groups all opinion variants (majority, concurrence, dissent). Obtain from courtlistener_search_opinions, courtlistener_lookup_citation, or from docket results that link to opinions.'),
 sections: z.array(z.string()).optional(), // opinion_<id> names from this cluster
+text: z.enum(['plain', 'html', 'both']).optional(),
 cursor: z.string().optional(), // primary retrieval.next_cursor
 enrichment_cursor: z.string().optional(), // enrichment_retrieval.next_cursor
 ```
@@ -194,8 +205,8 @@ enrichment_cursor: z.string().optional(), // enrichment_retrieval.next_cursor
     type: string,              // "lead-opinion", "concurrence", "dissent", "combined-opinion"
     author_id: number | null,
     per_curiam: boolean,
-    html_text: string,         // full opinion text as HTML
-    plain_text: string,        // plain text version if available
+    html_text?: string,        // source markup when selected by text mode
+    plain_text?: string,       // readable text when selected by text mode
     cites: number[],           // opinion IDs this opinion cites
     download_url: string | null,
   }>,
@@ -216,6 +227,8 @@ Retrieve the citation network for an opinion cluster. Supports two directions: o
 
 Note on depth: the free tier supports shallow traversal — following 1–2 hops of a single important case is practical; deep multi-hop analysis across 10+ cases exhausts the daily budget quickly. Citation data shows *what* cites *what*, not *how* — whether a precedent was affirmed, distinguished, or limited requires reading the citing opinion text via `courtlistener_get_opinion`.
 
+Both directions default to Published opinions. Optional `statuses` selects one or more upstream status facets; `filed_before` and `filed_after` apply in both directions. Only `cited_by` supports `order_by`, applied upstream before pagination. Inbound totals count filtered clusters; outbound totals remain the unfiltered distinct cited-opinion count.
+
 **Input schema:**
 ```ts
 cluster_id: z.number().int()
@@ -226,6 +239,9 @@ court: z.string().optional()
   .describe('Filter results to a specific court (e.g., "scotus", "ca9"). Applies to both directions.'),
 filed_after: z.string().optional()
   .describe('Limit to citations filed after this date (ISO 8601). For "cited_by", useful for "how has this precedent been applied recently?"'),
+filed_before: z.string().optional(),
+statuses: z.array(z.enum(OPINION_STATUSES)).min(1).optional(),
+order_by: z.enum(OPINION_ORDERS).optional(), // cited_by only
 page_size: z.number().int().min(1).optional().default(20)
   .describe('Requested size, bounded to 20. cited_by has an upstream minimum of 20; citing slices the bounded number of cited IDs before filtering. Full upstream result pages are preserved.'),
 cursor: z.string().optional()
@@ -238,7 +254,9 @@ cursor: z.string().optional()
   source_cluster_id: number,
   source_case_name: string,
   direction: 'citing' | 'cited_by',
-  total_count: number,
+  observed_total: number,
+  totalCount?: number,       // omitted when source variants make the total partial
+  total_is_partial: boolean,
   results: Array<{
     cluster_id: number,
     case_name: string,
@@ -247,7 +265,7 @@ cursor: z.string().optional()
     date_filed: string,
     citations: string[],
     cite_count: number,       // this opinion's own citation count (its authority weight)
-    snippet: string,          // text excerpt showing context around the citation
+    snippet: string,          // opening excerpt, not citation context
   }>,
   next_cursor: string | null,
 }
@@ -321,6 +339,8 @@ Blank and oversized input are both rejected before the request is sent — `Cita
 
 Search RECAP federal court dockets. RECAP is a crowd-sourced mirror of PACER (the federal court filing system) — coverage varies by court and date. Returns docket metadata with up to 3 sample document entries per docket.
 
+Default rows carry indexed `party_count`, `attorney_count`, and `firm_count`: null for absent source arrays, zero for empty arrays. Complete names are opt-in with `include: ["parties", "attorneys", "firms"]`. These counts are not docket-scoped representation totals; use `courtlistener_get_parties` for that relationship. Search `totalCount` is an upstream estimate for large result sets.
+
 **Input schema:**
 ```ts
 q: z.string()
@@ -329,6 +349,7 @@ court: z.string().optional()
   .describe('Filter to a specific federal court ID (e.g., "dnd", "cacd", "deb" for Delaware Bankruptcy). Use courtlistener_lookup_courts to find court IDs.'),
 party_name: z.string().optional()
   .describe('Filter to dockets listing a specific party by name — applied in addition to (AND with) the q query, not instead of it. More precise than including party names in q when the party name is known.'),
+include: z.array(z.enum(['parties', 'attorneys', 'firms'])).optional(),
 filed_after: z.string().optional()
   .describe('Earliest case filing date (ISO 8601).'),
 filed_before: z.string().optional()
@@ -342,7 +363,7 @@ cursor: z.string().optional()
 **Output:**
 ```ts
 {
-  total_count: number,
+  totalCount: number,           // approximate for large docket result sets
   results: Array<{
     docket_id: number,          // chaining: courtlistener_get_docket
     case_name: string,
@@ -355,8 +376,12 @@ cursor: z.string().optional()
     assigned_to: string | null,
     cause: string,
     jury_demand: string,
-    parties: string[],
-    document_count: number,
+    party_count: number | null,
+    attorney_count: number | null,
+    firm_count: number | null,
+    parties?: string[],        // when included
+    attorneys?: string[],      // when included
+    firms?: string[],          // when included
     sample_documents: Array<{   // up to 3 sample filings
       id: number,
       description: string,
@@ -374,7 +399,7 @@ cursor: z.string().optional()
 
 ### `courtlistener_get_docket`
 
-Fetch docket metadata and one entries page for a federal case. `entries_page` and top-level `next_cursor` walk the entries list. Without a selection, the listing response remains unchanged.
+Fetch docket metadata and one entries page for a federal case. `entries_page` and top-level `next_cursor` walk the entries list; convert the cursor string to its numeric value for `entries_page`. Listings include `cluster_ids`, `audio_ids`, `date_argued`, `suit_nature`, `appeal_from`, and `date_last_filing` from the same docket request. Entries follow ascending entry number; inspect dates for recency. With a positive known total, `ceil(total_entries / 20)` locates the last page only within CourtListener's 100-page limit. Unknown totals do not locate a last page.
 
 `document_ids` selects embedded RECAP records on that page only. Each selected entry must explicitly link to the requested docket; absent IDs and unverified ownership fail before text is returned. Selection adds no document-detail request, page walk, extraction, or PACER purchase. Raw `plain_text` and source/storage links are preserved; `text_status` distinguishes available, unavailable, not_extracted, and unknown independently of file availability. Oversized selections use the shared 24,000-byte retrieval contract on both response surfaces. Continue with `cursor`, retaining docket ID, entries page, and normalized selection; `retrieval.next_cursor` is separate from entries pagination. Listing-only fields are optional in selected responses.
 
@@ -450,7 +475,7 @@ cursor: z.string().optional()
 **Output:**
 ```ts
 {
-  total_count: number,
+  totalCount: number,
   results: Array<{
     person_id: number,          // chaining: courtlistener_get_judge
     name: string,
@@ -549,7 +574,7 @@ has_opinion_scraper: z.boolean().optional()
 **Output:**
 ```ts
 {
-  total_count: number,
+  totalCount: number,
   courts: Array<{
     id: string,                  // court_id for use in search filters
     full_name: string,
@@ -594,7 +619,7 @@ cursor: z.string().optional()
 **Output:**
 ```ts
 {
-  total_count: number,
+  totalCount: number,
   results: Array<{
     audio_id: number,
     case_name: string,
@@ -666,9 +691,13 @@ cursor: z.string().optional()
 
 **Financial disclosure retrieval.** `courtlistener_search_financial_disclosures` supplies disclosure IDs; `courtlistener_get_financial_disclosure` fetches typed line items, decodes form codes, and pages oversized selected categories through bounded retrieval.
 
+**Continuation snapshots.** First calls fetch fresh source; matching continuations can reuse raw source for five minutes from fetch completion. The shared cache isolates service identity, tenant, and source context, retains at most 16 MiB of serialized payload across 256 entries, and bypasses missing tenants or oversized sources. Successful selected-docket admission requires both page membership and docket ownership. Misses refetch and retain existing digest checks; failures never serve expired data. No in-flight fetch is shared, so one caller cannot cancel another's work. `source_fetched_at` is applied at finalization and counted in wire limits without changing source digests or legacy unit placement. Opinion primary snapshots exclude live docket enrichment; v1 and enrichment-only calls fetch primary source afresh.
+
+**Default search detail.** Docket indexed-roster counts and opt-in arrays preserve page membership while reducing repeated names. Opinion search similarly makes per-variant citation ID arrays opt-in. Missing rosters remain unknown, distinct from empty rosters; neither indexed names nor citation edges establish a legal relationship on their own.
+
 **Clusters vs. opinions distinction.** The search API returns `cluster_id` (the grouping of all opinions in a case), not individual opinion IDs. The `get_opinion` tool returns the full cluster with all opinion variants (majority, dissent, concurrence). This matches user mental model — "get me Obergefell" means the whole decision, not one opinion type.
 
-**Oral argument detail retrieval.** `courtlistener_get_oral_argument` takes an audio ID from search and returns recording metadata and the available transcript. Long transcripts and metadata follow the same bounded retrieval contract as opinions and disclosures.
+**Oral argument detail retrieval.** `courtlistener_get_oral_argument` takes an audio ID from search or a docket and returns recording metadata, the originating court's `download_url`, CourtListener's `local_path` MP3, and the available transcript. Long transcripts and metadata follow the same bounded retrieval contract as opinions and disclosures.
 
 **Embedded filing text without PDF extraction.** `courtlistener_get_docket` returns extracted text embedded in the requested entries page when `document_ids` selects records with verified docket ownership. Text availability is independent of the stored PDF's `is_available` flag. Source and storage links remain available, but the server does not download or parse PDFs, purchase PACER documents, or extract missing text.
 

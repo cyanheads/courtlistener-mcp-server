@@ -69,11 +69,15 @@ The jurisdiction codes are also listed on the `jurisdiction` parameter of `court
 
 Result-page sizes accept positive integers and bound outgoing requests: 20 for searches/citations, 10 for parties, and 50 for docket entries. Both response surfaces carry `page_sizing` (`requested`, `bounded`, `actual`, `upstream`). Upstream search/disclosure pages have a 20-row minimum, parties/entries use fixed 20-row pages, and citing slices cited IDs before searching. Returned pages are preserved; empty/final pages and page-local filters can produce fewer rows. Continue with the native cursor rather than increasing the requested size.
 
+Opinion, docket, judge, and oral-argument searches accept `q: "*"` for filter-only queries. Their `court` filter, and the citation tool's, accepts space- or comma-separated IDs and resolves known IDs case-insensitively to their canonical spelling. Unfamiliar IDs retain their casing and still reach CourtListener; use `courtlistener_lookup_courts` to check them.
+
 ### `courtlistener_search_opinions` <sub>tool</sub>
 
 - `q` is required and takes CourtListener field syntax (`caseName:"roe v wade"`, `court_id:scotus`, `judge:"Alito"`) and `AND` / `OR` / `NOT`; filter by `court`, `filed_after` / `filed_before`, and `status`, and sort with `order_by` (`score desc` default, `dateFiled desc`, `dateFiled asc`, `citeCount desc`); 20 results per page, continued with `next_cursor`
 - Each result carries `cluster_id` (for `courtlistener_get_opinion` and `courtlistener_get_citations`), `docket_id`, `cite_count`, a `snippet`, and `opinions[]` variants with opinion ID, `type`, `author_id`, and `local_path`; `totalCount` and `effectiveQuery` report the match
 - Omit `status` for CourtListener's Published default, or select one publication status, including `In-chambers` and `Relating-to`.
+- `snippet` uses the first variant with an upstream excerpt. Highlighting requests query context; filter-only queries can still return opening text or no excerpt. Highlight markup is removed without losing its words.
+- Variant `cites` arrays are omitted by default. Use `include: ["cites"]` for complete cited-opinion IDs at the existing `opinions[].cites` path.
 
 ---
 
@@ -81,6 +85,7 @@ Result-page sizes accept positive integers and bound outgoing requests: 20 for s
 
 - `cluster_id` is required; after an outline response, `sections: ["opinion_<id>", ...]` pulls specific variants, and a name the cluster doesn't have fails as `unknown_section`
 - Cluster metadata (case name, `court_id`, citations, `cite_count`, `precedential_status`, syllabus, posture, `docket_id`) plus each variant's `html_text`, `plain_text`, `cites[]`, `download_url`, and `type_label`, the same label `courtlistener_search_opinions` reports
+- Outline entries identify each variant's `type_label`, `author_id`, and `per_curiam`. Select `text: "plain"` or `"html"` to retrieve only that text representation; omission or `"both"` keeps both. Keep the text mode unchanged on continuations.
 - Small responses use `kind: "full"`. Oversized variants or metadata return a bounded `outline`, then typed `page` responses through `retrieval.next_cursor`; repeat the original ID and selection with `cursor` until null.
 - Supplied `plain_text` is preserved; markup-only variants gain readable text with paragraphs, tables, lists, footnotes, and decoded entities. `html_text` retains raw source and renders as fenced text. Search/citation snippets use the same readable normalization.
 - `variants_completion` reports whether the bounded source walk finished and its remaining upstream variant cursor. `docket_enrichment` distinguishes `not_linked`, `resolved`, `source_fields_absent`, and `lookup_failed` with a sanitized failure category; cancellation propagates.
@@ -90,8 +95,9 @@ Result-page sizes accept positive integers and bound outgoing requests: 20 for s
 
 ### `courtlistener_get_citations` <sub>tool</sub>
 
-- `cluster_id` is required; `direction` is `cited_by` (default, opinions that cite this one) or `citing` (opinions it cites); optional `court` and `filed_after` filters; up to 20 results per page, continued with `cursor`
+- `cluster_id` is required; `direction` is `cited_by` (default, opinions that cite this one) or `citing` (opinions it cites); optional `court`, `filed_after`, `filed_before`, and `statuses` filters; up to 20 results per page, continued with `cursor`. Omit `statuses` for CourtListener's Published default or select one or more statuses. `order_by` applies only to `cited_by`.
 - Rows carry `cluster_id`, `court_id`, `date_filed`, `cite_count`, and `snippet`; for `citing`, totals count the unfiltered cited-opinion list, and a filtered page can come back empty while `next_cursor` is still set. `source_variants_completion` and `total_is_partial` qualify `observed_total`; incomplete variants make this a lower bound and omit the exact `totalCount` trailer.
+- Citation snippets remain opening excerpts. Inbound totals count matching clusters after the selected filters; repeat filters and sorting on continuation.
 - For `citing`, `cursor` is a nonnegative safe decimal integer offset (`01`, `+1`, `1.0`, and `1.` all mean `1`); malformed offsets fail as `invalid_cursor` before any request. An offset at or past the end returns an empty page with the source name and unfiltered distinct-opinion total, without searching. `cited_by` cursors stay opaque.
 
 ---
@@ -107,13 +113,16 @@ Result-page sizes accept positive integers and bound outgoing requests: 20 for s
 ### `courtlistener_search_dockets` <sub>tool</sub>
 
 - `q` is required and matches case name, docket number, party, and attorney names; `party_name` (ANDed with `q`), `court`, and `filed_after` / `filed_before` narrow it; 20 results per page, continued with `next_cursor`
-- Each docket carries `docket_id`, `parties`, `attorneys`, `firms`, `suit_nature`, `assigned_to` / `referred_to`, and up to 3 `sample_documents` with `is_available` and a RECAP `filepath_local` URL; every response adds a `coverage_note` on RECAP's partial PACER coverage
+- Each docket carries `docket_id`, `party_count`, `attorney_count`, `firm_count`, `suit_nature`, `assigned_to` / `referred_to`, and up to 3 `sample_documents` with `is_available` and a RECAP `filepath_local` URL; every response adds a `coverage_note` on RECAP's partial PACER coverage. Counts describe indexed name arrays, with null for an absent array and zero for an empty array.
+- Select complete name arrays with `include: ["parties", "attorneys", "firms"]`; no additional request is needed. Use `courtlistener_get_parties` for docket-scoped representation. `totalCount` is approximate for large result sets.
 
 ---
 
 ### `courtlistener_get_docket` <sub>tool</sub>
 
-- `docket_id` is required; entries come 20 per page (CourtListener ignores `entries_page_size`), walked with `entries_page` and top-level `next_cursor`. Without a document selection, returns docket metadata and `entries[]`; `total_entries` is null when upstream supplies no numeric total.
+- `docket_id` is required; entries come 20 per page (CourtListener ignores `entries_page_size`), walked with `entries_page` and top-level `next_cursor`. Convert the cursor string to a number: `next_cursor: "2"` continues with `entries_page: 2`. Without a document selection, returns docket metadata and `entries[]`; `total_entries` is null when upstream supplies no numeric total.
+- Listing metadata includes linked `cluster_ids` for `courtlistener_get_opinion`, `audio_ids` for `courtlistener_get_oral_argument`, `date_argued`, `suit_nature`, `appeal_from`, and `date_last_filing`.
+- Entries are ordered by ascending entry number. For a positive known total, `ceil(total_entries / 20)` identifies the last page in that ordering only when it is at most 100, CourtListener's page limit. Use entry dates to identify the latest filings; a null total cannot locate a last page.
 - `document_ids` selects documents from the requested entries page. Selected responses carry `kind`, `selected_documents`, source/storage links, and raw `plain_text`; large records use `retrieval.next_cursor`, passed as `cursor` with the same docket ID, entries page, and selection. Listing-only fields are optional in selected responses.
 - `text_status` is `available`, `unavailable`, `not_extracted`, or `unknown`; extracted text can exist independently of `is_available`. IDs absent from the page fail as `document_not_on_page`; an entry without a matching docket relation fails as `document_ownership_unverified`. Selection adds no document-detail requests or page walks.
 
@@ -153,13 +162,14 @@ Result-page sizes accept positive integers and bound outgoing requests: 20 for s
 
 - `q` is required and matches case name and transcript text; filter by `court` and `argued_after` / `argued_before`; 20 results per page, continued with `next_cursor`
 - Results carry `audio_id` (for `courtlistener_get_oral_argument`), `panel_ids` (for `courtlistener_get_judge`), `duration_seconds`, `snippet`, and two MP3 links: `download_url` at the originating court and `local_path`, CourtListener's durable copy
+- Highlighting requests matched transcript context when upstream supplies it; filter-only queries may return opening text or an empty excerpt. Highlighted names and other metadata remain readable text.
 
 ---
 
 ### `courtlistener_get_oral_argument` <sub>tool</sub>
 
 - `id` (an `audio_id` from a search) is required; `sections: ["transcript"]` selects the transcript. Selected responses obey the same byte limits.
-- Returns `panel_ids`, `duration_seconds`, `download_url`, `docket_id`, `has_transcript`, and `transcript`; oversized text or metadata uses `outline` and cursor-driven `page` responses. The argument date is not on this record; take it from the search result or the docket.
+- Returns `panel_ids`, `duration_seconds`, `download_url` at the court, `local_path` for CourtListener's MP3 copy, `docket_id`, `has_transcript`, and `transcript`; oversized text or metadata uses `outline` and cursor-driven `page` responses. The argument date is not on this record; take it from the search result or the docket.
 
 ---
 
@@ -167,6 +177,7 @@ Result-page sizes accept positive integers and bound outgoing requests: 20 for s
 
 - Filter by `judge_id` (a `person_id`) and `year`; 20 filings per page, continued with `cursor`. `year` filters only the fetched page, because CourtListener has no server-side year filter, so keep paging when a page comes back empty with `next_cursor` set
 - Each filing carries `disclosure_id`, `report_type`, `has_been_extracted`, `is_amended`, `pdf_url`, per-category `counts` (investments, gifts, debts, positions, reimbursements, agreements, non-investment and spouse income), and itemized `gifts`
+- Use `courtlistener_get_financial_disclosure` for decoded investment line items; the PDF remains the source filing.
 
 ---
 
@@ -176,6 +187,17 @@ Result-page sizes accept positive integers and bound outgoing requests: 20 for s
 - Returns filing metadata, `counts`, and the requested line-item rows, with coded value and income columns decoded to dollar ranges (`N` → `$250,001 - $500,000`); oversized selections use `outline` and cursor-driven `page` responses, including when a single row exceeds the budget.
 
 Opinion, audio, disclosure, and selected docket-document retrieval bound each serialized response surface (`structuredContent` and complete `content[]`) to 24,000 UTF-8 bytes. Repeat the original identity and selection with `cursor: retrieval.next_cursor`; docket selections also repeat `entries_page`. Catalog pages lead automatically to data pages. `retrieval.ranges` uses JSON Pointer paths and absolute exclusive ranges (`rows`, `code_points`, or `sections`); merge typed rows by absolute index, and concatenate `text_chunks` by their code-point ranges. Partial rows retain their source identity; omitted text is recoverable through its original field path. Metadata can also be paged. Structured strings remain unescaped; presentation escaping happens after slicing. A changed normalized source returns `stale_cursor`; restart without cursor. Source-completion cursors remain distinct from these retrieval cursors.
+
+First calls fetch fresh source. Matching continuations can reuse a source snapshot for five minutes from `source_fetched_at`, which appears on both response surfaces. Opinion docket enrichment stays live on every call. Expiry, eviction, process restart, or an oversized source causes a fresh fetch; the existing cursor resumes only if the normalized source still matches. Snapshots are isolated by tenant and upstream service, with 16 MiB of serialized payload retained across at most 256 entries. A missing tenant bypasses caching. Restart without a cursor when fresh source is needed.
+
+| Retrieval | First call or cold continuation | Warm continuation |
+|:---|:---|:---|
+| Opinion | Cluster + variant pages + linked docket, normally 3 requests | Linked docket only, normally 1 request |
+| Selected docket documents | Docket + requested entries page: 2 requests | 0 requests |
+| Oral argument | 1 request | 0 requests |
+| Financial disclosure | 1 request | 0 requests |
+
+Opinion legacy v1 cursors and enrichment-only calls use fresh primary source. Docket listings without `document_ids` always use two requests. Extra opinion variant pages add one request each; an unlinked opinion omits the docket request. Counts exclude retries.
 
 ---
 
@@ -206,13 +228,13 @@ CourtListener-specific:
 
 - CourtListener REST API v4: search, opinions and clusters, dockets and entries, parties and attorneys, people and positions, courts, audio, financial disclosures, and citation lookup
 - One request queue for the whole process, paced to `COURTLISTENER_RATE_LIMIT_PER_MINUTE` and `COURTLISTENER_RATE_LIMIT_PER_HOUR`, so a burst waits instead of failing; a 429 pauses the queue for every waiting call, and a `Retry-After` is honored within a 45-second wait budget
-- Request cost per call: one for most tools; two for `courtlistener_get_docket`; two or more for `courtlistener_get_parties` and `courtlistener_get_judge` (one per extra page of a long roster or career); three for `courtlistener_get_opinion` and `courtlistener_get_citations` (plus one per extra page of opinion variants); and for `courtlistener_lookup_citation`, the lookup plus up to `max_court_lookups` docket requests
+- Request cost: one for most tools; two or more for parties and judge detail; normally three for citations, plus extra variant pages; citation lookup plus up to `max_court_lookups` docket requests. Detail retrieval first/warm/cold costs are listed above.
 - Input that can't succeed (an empty `q`, a malformed date, a citation over 64,000 characters, an unknown oral argument section) is rejected before a request is spent
 
 Agent-friendly output:
 
 - Chaining IDs: `cluster_id`, `docket_id`, `person_id`, `audio_id`, and `disclosure_id` appear wherever they feed a follow-up call, with field descriptions naming the tool that takes each
-- Typed rate-limit errors: `reason: "rate_limited"` with `retryAfter` in seconds, whether CourtListener returned the 429 or the queue gave up before sending, in which case the message says no request was spent
+- Typed rate-limit errors: `reason: "rate_limited"` with `retryAfter` in seconds, whether CourtListener returned the 429 or the queue refused the current request; earlier requests in the same tool call may already have completed
 - Bounded retrieval: opinion, audio, disclosure, and selected docket-document responses preserve small full records and stream oversized selections through an outline and resumable typed pages without truncating source text
 - Coverage caveats inline: RECAP `coverage_note`, `court_resolution` on citation lookups, `truncated` on position history, and notices when a page-local filter empties a page that has more pages behind it
 
@@ -258,10 +280,14 @@ Generate a token in your [CourtListener account settings](https://www.courtliste
 | `COURTLISTENER_RATE_LIMIT_PER_HOUR` | Requests the server starts per rolling hour. | `50` |
 | `MCP_TRANSPORT_TYPE` | Transport: `stdio` or `http`. | `stdio` |
 | `MCP_HTTP_PORT` | HTTP server port. | `3010` |
+| `MCP_HTTP_ENDPOINT_PATH` | HTTP route path. The framework normalizes the path and rejects URLs, queries, and fragments. | `/mcp` |
+| `MCP_PUBLIC_URL` | Public HTTP(S) base URL behind a proxy. The URL cannot contain credentials, a query, or a fragment. | — |
 | `MCP_SESSION_MODE` | HTTP session mode: `stateless`, `stateful`, or `auto`. The server declares `stateless`; setting this overrides it. | `stateless` |
 | `MCP_AUTH_MODE` | Authentication: `none`, `jwt`, or `oauth`. | `none` |
+| `MCP_JWT_EXPECTED_AUDIENCE` | Required JWT audience when set. JWT mode warns at startup when the audience is unset. | — |
+| `MCP_JWT_EXPECTED_ISSUER` | Required JWT issuer when set. Configure alongside the audience. | — |
 | `MCP_LOG_LEVEL` | Log level (`debug`, `info`, `warning`, `error`, etc.). | `info` |
-| `LOGS_DIR` | Directory for log files (Node.js only). | `<project-root>/logs` |
+| `LOGS_DIR` | Directory for log files (Node.js only). Relative paths resolve from the server package. Use an absolute path to store logs elsewhere. | `<server-package-root>/logs` |
 | `STORAGE_PROVIDER_TYPE` | Storage backend: `in-memory`, `filesystem`, `supabase`, `cloudflare-kv/r2/d1`. | `in-memory` |
 | `OTEL_ENABLED` | Enable [OpenTelemetry](https://github.com/cyanheads/mcp-ts-core/tree/main/docs/telemetry). | `false` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Base endpoint for traces and metrics; appends `/v1/traces` and `/v1/metrics`. Without an endpoint, neither exports. | — |
@@ -275,7 +301,7 @@ See [`.env.example`](./.env.example) for the full list of optional overrides.
 
 ### Local development
 
-Requires [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+).
+Requires [Bun v1.4.4](https://bun.sh/) or higher (or Node.js v24+).
 
 - **Clone and install:**
 

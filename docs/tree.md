@@ -1,6 +1,6 @@
 # courtlistener-mcp-server - Directory Structure
 
-Generated on: 2026-11-01 03:44:57
+Generated on: 2026-11-13 16:28:54
 
 ```text
 courtlistener-mcp-server/
@@ -185,6 +185,7 @@ courtlistener-mcp-server/
 │   │       ├── jurisdictions.ts
 │   │       ├── page-metadata.ts
 │   │       ├── readable-text.ts
+│   │       ├── retrieval-snapshot.ts
 │   │       ├── retrieval.ts
 │   │       ├── types.ts
 │   │       └── uri.ts
@@ -210,6 +211,7 @@ courtlistener-mcp-server/
 │   │   ├── dates.test.ts
 │   │   ├── jurisdictions.test.ts
 │   │   ├── readable-text.test.ts
+│   │   ├── retrieval-snapshot.test.ts
 │   │   ├── retrieval.test.ts
 │   │   └── uri.test.ts
 │   ├── tools/
@@ -228,10 +230,12 @@ courtlistener-mcp-server/
 │   │   ├── lookup-citation.tool.test.ts
 │   │   ├── lookup-courts.tool.test.ts
 │   │   ├── readable-retrieval.test.ts
+│   │   ├── retrieval-snapshot-contracts.test.ts
 │   │   ├── search-dockets.tool.test.ts
 │   │   ├── search-financial-disclosures.tool.test.ts
 │   │   ├── search-judges.tool.test.ts
 │   │   ├── search-opinions.tool.test.ts
+│   │   ├── search-options-contracts.test.ts
 │   │   ├── search-oral-arguments.tool.test.ts
 │   │   └── search-query-contracts.test.ts
 │   └── security.test.ts
