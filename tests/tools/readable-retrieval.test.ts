@@ -426,7 +426,7 @@ it('exhausts selected audio text and metadata exactly at the completed content b
 });
 
 it('reconstructs metadata-only opinion overflow, a string-array entry, raw source and completion', async () => {
-  const raw = `<opinion><head><title>Metadata</title><p>Legal &amp; readable.</p></head><footnote label="1">Note</footnote>${'<p>界😀*</p>'.repeat(3000)}</opinion>`;
+  const raw = `<opinion><head><title>Metadata</title><p>Legal &amp; readable.</p></head><footnote label="1">Note</footnote>${'<p>界\n<em>😀*</em></p>'.repeat(3000)}</opinion>`;
   const syllabus = 'syllabus '.repeat(5000);
   vi.spyOn(service, 'getCourtListenerService').mockReturnValue({
     getOpinionCluster: async () => ({
@@ -443,9 +443,43 @@ it('reconstructs metadata-only opinion overflow, a string-array entry, raw sourc
   expect(result.chunks.get('/syllabus')).toBe(syllabus);
   expect(result.chunks.get('/citations/0')).toBe(`1 ${'reporter'.repeat(5000)} 2`);
   expect(result.chunks.get('/opinions/0/html_text')).toBe(raw);
-  expect(result.chunks.get('/opinions/0/plain_text')).toBe(readableText(raw));
+  expect(result.chunks.get('/opinions/0/plain_text')).toBe(
+    `Legal & readable.\n\n[1] Note${'\n\n界 😀*'.repeat(3000)}`,
+  );
   for (const page of result.pages)
     expect(page.variants_completion).toEqual({ complete: false, next_cursor: 'upstream-variants' });
+});
+
+it('requires a restart when an existing opinion cursor refers to differently normalized text', async () => {
+  const html = '<p>One\n<em>citation</em></p>'.repeat(5000);
+  // Supply the v0.10.0 converter output to mint a cursor with the old derived-text digest.
+  let plain_text = Array.from({ length: 5000 }, () => 'One\n\ncitation').join('\n\n');
+  vi.spyOn(service, 'getCourtListenerService').mockReturnValue({
+    getOpinionCluster: async () => ({ id: 1, sub_opinions: [{ id: 2, html, plain_text }] }),
+  } as unknown as service.CourtListenerService);
+  const input = { cluster_id: 1, text: 'plain' as const, sections: ['opinion_2'] };
+  const first = await runToolContract(getOpinionTool, input);
+  const cursor = getOpinionTool.output.parse(first.structuredContent).retrieval?.next_cursor;
+  if (typeof cursor !== 'string') throw new Error('Expected an opinion continuation cursor');
+
+  // A new tenant fetches the source afresh instead of resuming its cached original.
+  plain_text = '';
+  const stale = await runToolContract(
+    getOpinionTool,
+    { ...input, cursor },
+    { context: { tenantId: 'new-normalization' } },
+  );
+  expect(stale).toMatchObject({
+    isError: true,
+    structuredContent: {
+      error: {
+        data: { reason: 'stale_cursor', recovery: { hint: expect.stringContaining('Restart') } },
+      },
+    },
+  });
+  expect(
+    stale.content.some((block) => block.type === 'text' && block.text.includes('Restart')),
+  ).toBe(true);
 });
 
 it('pages a giant disclosure row and keeps typed identity and later categories', async () => {
@@ -548,7 +582,7 @@ it.each(['search', 'citations'])(
       results: [
         {
           cluster_id: 2,
-          opinions: [{ id: 3, snippet: '<mark>A &amp; B</mark> *literal* &lt; C' }],
+          opinions: [{ id: 3, snippet: '<mark>A &amp; B</mark>\n *literal* &lt; C' }],
         },
       ],
     };

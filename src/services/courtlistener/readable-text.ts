@@ -33,19 +33,35 @@ export function readableText(markup: string): string {
   const parser = new SAXParser();
   const pieces: string[] = [];
   const hidden: string[] = [];
+  let separator = '';
+  let preformatted = 0;
+
+  const append = (value: string) => {
+    if (pieces.length && separator) pieces.push(separator.replace(/^\n\n\t/, '\n\n'));
+    pieces.push(value);
+    separator = '';
+  };
+
   parser.on('startTag', ({ tagName, attrs, selfClosing }) => {
     if (HIDDEN.has(tagName)) {
       if (!selfClosing) hidden.push(tagName);
       return;
     }
     if (hidden.length) return;
-    if (BLOCKS.has(tagName)) pieces.push('\n');
-    if (tagName === 'br') pieces.push('\n');
-    if (tagName === 'td' || tagName === 'th') pieces.push('\t');
-    if (tagName === 'li') pieces.push('• ');
+    if (BLOCKS.has(tagName) || tagName === 'br') separator = '\n\n';
+    if (tagName === 'pre') preformatted++;
+    if (tagName === 'td' || tagName === 'th')
+      separator = separator === ' ' ? '\t' : `${separator}\t`;
+    if (tagName === 'li') {
+      append('•');
+      separator = ' ';
+    }
     if (tagName === 'footnote') {
       const label = attrs.find((attr) => attr.name === 'label' || attr.name === 'id')?.value;
-      if (label) pieces.push(`[${label}] `);
+      if (label) {
+        append(`[${label}]`);
+        separator = ' ';
+      }
     }
   });
   parser.on('endTag', ({ tagName }) => {
@@ -53,18 +69,24 @@ export function readableText(markup: string): string {
       if (tagName === hidden[hidden.length - 1]) hidden.pop();
       return;
     }
-    if (BLOCKS.has(tagName)) pieces.push('\n');
+    if (tagName === 'pre' && preformatted) preformatted--;
+    if (BLOCKS.has(tagName)) separator = '\n\n';
   });
   parser.on('text', ({ text }) => {
-    if (!hidden.length) pieces.push(text);
+    if (hidden.length) return;
+    if (preformatted) {
+      append(text);
+      return;
+    }
+    // Normalize only HTML whitespace. Structural separators and nonbreaking spaces stay distinct.
+    const normalized = text.replace(/[ \t\n\f\r]+/g, ' ');
+    if (normalized.startsWith(' ') && !separator) separator = ' ';
+    const value = normalized.replace(/^ | $/g, '');
+    if (value) append(value);
+    if (normalized.endsWith(' ') && !separator) separator = ' ';
   });
   parser.end(markup);
-  return pieces
-    .join('')
-    .replace(/[ \r\f\v]+/g, ' ')
-    .replace(/ *\n[ \n]*/g, '\n\n')
-    .replace(/\n\t/g, '\n')
-    .trim();
+  return pieces.join('');
 }
 
 /** Remove upstream search highlighting from labels without changing unmarked values. */
