@@ -1,6 +1,6 @@
 # courtlistener-mcp-server - Directory Structure
 
-Generated on: 2026-11-13 16:48:54
+Generated on: 2026-11-20 22:43:14
 
 ```text
 courtlistener-mcp-server/
@@ -229,6 +229,7 @@ courtlistener-mcp-server/
 │   │   ├── get-parties.tool.test.ts
 │   │   ├── inherited-label-contracts.test.ts
 │   │   ├── lookup-citation.tool.test.ts
+│   │   ├── lookup-continuations.test.ts
 │   │   ├── lookup-courts.tool.test.ts
 │   │   ├── readable-retrieval.test.ts
 │   │   ├── retrieval-snapshot-contracts.test.ts

@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.10.1](changelog/0.10.x/0.10.1.md) — 2026-11-20
+
+Resume docket and attorney lookups and read opinions with their original paragraph structure.
+
 ## [0.10.0](changelog/0.10.x/0.10.0.md) — 2026-11-13 · ⚠️ Breaking
 
 Search with finer citation and court filters, and page through records with fewer requests.
