@@ -359,6 +359,16 @@ function classifyFetchError(
       );
     }
   }
+  if (status === 404 && path === '/docket-entries/' && typeof e?.data?.body === 'string') {
+    const body = e.data.body;
+    if (body.includes('"Invalid page.') || body.includes('"Invalid page: Deep API pagination')) {
+      return validationError(
+        'The requested docket entries page is out of range.',
+        { reason: 'entries_page_out_of_range' },
+        { cause: err },
+      );
+    }
+  }
   if (status === 404 || e?.code === JsonRpcErrorCode.NotFound) return notFoundForPath(path);
   if (status === 429 || e?.code === JsonRpcErrorCode.RateLimited) {
     // fetchWithTimeout already read CourtListener's Retry-After off the response and put it
@@ -731,6 +741,7 @@ export class CourtListenerService {
     entriesPageSize: number,
     entriesPage: number,
     ctx: Context,
+    filters?: { from: string | undefined; to: string | undefined; newestFirst: boolean },
   ): Promise<Docket> {
     const data = await this.get<Docket>(`/dockets/${docketId}/`, {}, ctx);
     if (!data?.id) {
@@ -744,16 +755,31 @@ export class CourtListenerService {
     // /docket-entries/ is page-paginated (?page=N); page_size is ignored upstream (always 20/page).
     const entries = await this.get<CourtListenerPage<DocketEntry>>(
       '/docket-entries/',
-      { docket: docketId, page: entriesPage, page_size: entriesPageSize, order_by: 'entry_number' },
+      {
+        docket: docketId,
+        page: entriesPage,
+        page_size: entriesPageSize,
+        order_by: filters?.newestFirst ? '-date_filed,-id' : 'entry_number',
+        date_filed__gte: filters?.from,
+        date_filed__lte: filters?.to,
+      },
       ctx,
     );
     data.docket_entries = entries.results;
     // A count URL or absent count leaves the total unknown, independently of page length.
     const rawCount: unknown = entries.count;
     data.docket_entries_count = typeof rawCount === 'number' ? rawCount : null;
-    // `next` is a `...&page=N` URL (no cursor token), so signal the next page by number when
-    // upstream reports more entries exist — mirrors getParties' next_cursor derivation.
-    data.docket_entries_next_page = entries.next ? String(entriesPage + 1) : null;
+    // CourtListener still advertises page 101 even though it refuses to serve it.
+    const pageLimit = 100;
+    const entryLimit = pageLimit * 20;
+    const limitReached = entriesPage === pageLimit;
+    data.docket_entries_next_page = entries.next && !limitReached ? String(entriesPage + 1) : null;
+    const remaining = typeof rawCount === 'number' ? Math.max(0, rawCount - entryLimit) : null;
+    if (limitReached && (entries.next || (remaining !== null && remaining > 0))) {
+      data.docket_entries_overflow = {
+        remaining_entries: remaining,
+      };
+    }
     return data;
   }
 
@@ -1252,7 +1278,8 @@ export class CourtListenerService {
    *
    * Attorney names and contact details require the second call — the /parties/ response
    * embeds only attorney_id, role code, and docket_id inline. Call 2 repeats (up to
-   * `ATTORNEY_PAGE_LIMIT` times) only while IDs from call 1 remain unresolved.
+   * `ATTORNEY_PAGE_LIMIT` times) only while IDs from call 1 remain unresolved. A roster
+   * cursor starts a separate resolution window, so a miss in that window is inconclusive.
    *
    * `cursor` is an opaque continuation token, never a page number: `PartyViewSet.ordering`
    * is `-id`, which sits in its `cursor_ordering_fields`, so v4 routes the endpoint to
@@ -1263,6 +1290,7 @@ export class CourtListenerService {
     cursor: string | undefined,
     pageSize: number,
     ctx: Context,
+    rosterCursor?: string,
   ): Promise<{
     count: number | null;
     next_cursor: string | null;
@@ -1271,6 +1299,7 @@ export class CourtListenerService {
       status: 'resolved' | 'exhausted' | 'capped';
       unresolved_ids: number[];
       next_cursor: string | null;
+      continued?: true;
     };
   }> {
     // Raw /parties/ shape from the upstream API
@@ -1314,7 +1343,7 @@ export class CourtListenerService {
     // filter returns the roster this docket needs instead, cursor-paginated.
     const attorneyMap = new Map<number, AttorneyDetail>();
     const unresolved = new Set(allAttorneyIds);
-    let attorneyCursor: string | null = null;
+    let attorneyCursor = unresolved.size > 0 ? (rosterCursor ?? null) : null;
     for (let fetched = 0; fetched < ATTORNEY_PAGE_LIMIT && unresolved.size > 0; fetched++) {
       let attPage: CourtListenerPage<AttorneyDetail>;
       try {
@@ -1360,7 +1389,7 @@ export class CourtListenerService {
           attorney_id: rel.attorney_id,
           resolution: detail
             ? ('resolved' as const)
-            : attorneyCursor
+            : attorneyCursor || rosterCursor
               ? ('not_fetched' as const)
               : ('not_found' as const),
           name: detail?.name ?? '',
@@ -1398,6 +1427,7 @@ export class CourtListenerService {
         status: unresolved.size === 0 ? 'resolved' : attorneyCursor ? 'capped' : 'exhausted',
         unresolved_ids: [...unresolved],
         next_cursor: attorneyCursor,
+        ...(rosterCursor && { continued: true as const }),
       },
       // Cursor-paginated: `next` carries an opaque `cursor=` token, so hand that token
       // straight back — the same derivation used for /attorneys/ above.

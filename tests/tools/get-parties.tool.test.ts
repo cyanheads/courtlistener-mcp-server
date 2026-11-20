@@ -95,7 +95,7 @@ describe('getPartiesTool', () => {
       const ctx = createMockContext({ errors: getPartiesTool.errors });
       const input = getPartiesTool.input.parse({ docket_id: 9999, cursor: CURSOR, page_size: 5 });
       await getPartiesTool.handler(input, ctx);
-      expect(mockSvc.getParties).toHaveBeenCalledWith(9999, CURSOR, 5, ctx);
+      expect(mockSvc.getParties).toHaveBeenCalledWith(9999, CURSOR, 5, ctx, undefined);
     });
 
     it('sends no cursor on a first-page call', async () => {
@@ -103,7 +103,7 @@ describe('getPartiesTool', () => {
       const ctx = createMockContext({ errors: getPartiesTool.errors });
       const input = getPartiesTool.input.parse({ docket_id: 9999 });
       await getPartiesTool.handler(input, ctx);
-      expect(mockSvc.getParties).toHaveBeenCalledWith(9999, undefined, 10, ctx);
+      expect(mockSvc.getParties).toHaveBeenCalledWith(9999, undefined, 10, ctx, undefined);
     });
 
     it('round-trips next_cursor back as cursor without reinterpreting it', async () => {
@@ -123,7 +123,7 @@ describe('getPartiesTool', () => {
         getPartiesTool.input.parse({ docket_id: 8000, cursor: first.next_cursor ?? undefined }),
         ctx,
       );
-      expect(mockSvc.getParties).toHaveBeenLastCalledWith(8000, CURSOR, 10, ctx);
+      expect(mockSvc.getParties).toHaveBeenLastCalledWith(8000, CURSOR, 10, ctx, undefined);
     });
 
     it('rejects a numeric page value, which the old input silently accepted', () => {

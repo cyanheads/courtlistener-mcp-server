@@ -53,6 +53,35 @@ afterEach(() => {
 
 describe('code normalization characterization', () => {
   it.each([
+    [{ name_middle: 'Gonzalez', name_suffix: '' }, 'Yvonne Gonzalez Rogers'],
+    [{ name_middle: null, name_suffix: 'jr' }, 'Yvonne Rogers Jr.'],
+    [{ name_suffix: '3' }, 'Yvonne Rogers III'],
+    [{ name_suffix: 'IV' }, 'Yvonne Rogers IV'],
+    [{ name_suffix: null }, 'Yvonne Rogers'],
+    [{ name_full: 'Supplied Name', name_suffix: 'jr' }, 'Supplied Name'],
+  ] as const)(
+    'formats sparse judge name components %j on both surfaces',
+    async (names, expected) => {
+      fetchStub.mockImplementation(async (input) => {
+        const path = new URL(String(input)).pathname;
+        if (path.endsWith('/people/2766/'))
+          return Response.json({ id: 2766, name_first: 'Yvonne', name_last: 'Rogers', ...names });
+        if (path.endsWith('/positions/'))
+          return Response.json({ count: 0, next: null, results: [] });
+        throw new Error(`Unexpected fixture path ${path}`);
+      });
+
+      const result = await runToolContract(getJudgeTool, { person_id: 2766 });
+      expect(result.structuredContent).toMatchObject({ person_id: 2766, name: expected });
+      const text = result.content
+        .map((block) => (block.type === 'text' ? block.text : ''))
+        .join('\n');
+      expect(text).toContain(`## ${expected}\n`);
+      expect(fetchStub).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it.each([
     ['M', 'Male'],
     ['UnmappedCode', 'UnmappedCode'],
     ['', ''],

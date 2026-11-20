@@ -21,7 +21,19 @@ import {
   retrieve,
 } from '@/services/courtlistener/retrieval.js';
 import { readRetrievalSnapshot } from '@/services/courtlistener/retrieval-snapshot.js';
-import { idFromUri, toStorageUrl } from '@/services/courtlistener/uri.js';
+import { idFromUri, personIdFromUri, toStorageUrl } from '@/services/courtlistener/uri.js';
+
+const EntriesOverflow = z
+  .object({
+    remaining_entries: z
+      .number()
+      .nullable()
+      .describe('Matching entries beyond page 100; null if unknown.'),
+  })
+  .optional()
+  .describe(
+    'Additional entries exist beyond the upstream page limit. Use entries_filed_from, entries_filed_to, or entries_order to reach the relevant entries.',
+  );
 
 const SelectedDocument = z.object({
   id: z.number().describe('RECAP document ID.'),
@@ -49,6 +61,7 @@ const SelectedDocket = z.object({
   kind: z.enum(['full', 'outline', 'page']).describe('Bounded selected-document retrieval mode.'),
   docket_id: z.number().describe('Requested docket ID.'),
   entries_page: z.number().describe('Entries page containing the selected documents.'),
+  entries_overflow: EntriesOverflow,
   next_cursor: z
     .string()
     .nullable()
@@ -94,7 +107,7 @@ const SelectedDocket = z.object({
 export const getDocketTool = tool('courtlistener_get_docket', {
   title: 'Get Docket',
   description:
-    'Fetch docket metadata and one entries page by docket ID. Omit document_ids for the docket listing, or select RECAP document IDs embedded on entries_page to retrieve their extracted text without further upstream requests. Selected text uses bounded full/outline/page responses; continue retrieval.next_cursor as cursor with the same docket_id, entries_page and document_ids. Top-level next_cursor remains entries pagination. File availability and extracted-text status are independent. Obtain docket IDs from courtlistener_search_dockets or opinion results.',
+    'Fetch docket metadata and one entries page by docket ID. Omit document_ids for the docket listing, or select RECAP document IDs embedded on entries_page to retrieve their extracted text without further upstream requests. Continue retrieval.next_cursor as cursor with the same docket_id, entries page, date bounds, order and document_ids. Top-level next_cursor remains entries pagination. File availability and extracted-text status are independent. Obtain docket IDs from courtlistener_search_dockets or opinion results.',
   annotations: { readOnlyHint: true, idempotentHint: true },
 
   input: z.object({
@@ -119,7 +132,7 @@ export const getDocketTool = tool('courtlistener_get_docket', {
       .optional()
       .default(1)
       .describe(
-        'Docket entries use ascending entry number, 20 per page, up to page 100. Pass the numeric value of the top-level next_cursor as entries_page to continue. For a positive total_entries, ceil(total_entries / 20) locates the last page if it is at most 100. A null total gives no last-page calculation. Use filing dates to identify recent filings.',
+        'Docket entries come 20 per page, up to page 100. Pass the numeric value of next_cursor to continue with the same date bounds and order. For a positive total_entries, ceil(total_entries / 20) locates the final page if it is at most 100.',
       ),
     entries_page_size: z
       .number()
@@ -129,6 +142,20 @@ export const getDocketTool = tool('courtlistener_get_docket', {
       .default(20)
       .describe(
         'Requested docket entries per page. NOTE: CourtListener ignores this value — /docket-entries/ always returns a fixed 20-entry page regardless of what is passed. Use entries_page to reach entries beyond the first 20 (large cases can have hundreds).',
+      ),
+    entries_filed_from: z.iso
+      .date()
+      .optional()
+      .describe('Include entries filed on or after this ISO date (YYYY-MM-DD).'),
+    entries_filed_to: z.iso
+      .date()
+      .optional()
+      .describe('Include entries filed on or before this ISO date (YYYY-MM-DD).'),
+    entries_order: z
+      .enum(['entry_number', 'newest_first'])
+      .optional()
+      .describe(
+        'Order entries by ascending entry number (default) or most recent filing date first.',
       ),
   }),
 
@@ -160,7 +187,19 @@ export const getDocketTool = tool('courtlistener_get_docket', {
       docket_number: z.string().describe('Docket number.'),
       pacer_case_id: z.string().nullable().describe('PACER case ID; null if not in RECAP.'),
       assigned_to: z.string().nullable().describe('Assigned judge name; null if not recorded.'),
+      assigned_to_id: z
+        .number()
+        .nullable()
+        .describe(
+          'Assigned judge person ID for courtlistener_get_judge or courtlistener_search_financial_disclosures; null if absent.',
+        ),
       referred_to: z.string().nullable().describe('Referred judge name; null if not recorded.'),
+      referred_to_id: z
+        .number()
+        .nullable()
+        .describe(
+          'Referred judge person ID for courtlistener_get_judge or courtlistener_search_financial_disclosures; null if absent.',
+        ),
       cause: z.string().describe('Legal cause of action.'),
       jury_demand: z.string().describe('Jury demand status.'),
       jurisdiction_type: z.string().describe('Jurisdiction type.'),
@@ -168,7 +207,7 @@ export const getDocketTool = tool('courtlistener_get_docket', {
         .number()
         .nullable()
         .describe(
-          'Total number of docket entries available; null when upstream supplies no numeric total. May exceed the returned entries list.',
+          'Total docket entries matching the filing-date bounds; null when upstream supplies no numeric total.',
         ),
       entries_page: z.number().describe('Current entries page number (1-indexed).'),
       next_cursor: z
@@ -238,6 +277,20 @@ export const getDocketTool = tool('courtlistener_get_docket', {
 
   errors: [
     {
+      reason: 'entries_page_out_of_range',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'The requested entries page exceeds page 100 or the last available page for the current bounds.',
+      recovery:
+        'Use an entries_page up to 100 and within the matching results. Restart at page 1 and follow next_cursor to locate the last page, or narrow the filing date bounds.',
+      thrownBy: 'service',
+    },
+    {
+      reason: 'invalid_entries_date_range',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'entries_filed_from is later than entries_filed_to.',
+      recovery: 'Set entries_filed_from on or before entries_filed_to.',
+    },
+    {
       reason: 'document_not_on_page',
       code: JsonRpcErrorCode.ValidationError,
       when: 'A selected document ID is absent from the requested entries page.',
@@ -295,10 +348,15 @@ export const getDocketTool = tool('courtlistener_get_docket', {
 
   async handler(input, ctx) {
     if (input.cursor !== undefined && !input.document_ids) throw ctx.fail('selection_required');
+    const { entries_filed_from: from, entries_filed_to: to } = input;
+    if (from && to && from > to) throw ctx.fail('invalid_entries_date_range');
+    const newestFirst = input.entries_order === 'newest_first';
+    const filters = from || to || newestFirst ? { from, to, newestFirst } : undefined;
     const selection = input.document_ids
       ? [...new Set(input.document_ids)].sort((a, b) => a - b)
       : undefined;
-    const retrievalTool = `docket_documents:${input.entries_page}`;
+    const filterKey = filters ? JSON.stringify(filters) : undefined;
+    const retrievalTool = `docket_documents:${input.entries_page}${filterKey ? `:${filterKey}` : ''}`;
     const cursor = readRetrievalCursor(
       input.cursor,
       retrievalTool,
@@ -317,11 +375,12 @@ export const getDocketTool = tool('courtlistener_get_docket', {
         Math.min(input.entries_page_size, 50),
         input.entries_page,
         ctx,
+        ...(filters ? ([filters] as const) : []),
       );
 
     if (selection) {
       const {
-        value: { docketId, nextCursor, documents },
+        value: { docketId, nextCursor, overflow, documents },
         fetchedAt,
       } = await readRetrievalSnapshot({
         service: svc,
@@ -332,6 +391,7 @@ export const getDocketTool = tool('courtlistener_get_docket', {
           input.entries_page,
           input.entries_page_size,
           selection,
+          ...(filterKey ? [filterKey] : []),
         ],
         continuing: cursor !== undefined,
         signal: ctx.signal,
@@ -369,6 +429,7 @@ export const getDocketTool = tool('courtlistener_get_docket', {
           return {
             docketId: docket.id,
             nextCursor: docket.docket_entries_next_page ?? null,
+            overflow: docket.docket_entries_overflow,
             documents,
           };
         },
@@ -406,11 +467,17 @@ export const getDocketTool = tool('courtlistener_get_docket', {
           docket_id: docketId,
           entries_page: input.entries_page,
           next_cursor: nextCursor,
+          ...(overflow && { entries_overflow: overflow }),
           document_ids: selection,
           selected_documents: selected,
         },
         groups: [{ name: 'selected_documents', value: selected }],
-        required: ['docket_id', 'entries_page', 'next_cursor'],
+        required: [
+          'docket_id',
+          'entries_page',
+          'next_cursor',
+          ...(overflow ? ['entries_overflow'] : []),
+        ],
         signal: ctx.signal,
         planningFinalize: (value) => {
           const parsed = SelectedDocket.parse(value);
@@ -470,13 +537,16 @@ export const getDocketTool = tool('courtlistener_get_docket', {
       docket_number: docket.docket_number ?? '',
       pacer_case_id: docket.pacer_case_id ?? null,
       assigned_to: docket.assigned_to_str ?? null,
+      assigned_to_id: personIdFromUri(docket.assigned_to ?? ''),
       referred_to: docket.referred_to_str ?? null,
+      referred_to_id: personIdFromUri(docket.referred_to ?? ''),
       cause: docket.cause ?? '',
       jury_demand: docket.jury_demand ?? '',
       jurisdiction_type: docket.jurisdiction_type ?? '',
       total_entries: docket.docket_entries_count ?? null,
       entries_page: input.entries_page,
       next_cursor: docket.docket_entries_next_page ?? null,
+      ...(docket.docket_entries_overflow && { entries_overflow: docket.docket_entries_overflow }),
       entries,
       page_sizing: pageSizing(input.entries_page_size, 50, entries.length, 'fixed_20'),
     };
@@ -496,6 +566,10 @@ export const getDocketTool = tool('courtlistener_get_docket', {
     }
     if (result.assigned_to) lines.push(`**Judge:** ${result.assigned_to}`);
     if (result.referred_to) lines.push(`**Referred to:** ${result.referred_to}`);
+    if (result.assigned_to_id !== undefined)
+      lines.push(`**Assigned judge person ID:** ${result.assigned_to_id ?? 'null'}`);
+    if (result.referred_to_id !== undefined)
+      lines.push(`**Referred judge person ID:** ${result.referred_to_id ?? 'null'}`);
     if (result.cluster_ids)
       lines.push(`**Opinion cluster IDs:** ${result.cluster_ids.join(', ') || 'none'}`);
     if (result.audio_ids) lines.push(`**Audio IDs:** ${result.audio_ids.join(', ') || 'none'}`);
@@ -536,6 +610,11 @@ export const getDocketTool = tool('courtlistener_get_docket', {
     if (result.next_cursor) {
       lines.push(
         `\n*More entries available — pass entries_page=${result.next_cursor} to continue.*`,
+      );
+    }
+    if (result.entries_overflow) {
+      lines.push(
+        `**Entries remaining past page 100:** ${result.entries_overflow.remaining_entries ?? 'unknown'}`,
       );
     }
 

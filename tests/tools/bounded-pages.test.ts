@@ -147,7 +147,7 @@ describe('bounded page requests', () => {
       getPartiesTool.input.parse({ docket_id: 1, page_size: 100 }),
       ctx,
     );
-    expect(call).toHaveBeenCalledExactlyOnceWith(1, undefined, 10, ctx);
+    expect(call).toHaveBeenCalledExactlyOnceWith(1, undefined, 10, ctx, undefined);
     expect(result.page_sizing).toEqual({
       requested: 100,
       bounded: 10,

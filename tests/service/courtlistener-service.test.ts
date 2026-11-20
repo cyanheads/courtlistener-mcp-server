@@ -2272,6 +2272,109 @@ describe('getDocket entries pagination (#32)', () => {
     expect(docket.docket_entries_count).toBe(153);
   });
 
+  it('suppresses the advertised cursor at the entries cap', async () => {
+    let count: number | string = 2031;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) =>
+        Response.json(
+          url.includes('/docket-entries/')
+            ? {
+                count,
+                next: 'https://www.courtlistener.com/api/rest/v4/docket-entries/?page=101',
+                results: [{ id: 10, docket: 5578727, recap_documents: [{ id: 20 }] }],
+              }
+            : { id: 5578727, assigned_to: '/api/rest/v4/people/2766/' },
+        ),
+      ),
+    );
+    initCourtListenerService(makeMockConfig(), makeMockStorage());
+    const listing = await runToolContract(getDocketTool, { docket_id: 5578727, entries_page: 100 });
+    expect(listing.structuredContent).toMatchObject({
+      next_cursor: null,
+      entries_overflow: { remaining_entries: 31 },
+      assigned_to: null,
+      assigned_to_id: 2766,
+      referred_to_id: null,
+    });
+    expect(JSON.stringify(listing.content)).toContain('Entries remaining past page 100:** 31');
+    expect(JSON.stringify(listing.content)).toContain('Assigned judge person ID:** 2766');
+    count = '/api/rest/v4/docket-entries/?count=on';
+    const selected = await runToolContract(getDocketTool, {
+      docket_id: 5578727,
+      entries_page: 100,
+      document_ids: [20],
+    });
+    expect(selected.structuredContent).toMatchObject({
+      next_cursor: null,
+      entries_overflow: { remaining_entries: null },
+    });
+    expect(selected.content[0]).toMatchObject({
+      text: expect.stringContaining('/entries\\_overflow/remaining\\_entries:** null'),
+    });
+  });
+
+  it('distinguishes an invalid entries page from a missing docket', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('/docket-entries/')) {
+          return Response.json({ detail: 'Invalid page.' }, { status: 404 });
+        }
+        if (url.includes('/dockets/999999999/')) {
+          return Response.json({ detail: 'Not found.' }, { status: 404 });
+        }
+        return Response.json({ id: 5578727 });
+      }),
+    );
+    initCourtListenerService(makeMockConfig(), makeMockStorage());
+    const range = await runToolContract(getDocketTool, { docket_id: 5578727, entries_page: 12 });
+    expect(range.structuredContent).toMatchObject({
+      error: { data: { reason: 'entries_page_out_of_range' } },
+    });
+    expect(JSON.stringify(range.content)).toContain('next_cursor');
+    const missing = await runToolContract(getDocketTool, {
+      docket_id: 999999999,
+      entries_page: 12,
+    });
+    expect(missing.structuredContent).toMatchObject({ error: { data: { reason: 'not_found' } } });
+  });
+
+  it('passes inclusive bounds and descending date order to an empty entries page', async () => {
+    const fetch = vi.fn(async (url: string) =>
+      Response.json(
+        url.includes('/docket-entries/') ? { count: 0, next: null, results: [] } : { id: 5578727 },
+      ),
+    );
+    vi.stubGlobal('fetch', fetch);
+    initCourtListenerService(makeMockConfig(), makeMockStorage());
+    const args = {
+      docket_id: 5578727,
+      entries_filed_from: '2026-01-01',
+      entries_filed_to: '2026-01-31',
+      entries_order: 'newest_first' as const,
+    };
+    const result = await runToolContract(getDocketTool, args);
+    expect(result.structuredContent).toMatchObject({
+      total_entries: 0,
+      next_cursor: null,
+      entries: [],
+    });
+    const params = new URL(fetch.mock.calls[1]![0]).searchParams;
+    expect(params.get('date_filed__gte')).toBe('2026-01-01');
+    expect(params.get('date_filed__lte')).toBe('2026-01-31');
+    expect(params.get('order_by')).toBe('-date_filed,-id');
+    const invalid = await runToolContract(getDocketTool, {
+      ...args,
+      entries_filed_to: '2025-12-31',
+    });
+    expect(invalid.structuredContent).toMatchObject({
+      error: { data: { reason: 'invalid_entries_date_range' } },
+    });
+    expect(JSON.stringify(invalid.content)).toContain('on or before');
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
   it('surfaces a null next page when upstream reports no more entries', async () => {
     vi.stubGlobal(
       'fetch',

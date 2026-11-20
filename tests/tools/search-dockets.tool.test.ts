@@ -39,6 +39,7 @@ const baseDocketResult = {
       docketNumber: '11-cv-01846',
       pacer_case_id: 'pacer123',
       assignedTo: 'Judge Koh',
+      assigned_to_id: 2766,
       referredTo: 'Judge Grewal',
       cause: 'Patent Infringement',
       juryDemand: 'Both',
@@ -50,7 +51,8 @@ const baseDocketResult = {
       recap_documents: [
         {
           id: 90000,
-          description: 'Complaint',
+          description: '',
+          short_description: 'Complaint',
           document_number: 1,
           document_type: 'PACER Document',
           entry_date_filed: '2011-04-15',
@@ -78,6 +80,9 @@ describe('searchDocketsTool', () => {
       case_name: 'Apple Inc. v. Samsung Electronics',
       court_id: 'cand',
       jury_demand: 'Both',
+      assigned_to_id: 2766,
+      referred_to_id: null,
+      sample_documents: [{ description: '', short_description: 'Complaint' }],
     });
     expect(result.results[0]!.party_count).toBe(2);
     expect(result.results[0]).not.toHaveProperty('parties');
@@ -339,7 +344,9 @@ describe('searchDocketsTool', () => {
           docket_number: '11-cv-01846',
           pacer_case_id: 'pacer123',
           assigned_to: 'Judge Koh',
+          assigned_to_id: 2766,
           referred_to: 'Judge Grewal',
+          referred_to_id: null,
           cause: 'Patent Infringement',
           jury_demand: 'Both',
           suit_nature: 'Patent',
@@ -354,6 +361,7 @@ describe('searchDocketsTool', () => {
             {
               id: 90000,
               description: 'Complaint',
+              short_description: 'Initial filing',
               date_filed: '2011-04-15',
               document_number: 1,
               entry_number: 1,
@@ -382,6 +390,9 @@ describe('searchDocketsTool', () => {
     expect(text).toContain('Patent');
     expect(text).toContain('Federal Question');
     expect(text).toContain('Judge Grewal');
+    expect(text).toContain('Assigned judge person ID:** 2766');
+    expect(text).toContain('Referred judge person ID:** null');
+    expect(text).toContain('Short description: Initial filing');
     expect(text).toContain('https://storage.courtlistener.com/recap/doc.pdf');
     expect(text).toContain('38pp');
     // the fabricated "**Documents:** 0" line is gone

@@ -34,6 +34,13 @@ export const getPartiesTool = tool('courtlistener_get_parties', {
       .describe(
         "Pagination cursor from a previous response's next_cursor field. Omit for the first page. This is an opaque token, not a page number — CourtListener cursor-paginates this endpoint, so a numeric value selects nothing and re-serves the first page.",
       ),
+    attorney_cursor: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        'Resume the attorney roster with attorney_resolution.next_cursor. Reuse the same docket_id and parties cursor. Merge resolved details by attorney_id across windows.',
+      ),
     page_size: z
       .number()
       .int()
@@ -52,15 +59,23 @@ export const getPartiesTool = tool('courtlistener_get_parties', {
         status: z
           .enum(['resolved', 'exhausted', 'capped'])
           .describe(
-            'Resolved all needed IDs, exhausted roster with misses, or stopped at the page cap.',
+            'Resolved all needed IDs in this window, reached the end of the roster with misses in this window, or stopped with more roster pages available.',
           ),
         unresolved_ids: z
           .array(z.number())
-          .describe('Attorney IDs still unresolved on this parties page.'),
+          .describe(
+            'Attorney IDs unresolved in this roster window. Merge resolved detail from earlier windows.',
+          ),
         next_cursor: z
           .string()
           .nullable()
-          .describe('Remaining attorney-roster cursor; null when exhausted.'),
+          .describe('Remaining attorney-roster cursor; pass it as attorney_cursor to continue.'),
+        continued: z
+          .literal(true)
+          .optional()
+          .describe(
+            'This roster window started from attorney_cursor. Unresolved IDs may have been found in an earlier window.',
+          ),
       })
       .optional()
       .describe('Attorney lookup completeness; no additional automatic requests are made.'),
@@ -101,7 +116,7 @@ export const getPartiesTool = tool('courtlistener_get_parties', {
                       .enum(['resolved', 'not_found', 'not_fetched'])
                       .optional()
                       .describe(
-                        'Whether detail was resolved (possibly with empty source fields), absent from an exhausted roster, or unknown after the cap.',
+                        'Whether detail was resolved, absent from a complete roster walk, or unknown after a partial roster window.',
                       ),
                     name: z
                       .string()
@@ -183,6 +198,7 @@ export const getPartiesTool = tool('courtlistener_get_parties', {
       input.cursor,
       Math.min(input.page_size, 10),
       ctx,
+      input.attorney_cursor,
     );
 
     ctx.log.info('courtlistener_get_parties complete', {
@@ -207,13 +223,26 @@ export const getPartiesTool = tool('courtlistener_get_parties', {
     const lines: string[] = [
       `## Parties — Docket ${result.docket_id}`,
       formatPageSizing(result.page_sizing),
-      ...(result.attorney_resolution
-        ? [
-            `**Attorney resolution:** ${result.attorney_resolution.status}; unresolved IDs: ${result.attorney_resolution.unresolved_ids.join(', ') || 'none'}; roster cursor: ${result.attorney_resolution.next_cursor ?? 'none'}.`,
-          ]
-        : []),
-      `**Total parties:** ${result.total_parties ?? 'unknown'} | **Next cursor:** ${result.next_cursor ?? 'none'}`,
     ];
+    const resolution = result.attorney_resolution;
+    if (resolution) {
+      lines.push(
+        `**Attorney resolution:** ${resolution.status}; unresolved IDs: ${resolution.unresolved_ids.join(', ') || 'none'}; roster cursor: ${resolution.next_cursor ?? 'none'}.`,
+      );
+      if (resolution.continued) {
+        lines.push(
+          'Attorney roster continued. Merge resolved details by attorney_id with earlier windows.',
+        );
+      }
+      if (resolution.status === 'capped' && resolution.next_cursor) {
+        lines.push(
+          `Pass attorney_cursor=${resolution.next_cursor} with the same docket_id and parties cursor to continue the roster.`,
+        );
+      }
+    }
+    lines.push(
+      `**Total parties:** ${result.total_parties ?? 'unknown'} | **Next cursor:** ${result.next_cursor ?? 'none'}`,
+    );
 
     if (result.parties.length === 0) {
       lines.push('\n*No party data available for this docket.*');

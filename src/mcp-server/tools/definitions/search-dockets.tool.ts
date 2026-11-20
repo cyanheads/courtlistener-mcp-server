@@ -93,10 +93,22 @@ export const searchDocketsTool = tool('courtlistener_search_dockets', {
               .string()
               .nullable()
               .describe('Assigned judge name; null if not recorded.'),
+            assigned_to_id: z
+              .number()
+              .nullable()
+              .describe(
+                'Assigned judge person ID for courtlistener_get_judge or courtlistener_search_financial_disclosures; null if absent.',
+              ),
             referred_to: z
               .string()
               .nullable()
               .describe('Referred magistrate judge name; null if not recorded.'),
+            referred_to_id: z
+              .number()
+              .nullable()
+              .describe(
+                'Referred judge person ID for courtlistener_get_judge or courtlistener_search_financial_disclosures; null if absent.',
+              ),
             cause: z.string().describe('Legal cause of action.'),
             jury_demand: z.string().describe('Jury demand status.'),
             suit_nature: z
@@ -133,6 +145,10 @@ export const searchDocketsTool = tool('courtlistener_search_dockets', {
                   .object({
                     id: z.number().describe('Document ID.'),
                     description: z.string().describe('Document description or title.'),
+                    short_description: z
+                      .string()
+                      .nullable()
+                      .describe('Short filing label from CourtListener; null when absent.'),
                     date_filed: z
                       .string()
                       .describe(
@@ -276,7 +292,9 @@ export const searchDocketsTool = tool('courtlistener_search_dockets', {
       docket_number: r.docketNumber ?? '',
       pacer_case_id: r.pacer_case_id ?? null,
       assigned_to: r.assignedTo ?? null,
+      assigned_to_id: r.assigned_to_id ?? null,
       referred_to: r.referredTo ?? null,
+      referred_to_id: r.referred_to_id ?? null,
       cause: r.cause ?? '',
       jury_demand: r.juryDemand ?? '',
       suit_nature: r.suitNature ?? '',
@@ -290,6 +308,7 @@ export const searchDocketsTool = tool('courtlistener_search_dockets', {
       sample_documents: (r.recap_documents ?? []).slice(0, 3).map((d) => ({
         id: d.id,
         description: d.description ?? '',
+        short_description: d.short_description ?? null,
         date_filed: d.entry_date_filed ?? '',
         document_number: d.document_number ?? null,
         entry_number: d.entry_number ?? null,
@@ -351,6 +370,8 @@ export const searchDocketsTool = tool('courtlistener_search_dockets', {
       );
       if (r.assigned_to) lines.push(`**Judge:** ${r.assigned_to}`);
       if (r.referred_to) lines.push(`**Referred to:** ${r.referred_to}`);
+      lines.push(`**Assigned judge person ID:** ${r.assigned_to_id ?? 'null'}`);
+      lines.push(`**Referred judge person ID:** ${r.referred_to_id ?? 'null'}`);
       if (r.cause) lines.push(`**Cause:** ${r.cause}`);
       if (r.suit_nature) lines.push(`**Nature of suit:** ${r.suit_nature}`);
       if (r.jurisdiction_type) lines.push(`**Jurisdiction:** ${r.jurisdiction_type}`);
@@ -382,6 +403,7 @@ export const searchDocketsTool = tool('courtlistener_search_dockets', {
           lines.push(
             `  - ID ${d.id} #${d.document_number ?? 'N/A'}${entry}: ${d.description} (${d.date_filed})${pages}${type} ${avail}`,
           );
+          lines.push(`    Short description: ${d.short_description ?? 'null'}`);
           if (d.filepath_local) lines.push(`    ${d.filepath_local}`);
         }
       }

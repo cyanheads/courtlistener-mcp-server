@@ -152,6 +152,21 @@ describe('getDocketTool', () => {
     await expect(call(token, { document_ids: [2] })).rejects.toMatchObject({
       data: { reason: 'invalid_cursor' },
     });
+    const filtered = { entries_filed_from: '2026-01-01', entries_order: 'newest_first' };
+    const filteredFirst = await call(undefined, filtered);
+    const filteredToken = filteredFirst.retrieval!.next_cursor!;
+    await expect(
+      call(filteredToken, { ...filtered, entries_filed_from: '2026-01-02' }),
+    ).rejects.toMatchObject({
+      data: { reason: 'invalid_cursor' },
+    });
+    await expect(
+      call(filteredToken, { ...filtered, entries_order: 'entry_number' }),
+    ).rejects.toMatchObject({
+      data: { reason: 'invalid_cursor' },
+    });
+    expect((await call(filteredToken, filtered)).kind).toBe('page');
+    expect(mockSvc.getDocket).toHaveBeenCalledTimes(2);
     let page = first;
     let text = '';
     let description = '';
@@ -182,6 +197,9 @@ describe('getDocketTool', () => {
   });
 
   it('rejects invalid selector shapes and cursor without selection', async () => {
+    expect(() =>
+      getDocketTool.input.parse({ docket_id: 8000, entries_filed_from: '2026-02-30' }),
+    ).toThrow();
     for (const document_ids of [[], [0], [-1], [1.5], ['1']])
       expect(() => getDocketTool.input.parse({ docket_id: 8000, document_ids })).toThrow();
     const result = await runToolContract(getDocketTool, { docket_id: 8000, cursor: 'token' });

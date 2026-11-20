@@ -102,6 +102,7 @@ export interface OpinionCluster {
  * docket's full filing list (use courtlistener_get_docket for that).
  */
 export interface DocketSearchResult {
+  assigned_to_id?: number | null;
   assignedTo: string | null;
   /** Attorney names of record on this docket. */
   attorney?: string[];
@@ -133,7 +134,9 @@ export interface DocketSearchResult {
     filepath_local?: string | null;
     is_available: boolean;
     page_count?: number | null;
+    short_description?: string | null;
   }>;
+  referred_to_id?: number | null;
   referredTo?: string | null;
   /** Nature-of-suit label, usually code-prefixed (e.g. "830 Patent"); empty for non-civil dockets. */
   suitNature?: string;
@@ -142,6 +145,7 @@ export interface DocketSearchResult {
 /** Full docket from /dockets/{id}/. */
 export interface Docket {
   appeal_from_str?: string | null;
+  assigned_to?: string | null;
   assigned_to_str: string | null;
   audio_files?: string[];
   case_name: string;
@@ -159,17 +163,19 @@ export interface Docket {
   docket_entries_count?: number | null;
   /**
    * Next page number to fetch from /docket-entries/?docket=...&page=N; null when the fetched
-   * page is the last. /docket-entries/ is page-paginated (its `next` is a `...&page=N` URL, not a
+   * page is the last accessible page. /docket-entries/ is page-paginated (its `next` is a `...&page=N` URL, not a
    * cursor token), so this is populated as a stringified page number — set the same way
    * docket_entries_count is, from the /docket-entries/ response.
    */
   docket_entries_next_page?: string | null;
+  docket_entries_overflow?: { remaining_entries: number | null };
   docket_number: string;
   id: number;
   jurisdiction_type: string;
   jury_demand: string;
   nature_of_suit?: string | null;
   pacer_case_id: string | null;
+  referred_to?: string | null;
   referred_to_str: string | null;
 }
 
@@ -269,9 +275,11 @@ export interface Person {
   gender: string;
   id: number;
   name_first: string | null;
-  /** name_full is null on the /people/ endpoint — build from name_first/name_last. */
-  name_full: string | null;
+  /** The /people/ endpoint can omit the derived full name. */
+  name_full?: string | null;
   name_last: string | null;
+  name_middle?: string | null;
+  name_suffix?: string | null;
   /** Inline objects with party codes (e.g., "r", "d"). */
   political_affiliations: Array<{
     political_party: string;

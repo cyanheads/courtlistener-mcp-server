@@ -15,6 +15,15 @@ import { getCourtListenerService } from '@/services/courtlistener/courtlistener-
  * pass through unchanged rather than being dropped or guessed.
  */
 const GENDER_LABELS: Record<string, string> = { m: 'Male', f: 'Female', o: 'Other' };
+/** CourtListener's Person.name_full uses the display labels from people_db.models.SUFFIXES. */
+const SUFFIX_LABELS: Record<string, string> = {
+  jr: 'Jr.',
+  sr: 'Sr.',
+  '1': 'I',
+  '2': 'II',
+  '3': 'III',
+  '4': 'IV',
+};
 const ABA_RATING_LABELS: Record<string, string> = {
   ewq: 'Exceptionally Well Qualified',
   wq: 'Well Qualified',
@@ -472,9 +481,16 @@ export const getJudgeTool = tool('courtlistener_get_judge', {
         : null,
     }));
 
-    // name_full is null on /people/ — fall back to first + last
     const name =
-      person.name_full ?? [person.name_first, person.name_last].filter(Boolean).join(' ') ?? '';
+      person.name_full ||
+      [
+        person.name_first,
+        person.name_middle,
+        person.name_last,
+        expandCode(SUFFIX_LABELS, person.name_suffix),
+      ]
+        .filter(Boolean)
+        .join(' ');
 
     ctx.log.info('courtlistener_get_judge complete', {
       person_id: input.person_id,
