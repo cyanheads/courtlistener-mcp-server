@@ -3,7 +3,7 @@
  * @module tests/tools/lookup-citation.tool.test
  */
 
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { lookupCitationTool } from '@/mcp-server/tools/definitions/lookup-citation.tool.js';
 import type { CourtListenerService } from '@/services/courtlistener/courtlistener-service.js';
@@ -194,14 +194,22 @@ describe('lookupCitationTool', () => {
     expect(mockSvc.lookupCitation).toHaveBeenCalledWith('410 U.S. 113', 0, ctx);
   });
 
-  it('defaults the court-lookup budget and rejects one past the ceiling (#66)', async () => {
+  it('defaults the court-lookup budget and rejects invalid values (#66)', () => {
     expect(lookupCitationTool.input.parse({ citation: '410 U.S. 113' }).max_court_lookups).toBe(4);
-    expect(() =>
-      lookupCitationTool.input.parse({ citation: '410 U.S. 113', max_court_lookups: 21 }),
-    ).toThrow();
     expect(() =>
       lookupCitationTool.input.parse({ citation: '410 U.S. 113', max_court_lookups: -1 }),
     ).toThrow();
+  });
+
+  it('clamps the court-lookup budget and reports it on both surfaces', async () => {
+    vi.mocked(mockSvc.lookupCitation).mockResolvedValue([]);
+    const result = await runToolContract(lookupCitationTool, {
+      citation: '410 U.S. 113',
+      max_court_lookups: 21,
+    });
+    expect(mockSvc.lookupCitation).toHaveBeenCalledWith('410 U.S. 113', 20, expect.anything());
+    expect(JSON.stringify(result.structuredContent)).toContain('21 was reduced to 20');
+    expect(JSON.stringify(result.content)).toContain('21 was reduced to 20');
   });
 
   // #50 — upstream extracts every citation in the submitted text and returns one entry

@@ -123,7 +123,6 @@ export const lookupCitationTool = tool('courtlistener_lookup_citation', {
       .number()
       .int()
       .min(0)
-      .max(MAX_COURT_BACKFILL_LIMIT)
       .optional()
       .default(COURT_BACKFILL_LIMIT)
       .describe(
@@ -203,7 +202,8 @@ export const lookupCitationTool = tool('courtlistener_lookup_citation', {
 
     const svc = getCourtListenerService();
 
-    const found = await svc.lookupCitation(input.citation, input.max_court_lookups, ctx);
+    const budget = Math.min(input.max_court_lookups, MAX_COURT_BACKFILL_LIMIT);
+    const found = await svc.lookupCitation(input.citation, budget, ctx);
 
     // The service already speaks the output's shape; the label is the only addition.
     const matches = found.map((match) => ({
@@ -226,6 +226,11 @@ export const lookupCitationTool = tool('courtlistener_lookup_citation', {
     const lookupFailed = clusters.filter((c) => c.court_resolution === 'lookup_failed').length;
 
     const notices: string[] = [];
+    if (input.max_court_lookups > budget) {
+      notices.push(
+        `Requested max_court_lookups of ${input.max_court_lookups} was reduced to ${budget}.`,
+      );
+    }
     if (resolvedCount === 0) {
       const reasons = matches.map((m) => `${m.citation}: ${m.status_label}`).join('; ');
       notices.push(
@@ -234,7 +239,7 @@ export const lookupCitationTool = tool('courtlistener_lookup_citation', {
     }
     if (overBudget > 0) {
       notices.push(
-        `Court unresolved on ${overBudget} of the returned clusters because the per-call budget of ${input.max_court_lookups} docket lookups ran out. Raise max_court_lookups (up to ${MAX_COURT_BACKFILL_LIMIT}) to resolve more, or pass a cluster's docket_id to courtlistener_get_docket.`,
+        `Court unresolved on ${overBudget} of the returned clusters because the docket lookup stopped within the per-call budget of ${budget}. ${budget < MAX_COURT_BACKFILL_LIMIT ? `Raise max_court_lookups (up to ${MAX_COURT_BACKFILL_LIMIT}) or pass` : 'Pass'} a cluster's docket_id to courtlistener_get_docket.`,
       );
     }
     if (lookupFailed > 0) {

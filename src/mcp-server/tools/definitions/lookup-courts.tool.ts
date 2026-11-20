@@ -4,7 +4,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import {
   listSnapshotCourtIds,
   listUnclassifiedCourtIds,
@@ -54,10 +54,32 @@ const JURISDICTION_DESCRIPTION = [
   .filter(Boolean)
   .join(' ');
 
+const LiveRecords = z.discriminatedUnion('status', [
+  z
+    .object({ status: z.literal('fetched').describe('Live page fetched.') })
+    .describe('Live court page with its count and cursor.'),
+  z
+    .object({ status: z.literal('skipped').describe('Live lookup skipped.') })
+    .describe('Snapshot-only lookup requested by the caller.'),
+  z
+    .object({
+      status: z.literal('unavailable').describe('Live page unavailable.'),
+      reason: z
+        .enum(['rate_limited', 'service_unavailable'])
+        .describe('Why the live court page was unavailable.'),
+      retry_after_seconds: z
+        .number()
+        .nonnegative()
+        .optional()
+        .describe('Upstream retry interval in seconds, when known.'),
+    })
+    .describe('Snapshot results after a live retrieval failure.'),
+]);
+
 export const lookupCourtsTool = tool('courtlistener_lookup_courts', {
   title: 'Lookup Courts',
   description:
-    "List courts with optional filtering by jurisdiction type, active/inactive status, and scraper coverage. Primarily used to discover court IDs for use in search and filter parameters across all other courtlistener tools. Defaults to the active bench — the courts CourtListener still scrapes; pass status:'inactive' for historical courts or status:'any' for every court. A bundled snapshot returns the complete list of matching court IDs without paging whenever the filtered set fits the response budget, which covers the default bench and every jurisdiction filter. Full court records — names, citation strings, scraper status — come live from CourtListener at a fixed 20 rows per page, so pull those only when a court ID alone is not enough.",
+    "List courts with optional filtering by jurisdiction type, active/inactive status, and scraper coverage. Primarily used to discover court IDs for use in search and filter parameters across all other courtlistener tools. Defaults to the active bench — the courts CourtListener still scrapes; pass status:'inactive' for historical courts or status:'any' for every court. A bundled snapshot returns matching IDs without paging when the filtered set fits the response budget. Full records come live at a fixed 20 rows per page; pass records:false when you only need IDs. If live records are unavailable, the snapshot still answers.",
   annotations: { readOnlyHint: true, openWorldHint: true, idempotentHint: false },
 
   input: z.object({
@@ -75,6 +97,13 @@ export const lookupCourtsTool = tool('courtlistener_lookup_courts', {
       .describe(
         'Filter to courts with active opinion scraping. Useful when planning search queries — courts without scrapers have sparse coverage.',
       ),
+    records: z
+      .boolean()
+      .optional()
+      .default(true)
+      .describe(
+        'Fetch live court records (default true). Set false for snapshot IDs only, without an upstream request.',
+      ),
     page: z
       .number()
       .int()
@@ -87,12 +116,15 @@ export const lookupCourtsTool = tool('courtlistener_lookup_courts', {
   }),
 
   output: z.object({
+    live_records: LiveRecords.optional().describe(
+      'Availability of the requested live page. A skipped or unavailable page carries no live count or continuation.',
+    ),
     page: z.number().describe('Current page number (1-indexed).'),
     next_cursor: z
       .string()
       .nullable()
       .describe(
-        'Next page number to pass as the `page` argument (this list is page-paginated at a fixed 20 rows/page); null when this is the last page — a non-null value means the courts shown are a partial view of the filtered set.',
+        'Next page number to pass as the page argument at a fixed 20 rows/page. Null when the fetched page is the last, or when live_records says the page was skipped or unavailable.',
       ),
     courts: z
       .array(
@@ -129,47 +161,68 @@ export const lookupCourtsTool = tool('courtlistener_lookup_courts', {
 
   // Agent-facing context: total count and recovery hint on empty results.
   enrichment: {
-    totalCount: z.number().describe('Total courts returned.'),
+    totalCount: z
+      .number()
+      .optional()
+      .describe('Total live matching courts, when the page was fetched.'),
     notice: z
       .string()
       .optional()
       .describe('Recovery hint when no courts match the applied filters.'),
   },
 
-  errors: [
-    {
-      reason: 'rate_limited',
-      code: JsonRpcErrorCode.RateLimited,
-      when: '429 from CourtListener, or no request slot opened within the wait budget.',
-      retryable: false,
-      recovery:
-        'Wait out the Retry-After interval reported on the error before calling again. CourtListener throttles per minute, hour, and day, so an immediate retry fails.',
-      thrownBy: 'service',
-    },
-  ],
-
   async handler(input, ctx) {
     ctx.log.info('courtlistener_lookup_courts', {
       jurisdiction: input.jurisdiction,
       status: input.status,
     });
-    const svc = getCourtListenerService();
-
     // Upstream's `in_use` is a plain boolean exact-match filter, so 'active' and
     // 'inactive' select disjoint halves and only omitting it returns every court.
     const inUse = input.status === 'any' ? undefined : input.status === 'active';
 
-    const data = await svc.listCourts(
-      {
-        jurisdiction: input.jurisdiction,
-        in_use: inUse,
-        has_opinion_scraper: input.has_opinion_scraper,
-        page: input.page,
-      },
-      ctx,
-    );
+    const snapshotFilters = {
+      jurisdiction: input.jurisdiction,
+      in_use: inUse,
+      has_opinion_scraper: input.has_opinion_scraper,
+    };
+    let liveRecords: z.output<typeof LiveRecords> = { status: 'skipped' };
+    let data:
+      | Awaited<ReturnType<ReturnType<typeof getCourtListenerService>['listCourts']>>
+      | undefined;
+    if (input.records) {
+      try {
+        data = await getCourtListenerService().listCourts(
+          { ...snapshotFilters, page: input.page },
+          ctx,
+        );
+        liveRecords = { status: 'fetched' };
+        ctx.enrich.total(data.total);
+      } catch (error) {
+        if (ctx.signal?.aborted || !(error instanceof McpError)) throw error;
+        const status = error.data?.status;
+        const rateLimited = error.code === JsonRpcErrorCode.RateLimited;
+        if (
+          !rateLimited &&
+          error.code !== JsonRpcErrorCode.ServiceUnavailable &&
+          error.code !== JsonRpcErrorCode.Timeout &&
+          !(typeof status === 'number' && status >= 500 && status < 600)
+        )
+          throw error;
+        const retryAfter = error.data?.retryAfter;
+        const retryValue = typeof retryAfter === 'string' ? retryAfter.trim() : '';
+        const retrySeconds = /^\d+$/.test(retryValue)
+          ? Number(retryValue)
+          : Math.max(0, (Date.parse(retryValue) - Date.now()) / 1000);
+        liveRecords = {
+          status: 'unavailable',
+          reason: rateLimited ? 'rate_limited' : 'service_unavailable',
+          ...(Number.isFinite(retrySeconds) &&
+            retrySeconds >= 0 && { retry_after_seconds: retrySeconds }),
+        };
+      }
+    }
 
-    const courts = data.courts.map((c) => ({
+    const courts = (data?.courts ?? []).map((c) => ({
       id: c.id,
       full_name: c.full_name ?? '',
       short_name: c.short_name ?? '',
@@ -181,23 +234,16 @@ export const lookupCourtsTool = tool('courtlistener_lookup_courts', {
 
     ctx.log.info('courtlistener_lookup_courts complete', { count: courts.length });
 
-    ctx.enrich.total(data.total);
-
     // The live page is 20 rows against a set that can run to thousands. The bundled
     // snapshot answers "which courts match" for the same filters at no request cost,
     // which is the only way that question is answerable at all under the free tier.
-    const snapshotFilters = {
-      jurisdiction: input.jurisdiction,
-      in_use: inUse,
-      has_opinion_scraper: input.has_opinion_scraper,
-    };
     const matching = listSnapshotCourtIds(snapshotFilters);
     const complete = matching.length <= MAX_INLINE_COURT_IDS;
 
     // Two conditions can hold at once — a page past the end of a set that is itself too
     // large to inline — and `notice` is last-wins, so they compose into one string.
     const notices: string[] = [];
-    if (courts.length === 0) {
+    if (data && courts.length === 0) {
       const filters: string[] = [`status=${input.status}`];
       if (input.jurisdiction) filters.push(`jurisdiction=${input.jurisdiction}`);
       if (input.has_opinion_scraper) filters.push('has_opinion_scraper=true');
@@ -215,15 +261,16 @@ export const lookupCourtsTool = tool('courtlistener_lookup_courts', {
           ? ` Narrowing to status='active' matches ${listSnapshotCourtIds({ ...snapshotFilters, in_use: true }).length}.`
           : '';
       notices.push(
-        `${matching.length} courts match these filters, past the ${MAX_INLINE_COURT_IDS}-id ceiling for inlining the offline list, so all_matching_court_ids is empty rather than a prefix that would read as the whole set. Narrow with jurisdiction, status, or has_opinion_scraper to get the complete list in one call.${activeHint} The live \`courts\` page is unaffected.`,
+        `${matching.length} courts match these filters in the snapshot, past the ${MAX_INLINE_COURT_IDS}-id ceiling for inlining the offline list, so all_matching_court_ids is empty rather than a prefix that would read as the whole set. Narrow with jurisdiction, status, or has_opinion_scraper to get the complete list in one call.${activeHint}`,
       );
     }
     if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
 
     return {
       page: input.page,
-      next_cursor: data.next_cursor,
+      next_cursor: data?.next_cursor ?? null,
       courts,
+      live_records: liveRecords,
       all_matching_court_ids: complete ? matching : [],
       all_matching_court_ids_complete: complete,
     };
@@ -235,9 +282,22 @@ export const lookupCourtsTool = tool('courtlistener_lookup_courts', {
       `**Page:** ${result.page} | **Next cursor:** ${result.next_cursor ?? 'none'}`,
     ];
 
-    if (result.courts.length === 0) {
+    const live = result.live_records;
+    if (live?.status === 'fetched') lines.push('\n**Live records:** fetched.');
+    if (live?.status === 'unavailable') {
+      const retry =
+        live.retry_after_seconds === undefined
+          ? ''
+          : ` Retry after ${live.retry_after_seconds} seconds.`;
+      lines.push(`\n> Live records unavailable (${live.reason}).${retry}`);
+    }
+    if (live?.status === 'skipped') {
+      lines.push('\n> Live records skipped.');
+    }
+    if (result.courts.length === 0 && (!live || live.status === 'fetched')) {
       lines.push('\n> No courts matched the filters.');
-    } else {
+    }
+    if (result.courts.length > 0) {
       lines.push(
         '\n| ID | Full Name | Short Name | Citation | Jurisdiction | Opinion Scraper | OA Scraper |',
       );
