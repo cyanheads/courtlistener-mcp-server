@@ -104,7 +104,7 @@ Opinion, docket, judge, and oral-argument searches accept `q: "*"` for filter-on
 
 ### `courtlistener_lookup_citation` <sub>tool</sub>
 
-- `citation` takes one citation or a passage of up to 64,000 characters, and every citation in it resolves; `max_court_lookups` (default 4, max 20, `0` to skip) caps the docket requests spent on court names
+- `citation` accepts a citation or passage up to 64,000 characters. `max_court_lookups` budgets the docket requests spent resolving court names. It defaults to 4. Set it to 0 to skip lookups. Values above 20 use 20 and return a notice.
 - One `matches[]` entry per citation, with `status` (200 one case, 300 several candidates, 400 unrecognized reporter, 404 no match, 429 past the per-request citation cap) and `status_label`; each of its `clusters[]` carries `cluster_id`, `docket_id`, `court_id`, and `court_resolution` (`resolved`, `no_docket`, `lookup_failed`, `over_budget`, only the last worth retrying with a larger budget)
 - Unresolved citations come back as entries, not errors; only text with no parseable citation fails, as `not_found`. CourtListener meters this endpoint per citation submitted, separately from the per-request limits
 
@@ -121,8 +121,8 @@ Opinion, docket, judge, and oral-argument searches accept `q: "*"` for filter-on
 ### `courtlistener_get_docket` <sub>tool</sub>
 
 - `docket_id` is required; entries come 20 per page (CourtListener ignores `entries_page_size`), walked with `entries_page` and top-level `next_cursor`. Convert the cursor string to a number: `next_cursor: "2"` continues with `entries_page: 2`. Without a document selection, returns docket metadata and `entries[]`; `total_entries` is null when upstream supplies no numeric total.
-- Listing metadata includes linked `cluster_ids` for `courtlistener_get_opinion`, `audio_ids` for `courtlistener_get_oral_argument`, `date_argued`, `suit_nature`, `appeal_from`, and `date_last_filing`.
-- Entries are ordered by ascending entry number. For a positive known total, `ceil(total_entries / 20)` identifies the last page in that ordering only when it is at most 100, CourtListener's page limit. Use entry dates to identify the latest filings; a null total cannot locate a last page.
+- Listing metadata includes linked `cluster_ids` for `courtlistener_get_opinion`, `audio_ids` for `courtlistener_get_oral_argument`, `date_argued`, `suit_nature`, `appeal_from`, and `date_last_filing`. Both docket listings and search results return `assigned_to_id` and `referred_to_id` for judge and disclosure lookups. Search samples include each filing's `short_description` alongside its description.
+- Entries default to ascending entry number. For recent filings, request `entries_order: "newest_first"`. Narrow the result with inclusive `entries_filed_from` and `entries_filed_to` dates. Pagination stops at page 100 even if more matching entries exist. Keep the date range and order when continuing a document selection.
 - `document_ids` selects documents from the requested entries page. Selected responses carry `kind`, `selected_documents`, source/storage links, and raw `plain_text`; large records use `retrieval.next_cursor`, passed as `cursor` with the same docket ID, entries page, and selection. Listing-only fields are optional in selected responses.
 - `text_status` is `available`, `unavailable`, `not_extracted`, or `unknown`; extracted text can exist independently of `is_available`. IDs absent from the page fail as `document_not_on_page`; an entry without a matching docket relation fails as `document_ownership_unverified`. Selection adds no document-detail requests or page walks.
 
@@ -132,7 +132,7 @@ Opinion, docket, judge, and oral-argument searches accept `q: "*"` for filter-on
 
 - `docket_id` is required; `cursor` takes the opaque `next_cursor` token, not a page number; outgoing `page_size` is bounded to 10 and CourtListener may not honor it
 - Each party carries `name`, its docket-scoped `role`, and `attorneys[]` with `name`, `contact_raw`, `role_code` / `role` (codes 5–9 mean no longer of record), and `date_action`; `total_parties` uses the upstream total when supplied, otherwise counts a single-page result or stays null
-- `attorney_resolution` reports resolved, exhausted, or capped lookups, unresolved IDs, and the remaining upstream roster cursor. Resolution stops after five roster pages or when the local request budget blocks a later page; already fetched records are retained. Per-attorney `resolution` distinguishes a resolved record with empty source fields from `not_found` after exhaustion and `not_fetched` after the cap. Upstream roster/variant cursors describe completeness; these tools do not accept them as new retrieval inputs.
+- To continue a capped attorney lookup, pass `attorney_resolution.next_cursor` as `attorney_cursor` with the same docket and parties page. Each call walks up to five roster pages. Merge resolved details by attorney ID across calls. The top-level `next_cursor` advances to a different page of parties.
 
 ---
 
@@ -155,6 +155,7 @@ Opinion, docket, judge, and oral-argument searches accept `q: "*"` for filter-on
 
 - Filter by `jurisdiction` (one of 22 CourtListener codes such as `F`, `FD`, `FB`, `S`, `SA`; the full table is in `courtlistener://reference/courts`), `status` (`active` default, `inactive`, or `any`), and `has_opinion_scraper`; live records come 20 per page, walked with `page`
 - `courts[]` carry `id` (the court ID every other tool filters on), `citation_string`, `jurisdiction`, and scraper flags; `all_matching_court_ids` lists every match from a bundled snapshot at no request cost, and is empty when more than 1,000 match, so check `all_matching_court_ids_complete`
+- Set `records: false` for an ID-only lookup. If CourtListener rate-limits a live lookup or its service is unavailable, the response identifies the failed live page and still returns the snapshot result.
 
 ---
 

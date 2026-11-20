@@ -4,7 +4,7 @@ description: Resolve identifiers and assess completeness when using courtlistene
 license: Apache-2.0
 metadata:
   author: "cyanheads"
-  version: "1.1"
+  version: "1.2"
 ---
 
 ## Scope
@@ -16,7 +16,8 @@ Use CourtListener for US written opinions, citation links, federal RECAP dockets
 - Opinion search and citation lookup return cluster IDs: a decision grouping its opinion variants. Pass these to courtlistener_get_opinion and courtlistener_get_citations.
 - Variant IDs and variant cites lists identify individual opinions, not clusters. Do not pass those IDs to tools requiring a cluster ID; use courtlistener_get_citations to follow the authority chain.
 - Docket IDs come from docket search or linked opinion records. Use them for courtlistener_get_docket and courtlistener_get_parties. Document IDs, docket-entry IDs, PACER document numbers, and docket numbers are distinct identifiers.
-- Judge search returns person IDs; opinion author IDs and oral-argument panel IDs also identify people. Use these for courtlistener_get_judge and judge-specific disclosure searches. Resolve a name before linking records to a person.
+- A docket's assigned_to_id and referred_to_id identify people. Pass either as person_id to courtlistener_get_judge or as judge_id to courtlistener_search_financial_disclosures. When the ID is missing, resolve the judge by name and court before linking records.
+- Judge search, opinion author IDs, and oral-argument panel IDs also identify people.
 - Disclosure search returns disclosure IDs for courtlistener_get_financial_disclosure. Oral-argument search and docket audio_ids return audio IDs for courtlistener_get_oral_argument; docket cluster_ids lead to courtlistener_get_opinion.
 
 ## Gates
@@ -40,7 +41,9 @@ Resolve a known citation with courtlistener_lookup_citation, or find candidates 
 
 ## Workflows
 
-For federal litigation research, use courtlistener_search_dockets to identify the case, then courtlistener_get_docket to inspect its entries and documents. Search results carry only sample documents; their roster counts describe indexed names, not authoritative party or counsel totals. Select the relevant document IDs from the returned entries page and call courtlistener_get_docket again for their extracted text. Selection uses records embedded in that page without additional document requests; it does not search other pages or extract a missing text layer. Complete any text retrieval before following the entries continuation, and retain the document's source links with cited passages. Use entry dates to identify recent filings because entry order follows entry number. Use courtlistener_get_parties for docket-scoped representation rather than assuming a name match establishes counsel's role.
+For federal litigation research, find the case with courtlistener_search_dockets. Search results sample filings and count indexed names. Open the docket for its entries. For recent filings on a large docket, start on page one with entries_order set to newest_first. Narrow the date range if entries extend past page 100. Select document IDs from that entries page and keep the same filters and order until text retrieval finishes. Retain the document's source links with cited passages.
+
+For docket-scoped representation, use courtlistener_get_parties. When the attorney roster is capped, keep the same parties page and pass attorney_resolution.next_cursor as attorney_cursor. Merge resolved details by attorney ID before advancing the parties cursor.
 
 For judicial-background or disclosure research, resolve the person with courtlistener_search_judges, inspect courtlistener_get_judge, then use courtlistener_search_financial_disclosures and courtlistener_get_financial_disclosure for the relevant filings and categories. Follow remaining search pages when seeking a particular year. Keep missing, unextracted, and incomplete records distinct from evidence of no reported interest.
 

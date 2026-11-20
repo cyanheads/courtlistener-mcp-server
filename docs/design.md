@@ -374,6 +374,8 @@ cursor: z.string().optional()
     docket_number: string,
     pacer_case_id: string | null,
     assigned_to: string | null,
+    assigned_to_id: number | null,
+    referred_to_id: number | null,
     cause: string,
     jury_demand: string,
     party_count: number | null,
@@ -385,6 +387,7 @@ cursor: z.string().optional()
     sample_documents: Array<{   // up to 3 sample filings
       id: number,
       description: string,
+      short_description: string | null,
       date_filed: string,
       document_number: number | null,
       is_available: boolean,
@@ -399,7 +402,7 @@ cursor: z.string().optional()
 
 ### `courtlistener_get_docket`
 
-Fetch docket metadata and one entries page for a federal case. `entries_page` and top-level `next_cursor` walk the entries list; convert the cursor string to its numeric value for `entries_page`. Listings include `cluster_ids`, `audio_ids`, `date_argued`, `suit_nature`, `appeal_from`, and `date_last_filing` from the same docket request. Entries follow ascending entry number; inspect dates for recency. With a positive known total, `ceil(total_entries / 20)` locates the last page only within CourtListener's 100-page limit. Unknown totals do not locate a last page.
+Fetch docket metadata and one entries page for a federal case. Pass the numeric value of the top-level `next_cursor` as `entries_page`. Listings include linked opinion, audio, and judge IDs alongside `date_argued`, `suit_nature`, `appeal_from`, and `date_last_filing` from the same docket request. Entries default to ascending entry number. Inclusive filing-date bounds and newest-first order let callers reach recent filings beyond CourtListener's 100-page window. Selected-document retrieval binds the filters and order because they determine page membership.
 
 `document_ids` selects embedded RECAP records on that page only. Each selected entry must explicitly link to the requested docket; absent IDs and unverified ownership fail before text is returned. Selection adds no document-detail request, page walk, extraction, or PACER purchase. Raw `plain_text` and source/storage links are preserved; `text_status` distinguishes available, unavailable, not_extracted, and unknown independently of file availability. Oversized selections use the shared 24,000-byte retrieval contract on both response surfaces. Continue with `cursor`, retaining docket ID, entries page, and normalized selection; `retrieval.next_cursor` is separate from entries pagination. Listing-only fields are optional in selected responses.
 
@@ -551,7 +554,7 @@ person_id: z.number().int()
 
 ### `courtlistener_lookup_courts`
 
-List courts with optional filtering by jurisdiction type, active/inactive status, and scraper coverage. Primarily used to discover court IDs for use in search and filter parameters.
+List courts filtered by jurisdiction, active status, and scraper coverage. The bundled snapshot serves ID-only requests without spending upstream quota. Full records come from the live page. If it is unavailable, its status distinguishes that failure from a fetched empty page.
 
 **Input schema:**
 ```ts
